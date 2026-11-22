@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
@@ -50,7 +49,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -64,12 +62,10 @@ import xyz.etkn.mobile.data.session.SessionState
 import xyz.etkn.mobile.data.session.StoredSessions
 import xyz.etkn.mobile.data.settings.Settings
 import xyz.etkn.mobile.graph
-import xyz.etkn.mobile.ui.components.Artwork
 import xyz.etkn.mobile.ui.components.GlassBackBar
 import xyz.etkn.mobile.ui.components.GlassDialog
 import xyz.etkn.mobile.ui.components.glassBarClearance
 import xyz.etkn.mobile.ui.components.glassSource
-import xyz.etkn.mobile.ui.components.images
 import xyz.etkn.mobile.ui.nav.AccountsRoute
 import xyz.etkn.mobile.ui.nav.DownloadsRoute
 import xyz.etkn.mobile.ui.nav.FavoritesRoute
@@ -101,25 +97,8 @@ fun MeScreen() {
                 Modifier.windowInsetsPadding(WindowInsets.statusBars).height(12.dp),
             )
         }
-        item {
-            Surface(
-                shape = Corner.panel,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 12.dp),
-            ) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Artwork(images().user(tag = session.imageTag, widthPx = 240), Modifier.size(64.dp).clip(CircleShape), session.userName, placeholder = Icons.Rounded.Person)
-                    Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
-                        Text(session.userName, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            session.serverName + if (session.isAdmin) " · 管理员" else "",
-                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
-                        )
-                        Text(session.server, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-            }
-        }
+        // 用户口径（2026-11-23）：顶部那块账号信息卡（头像 + 用户名 + 服务器地址）整块删掉，
+        // 下面功能列表直接上移。
         item {
             SettingsGroup {
                 Entry(Icons.Rounded.Favorite, "我的收藏") { nav.to(FavoritesRoute) }

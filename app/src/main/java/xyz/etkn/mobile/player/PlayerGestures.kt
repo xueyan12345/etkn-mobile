@@ -112,8 +112,9 @@ internal fun GestureLayer(
                         change.consume()
                         dxTotal += change.position.x - change.previousPosition.x
                         val steps = (dxTotal / stepPx).toInt()
-                        // 每格 0.2×（原来是 0.1×），配合 16dp 的格距，40dp 位移约 +0.5×
-                        val target = kotlin.math.round(((2f + steps * 0.2f).coerceIn(0.3f, 4f)) * 10f) / 10f
+                        // 用户口径（2026-11-23）：步长从 0.2 改回 0.1（0.1 一档加减），
+                        // 滑动手感（16dp 一格）和范围 0.3~4.0 都保持不变。
+                        val target = kotlin.math.round(((2f + steps * 0.1f).coerceIn(0.3f, 4f)) * 10f) / 10f
                         if (target != lastSpeed) {
                             lastSpeed = target
                             player.setPlaybackSpeed(target)

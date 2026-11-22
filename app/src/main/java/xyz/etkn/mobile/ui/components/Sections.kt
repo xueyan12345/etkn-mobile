@@ -29,33 +29,34 @@ import xyz.etkn.mobile.ui.theme.Etkn
  * 区块标题。
  *
  * 用户口径（2026-11-23）：
- * · 字号在上一版基础再放大一档（titleMedium → titleLarge），加粗有分量
- * · 只有「媒体库」带 > 并且整行可点（点进去看媒体库列表）；
- *   其他区块（国产剧集/华语电影…）不带箭头
- * · 上下留白收紧，跟参考图一样紧凑
+ * · 字号比上一版小一丢丢（titleLarge → titleMedium），上一版偏大
+ * · **所有**媒体库区块（媒体库 / 国产剧集 / 华语电影 …）都带 > 且整行可点，
+ *   点进去就是对应库；原来只有「媒体库」能点，其他点不了
+ * · 上下留白保持紧凑
  */
 @Composable
 fun SectionHeader(
     title: String,
     modifier: Modifier = Modifier,
     onMore: (() -> Unit)? = null,
-    /** 标题后是否显示 > 并使整行可点。只有媒体库用。 */
-    showChevron: Boolean = false,
+    /** 有 onMore 就显示 > 并整行可点；没有就不显示箭头。 */
+    showChevron: Boolean = true,
 ) {
-    val clickable = if (showChevron && onMore != null) Modifier.clickable(onClick = onMore) else Modifier
+    val arrow = showChevron && onMore != null
+    val clickable = if (arrow) Modifier.clickable(onClick = onMore!!) else Modifier
     Row(
         modifier.fillMaxWidth().padding(start = LocalStartInset.current + Etkn.space.screen, end = 8.dp).then(clickable),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             title,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = if (showChevron) Modifier else Modifier.weight(1f),
+            modifier = if (arrow) Modifier else Modifier.weight(1f),
         )
-        if (showChevron) {
+        if (arrow) {
             Icon(
                 Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                 contentDescription = "查看全部",
@@ -73,7 +74,7 @@ fun Shelf(
     items: List<Item>,
     modifier: Modifier = Modifier,
     onMore: (() -> Unit)? = null,
-    showChevron: Boolean = false,
+    showChevron: Boolean = true,
     itemContent: @Composable (Item) -> Unit,
 ) {
     // 用户口径（2026-11-23）：模块之间的竖向间距 18dp，紧凑（参考图那密度）。
@@ -95,7 +96,7 @@ fun LazyListScope.shelf(
     title: String,
     items: List<Item>,
     onMore: (() -> Unit)? = null,
-    showChevron: Boolean = false,
+    showChevron: Boolean = true,
     itemContent: @Composable (Item) -> Unit,
 ) {
     if (items.isEmpty()) return

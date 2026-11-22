@@ -1,6 +1,5 @@
 package xyz.etkn.mobile.ui.components
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -32,11 +31,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +45,8 @@ import xyz.etkn.mobile.ui.common.LocalWindowLayout
 import xyz.etkn.mobile.ui.theme.Etkn
 import java.util.Locale
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextAlign
 
 val CardShape = Corner.card
 
@@ -86,12 +84,14 @@ fun PosterCard(
             }
         }
         if (showMeta) {
+            // 用户口径（2026-11-23）：片名和年份都居中（参考图就是这样）
             Text(
                 item.name,
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 2.dp, end = 2.dp),
             )
             val meta = listOfNotNull(item.productionYear?.toString(), item.episodeCode).joinToString(" · ")
             if (meta.isNotEmpty()) {
@@ -102,7 +102,8 @@ fun PosterCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 1.dp, bottom = 6.dp),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 1.dp, bottom = 6.dp),
                 )
             }
         }
@@ -137,44 +138,23 @@ private fun androidx.compose.foundation.layout.BoxScope.PosterBadges(item: Item)
 }
 
 /**
- * 用户口径（2026-11-23）：未看集数从纯数字方块改成环形进度圈。
- * 圆环按「已看/总集数」的比例填充，中间显示剩余未看集数 —— 一眼就能看出进度。
+ * 用户口径（2026-11-23）：未看集数角标按参考图重做 —— 
+ * 正圆形、近白底（略带淡紫）、深蓝/藏青数字，贴在封面右上角内侧，四周留白。
+ * 上一版做的环形进度圈不是他要的，已替换。
  */
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item) {
     val unplayed = item.userData.unplayedItemCount ?: 0
-    // 接口没给总集数，用 PlayedPercentage（已看百分比）当进度。没有就用 0（只显示底圈+数字）。
-    val fraction = ((item.userData.playedPercentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
-    val track = Color.Black.copy(alpha = 0.45f)
-    val accent = MaterialTheme.colorScheme.primary
     Box(
-        Modifier.align(Alignment.TopEnd).padding(6.dp).size(30.dp),
+        Modifier.align(Alignment.TopEnd).padding(6.dp).size(26.dp)
+            .background(Color(0xFFF3F1F8), CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val stroke = size.minDimension * 0.11f
-            val inset = stroke / 2
-            val arcSize = Size(size.width - stroke, size.height - stroke)
-            // 底圈
-            drawArc(
-                color = track, startAngle = 0f, sweepAngle = 360f, useCenter = false,
-                topLeft = Offset(inset, inset), size = arcSize,
-                style = Stroke(width = stroke, cap = StrokeCap.Round),
-            )
-            // 进度圈（从 12 点方向顺时针）
-            if (fraction > 0f) {
-                drawArc(
-                    color = accent, startAngle = -90f, sweepAngle = 360f * fraction, useCenter = false,
-                    topLeft = Offset(inset, inset), size = arcSize,
-                    style = Stroke(width = stroke, cap = StrokeCap.Round),
-                )
-            }
-        }
         Text(
             unplayed.toString(),
-            style = MaterialTheme.typography.labelSmall,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
+            color = Color(0xFF23306B),
         )
     }
 }

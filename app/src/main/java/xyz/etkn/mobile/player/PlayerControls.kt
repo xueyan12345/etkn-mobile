@@ -74,6 +74,9 @@ import java.util.Locale
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
+import java.text.SimpleDateFormat
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.LaunchedEffect
 
 /**
  * 播放器控制层。
@@ -113,6 +116,8 @@ internal fun Controls(
 ) {
     var scrubbing by remember { mutableStateOf(false) }
     var scrub by remember { mutableFloatStateOf(0f) }
+    // 用户口径（2026-11-23）：顶部中间显示系统时间 / 网速 / 电量，每秒刷新
+    val status = rememberPlayerStatus()
     Box(Modifier.fillMaxSize()) {
         // 上下渐变，保证文字/按钮在亮画面上也看得清
         Box(Modifier.fillMaxWidth().height(160.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.72f), Color.Transparent))))
@@ -120,6 +125,19 @@ internal fun Controls(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(240.dp)
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.84f)))),
         )
+
+        // ===== 用户口径（2026-11-23）顶部中间：系统时间 + 网速 + 电量 =====
+        Row(
+            Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(status.time, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            if (status.speed.isNotEmpty()) {
+                Text(status.speed, color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+            }
+            Text("${status.battery}%", color = Color.White, fontSize = 12.sp)
+        }
 
         // ===== 顶栏：返回 + 剧名 + 右侧功能图标 =====
         Row(
@@ -267,6 +285,45 @@ internal fun Controls(
             }
         }
     }
+}
+
+/**
+ * 播放器顶部状态：系统时间 / 实时网速 / 电量。
+ * 网速用 TrafficStats 两次采样差分（1 秒间隔），取不到就不显示（不编造 0.0）。
+ */
+private data class PlayerStatus(val time: String, val battery: Int, val speed: String)
+
+@Composable
+private fun rememberPlayerStatus(): PlayerStatus {
+    val context = LocalContext.current
+    var state by remember { mutableStateOf(PlayerStatus("", 0, "")) }
+    LaunchedEffect(Unit) {
+        val fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
+        var lastRx = 0L
+        while (true) {
+            val rx = android.net.TrafficStats.getTotalRxBytes()
+            val speed = when {
+                lastRx <= 0L || rx <= lastRx -> ""
+                else -> {
+                    val bytes = rx - lastRx
+                    when {
+                        bytes >= 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MB/s", bytes / 1048576f)
+                        bytes >= 1024 -> String.format(Locale.ROOT, "%.0f KB/s", bytes / 1024f)
+                        else -> "$bytes B/s"
+                    }
+                }
+            }
+            lastRx = rx
+            val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            state = PlayerStatus(
+                time = fmt.format(java.util.Date()),
+                battery = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 0,
+                speed = speed,
+            )
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+    return state
 }
 
 @Composable

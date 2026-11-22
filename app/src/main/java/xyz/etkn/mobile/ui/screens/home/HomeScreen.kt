@@ -36,9 +36,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.chrisbanes.haze.rememberHazeState
-import java.text.NumberFormat
 import kotlinx.coroutines.launch
-import xyz.etkn.mobile.data.model.LibraryCounts
 import xyz.etkn.mobile.data.settings.HeroMode
 import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.ui.common.Load
@@ -180,25 +178,7 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                     SquareCard(album, onClick = { nav.open(album) })
                 }
             }
-            data.counts?.let { counts -> item(key = "counts", contentType = "counts") { LibraryTotals(counts) } }
             item(key = "bottom") { Spacer(Modifier.height(LocalBottomInset.current + 16.dp)) }
-        }
-    }
-}
-
-/** What the libraries hold, closing the page: films, series, episodes. */
-@Composable
-private fun LibraryTotals(counts: LibraryCounts) {
-    val number = remember { NumberFormat.getIntegerInstance() }
-    Row(
-        Modifier.fillMaxWidth().padding(start = LocalStartInset.current).padding(top = Etkn.space.section * 2, bottom = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(40.dp, Alignment.CenterHorizontally),
-    ) {
-        listOf("电影" to counts.movies, "剧集" to counts.series, "总集数" to counts.episodes).forEach { (label, value) ->
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(number.format(value), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
         }
     }
 }

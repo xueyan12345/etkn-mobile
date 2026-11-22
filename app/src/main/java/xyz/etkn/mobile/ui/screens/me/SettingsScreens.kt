@@ -156,7 +156,9 @@ private fun TabPicker(settings: Settings, side: Boolean, onChange: (Set<String>)
     Column(Modifier.fillMaxWidth().padding(horizontal = ROW_INSET, vertical = 8.dp)) {
         Text(if (side) "侧栏" else "底栏", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(bottom = 8.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(PillGap), verticalArrangement = Arrangement.spacedBy(PillGap)) {
-            TopLevel.entries.filter { it != TopLevel.Discover || canDiscover }.forEach { tab ->
+            // 用户口径（2026-11-23）：底栏已经删掉「媒体库」，这里预览也要一起消失，
+            // 否则设置页还显示一个实际没有的图标。
+            TopLevel.entries.filter { it != TopLevel.Libraries && (it != TopLevel.Discover || canDiscover) }.forEach { tab ->
                 val on = tab in shown
                 // 首页 is always there: shown on, but nothing to toggle.
                 val fixed = tab == TopLevel.Home
