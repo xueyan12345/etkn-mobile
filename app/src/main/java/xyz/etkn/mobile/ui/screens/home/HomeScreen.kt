@@ -106,22 +106,26 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                     )
                 }
             } else {
-                item(key = "top-space") { Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars).height(64.dp)) }
+                // 用户口径（2026-11-22）：没有轮播图时不要留 64dp 空档，直接贴状态栏起头。
+                item(key = "top-space") { Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars).height(12.dp)) }
             }
             shelf("resume", "继续观看", data.resume) { item ->
                 WideCard(item, onClick = { nav.openTitle(item) }, resume = true, onPlay = { nav.play(item) })
             }
-            shelf("libraries", "媒体库", data.libraries, onMore = { nav.top(TopLevel.Libraries) }) { library ->
+            // 用户口径（2026-11-22）：去掉标题右侧的 → 箭头（参考图里没有）。
+            shelf("libraries", "媒体库", data.libraries, onMore = { nav.top(TopLevel.Libraries) }, showArrow = false) { library ->
                 LibraryCard(library, onClick = { nav.openLibrary(library) })
             }
             data.latest.forEach { shelfData ->
                 val library = shelfData.library
-                shelf("latest-${library.id}", "最新 · ${library.name}", shelfData.items, onMore = {
-                    nav.openLibrary(library)
-                }) { item -> PosterCard(item, onClick = { nav.open(item) }) }
+                shelf("latest-${library.id}", "最新 · ${library.name}", shelfData.items,
+                    onMore = { nav.openLibrary(library) }, showArrow = false) { item ->
+                    PosterCard(item, onClick = { nav.open(item) })
+                }
             }
             data.musicLatest?.let { (library, albums) ->
-                shelf("music-${library.id}", "新专辑", albums, onMore = { nav.openLibrary(library) }) { album ->
+                shelf("music-${library.id}", "新专辑", albums,
+                    onMore = { nav.openLibrary(library) }, showArrow = false) { album ->
                     SquareCard(album, onClick = { nav.open(album) })
                 }
             }

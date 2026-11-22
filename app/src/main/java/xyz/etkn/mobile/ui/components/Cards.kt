@@ -232,7 +232,9 @@ fun LibraryCard(item: Item, onClick: () -> Unit, modifier: Modifier = Modifier, 
         }
         Text(
             item.name,
-            style = MaterialTheme.typography.titleSmall,
+            // 用户口径（2026-11-22）：媒体库分类名（国产剧集/华语电影…）比上一版调大一档，
+            // 参考图里这个字是明显加粗、有分量的；区块标题（最新·xx）保持小一些。
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
