@@ -68,7 +68,6 @@ import androidx.compose.ui.unit.dp
 import xyz.etkn.mobile.ui.components.Artwork
 import xyz.etkn.mobile.ui.components.formatClock
 import xyz.etkn.mobile.ui.theme.Corner
-import xyz.etkn.mobile.ui.components.px
 import xyz.etkn.mobile.ui.components.images
 import androidx.compose.ui.layout.ContentScale
 import java.util.Locale
@@ -132,7 +131,7 @@ internal fun Controls(
             // 不是普通文字。取不到 logo 才退回文字标题。
             Box(Modifier.weight(1f).padding(horizontal = 6.dp)) {
                 val logoUrl = remember(ui.item?.id) {
-                    ui.item?.let { images().logo(it, 480.px()) }
+                    ui.item?.let { images().logo(it, 480) }
                 }
                 if (logoUrl != null) {
                     Artwork(

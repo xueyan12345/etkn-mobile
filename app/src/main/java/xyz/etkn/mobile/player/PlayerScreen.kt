@@ -288,7 +288,6 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     onNext = { session.playNext() },
                     onPrevious = { session.playPrevious() },
                     onSpeed = { session.setSpeed(it) },
-                    onScreenshot = { /* 截图能力待实现，先占位不崩 */ },
                     onToggleDanmaku = {
                         // 弹幕开关：直接翻转 enabled（样式其它项保持不变）
                         session.setDanmakuStyle(session.danmakuStyle.value.copy(enabled = !ui.danmakuOn))
