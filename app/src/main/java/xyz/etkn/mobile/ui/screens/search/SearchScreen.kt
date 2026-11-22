@@ -78,6 +78,9 @@ import xyz.etkn.mobile.ui.common.Paged
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.width
+import xyz.etkn.mobile.ui.components.PosterCard
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.font.FontWeight
 
 @Composable
 fun SearchScreen() {
@@ -244,7 +247,7 @@ private fun DiscoverFallback(
  */
 @Composable
 private fun SearchResults(
-    books: Paged,
+    books: Paged<Item>,
     grid: androidx.compose.foundation.lazy.grid.LazyGridState,
     top: Dp,
     online: Map<DiscoverKind, Load<List<DiscoverItem>>>?,
@@ -325,7 +328,7 @@ private fun OnlineTextRow(item: DiscoverItem, onClick: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             val meta = listOfNotNull(
-                item.year?.takeIf { it > 0 }?.toString(),
+                item.year.takeIf { it.isNotEmpty() },
                 item.kind.label,
             ).joinToString(" · ")
             if (meta.isNotEmpty()) {

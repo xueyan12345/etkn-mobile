@@ -48,6 +48,7 @@ import xyz.etkn.mobile.data.update.UpdateState
 import xyz.etkn.mobile.data.update.formatBytes
 import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.ui.components.GlassSheet
+import androidx.compose.runtime.LaunchedEffect
 
 /** Settings → 检查更新. */
 @Composable
