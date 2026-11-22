@@ -211,13 +211,16 @@ private fun DetailContent(data: DetailData, vm: DetailViewModel, nav: AppNav) {
                         )
                     }
                 }
+                // 用户口径（2026-11-23）：先「章节」后「演职人员」，和参考图顺序一致。
+                ChaptersSection(item)
                 if (item.people.isNotEmpty()) {
                     item(key = "people") {
                         Column(Modifier.padding(top = Etkn.space.section)) {
-                            SectionHeader("演职员")
-                            LazyRow(contentPadding = PaddingValues(horizontal = Etkn.space.screen), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SectionHeader("演职人员", showChevron = false)
+                            LazyRow(contentPadding = PaddingValues(horizontal = Etkn.space.screen), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                // 参考图：竖向圆角矩形大卡，下方姓名 + 「饰 角色名」两行居中
                                 items(item.people.take(40), key = { it.id + it.role }) { person ->
-                                    PersonAvatar(person, onClick = { nav.to(PersonRoute(person.id, person.name)) })
+                                    PersonCard(person, onClick = { nav.to(PersonRoute(person.id, person.name)) })
                                 }
                             }
                         }
@@ -231,6 +234,43 @@ private fun DetailContent(data: DetailData, vm: DetailViewModel, nav: AppNav) {
                 // 用户口径（2026-11-23）：右上角三个图标 —— 下载 / 收藏 / 已播放。
                 // 原来的搜索按钮删掉（没用），位置换成下载。
                 DetailTopActions(item, null, onGlass, vm)
+            }
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：详情页「章节」区块，按参考图 ——
+ * 无缩略图，纯文字：章节名在上、时间在下，各自居中，横向排列。
+ * 数据来自服务端 Chapters（片头/片头结束/片尾等 marker 也在里面）。
+ */
+private fun androidx.compose.foundation.lazy.LazyListScope.ChaptersSection(item: Item) {
+    val chapters = item.chapters.filter { it.name.isNotBlank() }
+    if (chapters.isEmpty()) return
+    item(key = "chapters") {
+        Column(Modifier.padding(top = Etkn.space.section)) {
+            SectionHeader("章节", showChevron = false)
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = Etkn.space.screen),
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
+            ) {
+                items(chapters.size) { index ->
+                    val chapter = chapters[index]
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            chapter.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            formatClock(chapter.startTicks / 10_000),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
             }
         }
     }

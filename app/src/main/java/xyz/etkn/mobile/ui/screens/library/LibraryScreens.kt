@@ -98,6 +98,9 @@ import xyz.etkn.mobile.ui.nav.LocalBottomInset
 import xyz.etkn.mobile.ui.nav.LocalNav
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 
 @Composable
 fun LibrariesScreen() {
@@ -201,26 +204,48 @@ fun LibraryScreen(route: LibraryRoute) {
         card = if (facets) { item -> FacetCard(route.id, item, vm) } else null,
         header = if (vm.isFolderView) null else {
             {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column {
+                    // 用户口径（2026-11-23）：顶部筛选按参考图——
+                    // 纯文字 Tab（无胶囊底），选中 = 主色文字 + 下方短横线
                     if (vm.views.size > 1) {
                         Row(
                             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = HEADER_GAP),
-                            horizontalArrangement = Arrangement.spacedBy(PillGap),
+                            horizontalArrangement = Arrangement.spacedBy(20.dp),
                         ) {
                             vm.views.forEach { option ->
-                                PillToggle(checked = option == view, onClick = { vm.setView(option) }) {
-                                    Text(option.label, maxLines = 1)
+                                val selected = option == view
+                                Column(
+                                    Modifier.clickable { vm.setView(option) },
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
+                                    Text(
+                                        option.label,
+                                        maxLines = 1,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (selected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Box(
+                                        Modifier.padding(top = 6.dp).height(2.dp).width(20.dp)
+                                            .background(
+                                                if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                                RoundedCornerShape(1.dp),
+                                            ),
+                                    )
                                 }
                             }
                         }
                     }
                     if (view == LibraryView.All) {
+                        // 下一行工具行：左「≡ 排序」右侧收藏/项目数（参考图布局）
                         Row(
-                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = HEADER_GAP),
-                            horizontalArrangement = Arrangement.spacedBy(PillGap),
+                            Modifier.fillMaxWidth().padding(horizontal = HEADER_GAP, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             SortMenu(query.sort, query.descending, vm::setSort)
+                            Spacer(Modifier.weight(1f))
                             PillToggle(
                                 checked = query.favoritesOnly,
                                 onClick = vm::toggleFavorites,

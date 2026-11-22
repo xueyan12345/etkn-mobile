@@ -301,6 +301,43 @@ fun libraryIcon(type: String?) = when (type) {
     else -> Icons.Rounded.Movie
 }
 
+/**
+ * 用户口径（2026-11-23）：演职人员按参考图重做 ——
+ * 竖向圆角矩形大卡（不是圆形头像），下面两行居中：姓名 / 「饰 角色名」。
+ */
+@Composable
+fun PersonCard(person: PersonRef, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp = 104.dp) {
+    val url = images().person(person, width.px())
+    Column(modifier.width(width), horizontalAlignment = Alignment.CenterHorizontally) {
+        Artwork(
+            url,
+            Modifier.width(width).aspectRatio(0.78f).clip(Corner.card).clickable(onClick = onClick),
+            person.name,
+            placeholder = Icons.Rounded.Person,
+        )
+        Text(
+            person.name,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        )
+        if (person.role.isNotEmpty()) {
+            Text(
+                "饰 ${person.role}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+            )
+        }
+    }
+}
+
 @Composable
 fun PersonAvatar(person: PersonRef, onClick: () -> Unit, modifier: Modifier = Modifier, size: Dp = 76.dp) {
     val url = images().person(person, size.px())
