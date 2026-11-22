@@ -90,10 +90,16 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      */
     val activity = remember(context) { context.findActivity() }
     // true = 竖屏（portrait），false = 横屏（landscape）
-    var portrait by remember { mutableStateOf(false) }
+    // 用户口径（2026-11-23 修「横屏视频点进去还是竖屏」）：
+    // 这里原来是 false。而下面所有调用点都写成 `if (wantPortrait != portrait) applyOrientation(...)`，
+    // 于是横屏视频 wantPortrait=false == portrait=false → 条件不成立 → 一次都没应用，
+    // Activity 就一直停在 Manifest 的 unspecified（= 设备当前方向 = 竖屏）。
+    // 改用 nullable 表示「还没应用过」，第一次一定应用。
+    var portrait by remember { mutableStateOf<Boolean?>(null) }
     // 用户手动覆盖过方向就不再自动跟随，直到换集重置
     var manualOrientation by remember { mutableStateOf(false) }
     val applyOrientation: (Boolean) -> Unit = { wantPortrait ->
+        val changed = portrait != wantPortrait
         portrait = wantPortrait
         // 用户口径（2026-11-23 重申）：绝对不能用 SENSOR_PORTRAIT / SENSOR_LANDSCAPE，
         // 那两个是重力感应，会跟着手机怎么转。这里用固定值：
@@ -144,7 +150,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 val h = videoSize.height
                 if (w <= 0 || h <= 0) return
                 val wantPortrait = h > w
-                if (wantPortrait != portrait) applyOrientation(wantPortrait)
+                if (portrait == null || wantPortrait != portrait) applyOrientation(wantPortrait)
             }
         }
         current?.addListener(listener)
@@ -168,7 +174,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         val h = v?.height ?: 0
         if (w > 0 && h > 0) {
             val wantPortrait = h > w
-            if (wantPortrait != portrait) applyOrientation(wantPortrait)
+            if (portrait == null || wantPortrait != portrait) applyOrientation(wantPortrait)
         }
     }
     // 切集时重置手动覆盖，让新视频自己决定方向
@@ -326,8 +332,8 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     onSheet = { sheet = it; touch() },
                     onResize = { resize = (resize + 1) % ResizeModes.size; touch() },
                     resizeLabel = ResizeModes[resize].second,
-                    onRotate = { manualOrientation = true; applyOrientation(!portrait); touch() },
-                    rotateLabel = if (portrait) "竖屏" else "横屏",
+                    onRotate = { manualOrientation = true; applyOrientation(!(portrait ?: true)); touch() },
+                    rotateLabel = if (portrait == true) "竖屏" else "横屏",
                     onLock = { locked = true; controls = false },
                     onNext = { session.playNext() },
                     onPrevious = { session.playPrevious() },
@@ -365,8 +371,8 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             sheet, ui, session,
             onSheet = { sheet = it },
             onDismiss = { sheet = Sheet.None },
-            onRotate = { manualOrientation = true; applyOrientation(!portrait); touch() },
-            portrait = portrait,
+            onRotate = { manualOrientation = true; applyOrientation(!(portrait ?: true)); touch() },
+            portrait = portrait ?: false,
         )
     }
 }
