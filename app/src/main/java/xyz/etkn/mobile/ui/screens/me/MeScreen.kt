@@ -81,6 +81,7 @@ import xyz.etkn.mobile.ui.screens.search.SearchScreen
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.width
 
 @Composable
 fun MeScreen() {
@@ -91,6 +92,8 @@ fun MeScreen() {
     val session = (graph.sessions.state.collectAsStateWithLifecycle().value as? SessionState.SignedIn)?.session ?: return
     var confirmLogout by remember { mutableStateOf(false) }
     var exportingLog by remember { mutableStateOf(false) }
+    // 用户口径（2026-11-23）：搜索覆盖层开关（搜索已从底栏挪到这里）
+    var showSearch by remember { mutableStateOf(false) }
 
     // Tablets: a readable centred column instead of edge-to-edge rows.
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
