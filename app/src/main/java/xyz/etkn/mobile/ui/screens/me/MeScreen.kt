@@ -1,6 +1,6 @@
 package xyz.etkn.mobile.ui.screens.me
 
-androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Star
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -81,8 +81,6 @@ import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.ui.actions.rememberPopupAnchor
 import xyz.etkn.mobile.ui.actions.PopupChoice
-xyz.etkn.mobile.ui.actions.rememberPopupAnchor
-xyz.etkn.mobile.ui.actions.PopupChoice
 
 @Composable
 fun MeScreen() {
