@@ -8,6 +8,7 @@ import androidx.navigation.NavHostController
 import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.player.PlayerLauncher
+import kotlinx.coroutines.launch
 
 /** Thin navigation facade so screens never touch the NavController directly. */
 @Stable
