@@ -14,6 +14,11 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Slideshow
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -130,23 +135,23 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                 val anchor = xyz.etkn.mobile.ui.actions.rememberPopupAnchor()
                 val actions = buildList {
                     if (canManage) {
-                        add(xyz.etkn.mobile.ui.actions.PopupChoice("生成封面", androidx.compose.material.icons.Icons.Rounded.Image) {
+                        add(xyz.etkn.mobile.ui.actions.PopupChoice("生成封面", Icons.Rounded.Image) {
                             scope.launch { itemMenu?.notice = runCatching { graph.api.generateLibraryCover(library.id) }
                                 .fold({ "「${library.name}」封面已生成" }, { it.message ?: "失败" }) }
                         })
                         if (library.collectionType != "music") {
-                            add(xyz.etkn.mobile.ui.actions.PopupChoice("提取缩略图", androidx.compose.material.icons.Icons.Rounded.Slideshow) {
+                            add(xyz.etkn.mobile.ui.actions.PopupChoice("提取缩略图", Icons.Rounded.Slideshow) {
                                 scope.launch { itemMenu?.notice = runCatching { graph.api.extractLibraryPreviews(library.id) }
                                     .fold({ "缩略图任务已提交" }, { it.message ?: "失败" }) }
                             })
                         }
-                        add(xyz.etkn.mobile.ui.actions.PopupChoice("扫描", androidx.compose.material.icons.Icons.Rounded.Sync) {
+                        add(xyz.etkn.mobile.ui.actions.PopupChoice("扫描", Icons.Rounded.Sync) {
                             scope.launch { itemMenu?.notice = runCatching { graph.api.scanLibrary(library.id) }
                                 .fold({ "已开始扫描「${library.name}」" }, { it.message ?: "失败" }) }
                         })
                     }
                     if (refreshAccount) {
-                        add(xyz.etkn.mobile.ui.actions.PopupChoice("刷新", androidx.compose.material.icons.Icons.Rounded.Refresh) {
+                        add(xyz.etkn.mobile.ui.actions.PopupChoice("刷新", Icons.Rounded.Refresh) {
                             scope.launch { itemMenu?.notice = runCatching { graph.api.refreshLibrary(library.id, "full") }
                                 .fold({ "已刷新「${library.name}」" }, { it.message ?: "失败" }) }
                         })
