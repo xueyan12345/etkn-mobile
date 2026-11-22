@@ -78,11 +78,14 @@ import xyz.etkn.mobile.data.net.str
 import xyz.etkn.mobile.ui.common.userMessage
 import xyz.etkn.mobile.ui.components.glass
 import xyz.etkn.mobile.ui.theme.Corner
+import xyz.etkn.mobile.data.cast.CastDevice
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material.icons.rounded.Cast
 
 /** Long-press / overflow menu of the current shell; null outside it (previews, player). */
 val LocalItemMenu = staticCompositionLocalOf<ItemMenu?> { null }
 
-enum class ItemAction { Favorite, Played, Refresh, Metadata, Images, Previews, Delete, HideResume }
+enum class ItemAction { Favorite, Played, Refresh, Metadata, Images, Previews, Delete, HideResume, Cast }
 
 internal data class Entry(val action: ItemAction, val label: String, val icon: ImageVector, val danger: Boolean = false)
 
@@ -106,6 +109,7 @@ sealed interface ItemDialog {
 
     data class Refresh(override val item: Item) : ItemDialog
     data class Delete(override val item: Item) : ItemDialog
+    data class Cast(override val item: Item) : ItemDialog
     data class Metadata(override val item: Item) : ItemDialog
     data class Images(override val item: Item) : ItemDialog
 }
@@ -179,6 +183,8 @@ class ItemMenu(private val graph: AppGraph, private val scope: CoroutineScope) {
                 if (item.type in VIDEO_TYPES) add(Entry(ItemAction.Previews, "提取缩略图", Icons.Rounded.Slideshow))
             }
             if (managed && (admin || canDelete)) add(Entry(ItemAction.Delete, "删除", Icons.Rounded.Delete, danger = true))
+            // 用户口径（2026-11-23）：投屏从播放器移到这里（视频类才显示）
+            if (item.type in VIDEO_TYPES) add(Entry(ItemAction.Cast, "投屏", Icons.Rounded.Cast))
             if (t.resume) add(Entry(ItemAction.HideResume, "从继续观看移除", Icons.Rounded.VisibilityOff))
         }
     }
@@ -200,6 +206,7 @@ class ItemMenu(private val graph: AppGraph, private val scope: CoroutineScope) {
             ItemAction.Metadata -> dialog = ItemDialog.Metadata(item)
             ItemAction.Images -> dialog = ItemDialog.Images(item)
             ItemAction.Delete -> dialog = ItemDialog.Delete(item)
+            ItemAction.Cast -> dialog = ItemDialog.Cast(item)
         }
     }
 
@@ -379,6 +386,7 @@ fun ItemMenuHost(menu: ItemMenu, haze: HazeState?) {
     when (val d = menu.dialog) {
         is ItemDialog.Refresh -> RefreshDialog(onDismiss = { menu.dialog = null }) { menu.refresh(d.item, it) }
         is ItemDialog.Delete -> DeleteDialog(d.item, menu)
+        is ItemDialog.Cast -> CastSheet(d.item, menu)
         is ItemDialog.Metadata -> MetadataSheet(d.item, menu)
         is ItemDialog.Images -> ImageSheet(d.item, menu)
         null -> Unit
@@ -484,3 +492,81 @@ private fun PopupCard(popup: GlassPopup, menu: ItemMenu, haze: HazeState?) {
 private val MenuWidth = 200.dp
 private val MenuIcon = 18.dp
 private val RowPadding = 11.dp
+
+
+/**
+ * 用户口径（2026-11-23）：投屏从播放器移到详情页三点菜单。
+ * 实现复用播放器那套：DLNA 发现设备 → 取该条目的可播放直链 → 推给设备。
+ * 这里和播放器不同：播放器有正在播的 source，详情页没有，所以要先取 playbackInfo。
+ */
+@Composable
+private fun CastSheet(item: Item, menu: ItemMenu) {
+    val graph = LocalContext.current.graph
+    val session = graph.sessions.current
+    val scope = rememberCoroutineScope()
+    var devices by remember { mutableStateOf<List<CastDevice>?>(null) }
+    var round by remember { mutableIntStateOf(0) }
+    var busy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(round) {
+        devices = null
+        devices = runCatching { graph.cast.discover() }.getOrDefault(emptyList())
+    }
+
+    Text("投屏", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+
+    when (val found = devices) {
+        null -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+            androidx.compose.material3.CircularProgressIndicator()
+        }
+        else -> {
+            if (found.isEmpty()) {
+                Text(
+                    "没有找到投屏设备",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                )
+            }
+            androidx.compose.foundation.lazy.LazyColumn(androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) {
+                items(found.size) { index ->
+                    val device = found[index]
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable(enabled = !busy) {
+                                if (session == null) return@clickable
+                                busy = true
+                                scope.launch {
+                                    val info = runCatching { graph.api.playbackInfo(item.id) }.getOrNull()
+                                    val source = info?.sources?.firstOrNull()
+                                    val url = source?.let {
+                                        runCatching {
+                                            xyz.etkn.mobile.player.PlaybackAddress.portable(
+                                                it, session.server, session.token, session.userId,
+                                            )
+                                        }.getOrNull()
+                                    }
+                                    if (url == null) {
+                                        menu.notice = "取播放地址失败"
+                                    } else {
+                                        val title = item.seriesName?.takeIf { item.isEpisode } ?: item.name
+                                        runCatching { graph.cast.play(device, url, title, item.userData.playbackPositionTicks / 10_000) }
+                                            .onSuccess { menu.notice = "已投屏到 ${device.name}" }
+                                            .onFailure { menu.notice = it.message ?: "投屏失败" }
+                                    }
+                                    busy = false
+                                    menu.dialog = null
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Rounded.Cast, null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(device.name)
+                    }
+                }
+            }
+            TextButton(onClick = { round++ }, modifier = Modifier.padding(horizontal = 12.dp)) { Text("重新搜索") }
+        }
+    }
+}

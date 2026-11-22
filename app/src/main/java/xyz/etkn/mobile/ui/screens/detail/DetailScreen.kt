@@ -127,6 +127,8 @@ import xyz.etkn.mobile.ui.theme.HeroTitleStyle
 import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.ui.components.PillGap
 import xyz.etkn.mobile.ui.components.PillToggle
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.AlertDialog
 
 @Composable
 fun DetailScreen(id: String) {
@@ -225,8 +227,9 @@ private fun DetailContent(data: DetailData, vm: DetailViewModel, nav: AppNav) {
                 item(key = "bottom") { Spacer(Modifier.height(LocalBottomInset.current + 24.dp)) }
             }
             GlassBackBar(item.seriesName?.takeIf { item.isEpisode || item.isSeason } ?: item.name, collapsed, haze, nav::back) { onGlass ->
-                ArtworkIconButton(Icons.Rounded.Search, "搜索", { nav.top(TopLevel.Search) }, onGlass = onGlass)
-                if (press.enabled) ArtworkIconButton(Icons.Rounded.MoreVert, "更多", press::open, press.modifier, onGlass)
+                // 用户口径（2026-11-23）：右上角三个图标 —— 下载 / 收藏 / 已播放。
+                // 原来的搜索按钮删掉（没用），位置换成下载。
+                DetailTopActions(item, source, onGlass, vm)
             }
         }
     }
@@ -375,13 +378,26 @@ private fun ActionRow(data: DetailData, centered: Boolean, vm: DetailViewModel, 
         Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen).padding(top = 14.dp),
         horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
     ) {
-        PlayButton(
-            label = label,
-            time = target?.positionMs?.takeIf { resumable }?.let(::formatClock),
-            progress = if (resumable) target.progress else 0f,
-            enabled = target != null,
-            onClick = { play(resume = true) },
-        )
+        // 用户口径（2026-11-23）：三个点（更多）移到「继续播放」大按钮右边。
+        // 收藏/已播放/下载已移到右上角，这里不再重复。
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                PlayButton(
+                    label = label,
+                    time = target?.positionMs?.takeIf { resumable }?.let(::formatClock),
+                    progress = if (resumable) target.progress else 0f,
+                    enabled = target != null,
+                    onClick = { play(resume = true) },
+                )
+            }
+            if (press.enabled) {
+                Box(Modifier.padding(start = 8.dp)) {
+                    FilledTonalIconButton(onClick = press::open, modifier = Modifier.size(SmallAction).then(press.modifier)) {
+                        Icon(Icons.Rounded.MoreVert, "更多", Modifier.size(20.dp))
+                    }
+                }
+            }
+        }
         Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             // 继续播放 resumes at the saved position; this one starts the same title at 00:00.
             if (resumable) {
@@ -391,19 +407,160 @@ private fun ActionRow(data: DetailData, centered: Boolean, vm: DetailViewModel, 
                     Text("从头播放", style = MaterialTheme.typography.labelLarge)
                 }
             }
-            FilledTonalIconToggleButton(checked = item.userData.isFavorite, onCheckedChange = { vm.toggleFavorite() }, modifier = Modifier.size(SmallAction)) {
-                Icon(if (item.userData.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, "收藏", Modifier.size(20.dp))
-            }
-            FilledTonalIconToggleButton(checked = item.userData.played, onCheckedChange = { vm.togglePlayed() }, modifier = Modifier.size(SmallAction)) {
-                Icon(Icons.Rounded.Done, "已观看", Modifier.size(20.dp))
-            }
             if (item.trailers.isNotEmpty()) TrailerButton(item.trailers)
-            if (item.isMovie || item.isEpisode || item.type == "Video") DownloadButton(item, source)
         }
     }
 }
 
 private val SmallAction = 40.dp
+
+/**
+ * 用户口径（2026-11-23）：详情页右上角三个图标 —— 下载 / 收藏 / 已播放。
+ * 下载对电影/单集直接入队；剧集弹选集面板（支持多选、全选）。
+ * 投屏不在这里，放在「继续播放」右边的三点菜单里。
+ */
+@Composable
+private fun DetailTopActions(
+    item: Item,
+    sourceId: String?,
+    onGlass: Boolean,
+    vm: DetailViewModel,
+) {
+    val graph = LocalContext.current.graph
+    val nav = LocalNav.current
+    val menu = LocalItemMenu.current
+    val scope = rememberCoroutineScope()
+    val session = graph.sessions.current
+    // 剧集下载用的选集面板开关
+    var showPicker by remember { mutableStateOf<Item?>(null) }
+
+    // 收藏
+    ArtworkIconButton(
+        if (item.userData.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+        if (item.userData.isFavorite) "取消收藏" else "收藏",
+        { vm.toggleFavorite() },
+        onGlass = onGlass,
+    )
+    // 已播放
+    ArtworkIconButton(
+        Icons.Rounded.Done,
+        if (item.userData.played) "标记未看" else "标记已看",
+        { vm.togglePlayed() },
+        onGlass = onGlass,
+    )
+    // 下载（私密账号不给）
+    if (session != null && !session.privateAccount) {
+        val entries by graph.downloads.entries.collectAsStateWithLifecycle()
+        val saved = remember(entries, item.id) { graph.downloads.find(session, item.id) != null }
+        ArtworkIconButton(
+            if (saved) Icons.Rounded.DownloadDone else Icons.Rounded.Download,
+            if (saved) "已下载" else "下载",
+            onClick = {
+                when {
+                    saved -> nav.to(DownloadsRoute)
+                    // 剧集整季下载：弹选集面板（多选/全选），见 DownloadPicker
+                    item.isSeries -> showPicker = item
+                    else -> scope.launch {
+                        menu?.notice = runCatching { graph.downloads.enqueue(session, item, sourceId) }
+                            .fold({ "已加入下载" }, { it.userMessage() })
+                    }
+                }
+            },
+            onGlass = onGlass,
+        )
+    }
+
+    showPicker?.let { series ->
+        DownloadPicker(
+            series = series,
+            onDismiss = { showPicker = null },
+        )
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：剧集下载要能选集 —— 多选 + 全选。
+ * 列出该剧全部集，勾选后逐个入队下载。
+ */
+@Composable
+private fun DownloadPicker(series: Item, onDismiss: () -> Unit) {
+    val graph = LocalContext.current.graph
+    val menu = LocalItemMenu.current
+    val scope = rememberCoroutineScope()
+    val session = graph.sessions.current ?: return
+    var episodes by remember { mutableStateOf<List<Item>>(emptyList()) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var loading by remember { mutableStateOf(true) }
+    var working by remember { mutableStateOf(false) }
+
+    LaunchedEffect(series.id) {
+        val seasons = runCatching { graph.api.seasons(series.id) }.getOrDefault(emptyList())
+        val all = ArrayList<Item>()
+        for (season in seasons) {
+            val page = runCatching { graph.api.episodePage(series.id, season.id, limit = 500) }.getOrNull()
+            if (page != null) all += page.items
+        }
+        episodes = all
+        loading = false
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择下载集数") },
+        text = {
+            if (loading) {
+                Text("加载中…")
+            } else {
+                androidx.compose.foundation.layout.Column {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                        androidx.compose.material3.TextButton(onClick = {
+                            selected = if (selected.size == episodes.size) emptySet() else episodes.map { it.id }.toSet()
+                        }) { Text(if (selected.size == episodes.size) "取消全选" else "全选") }
+                        Spacer(Modifier.weight(1f))
+                        Text("已选 ${selected.size} / ${episodes.size}", style = MaterialTheme.typography.labelMedium)
+                    }
+                    androidx.compose.foundation.lazy.LazyColumn(Modifier.height(320.dp)) {
+                        items(episodes.size) { index ->
+                            val ep = episodes[index]
+                            val on = ep.id in selected
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clickable { selected = if (on) selected - ep.id else selected + ep.id }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                androidx.compose.material3.Checkbox(checked = on, onCheckedChange = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text(ep.episodeLabel ?: ep.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                enabled = selected.isNotEmpty() && !working,
+                onClick = {
+                    working = true
+                    scope.launch {
+                        var ok = 0
+                        var fail = 0
+                        for (ep in episodes.filter { it.id in selected }) {
+                            runCatching { graph.downloads.enqueue(session, ep) }
+                                .onSuccess { ok++ }.onFailure { fail++ }
+                        }
+                        menu?.notice = if (fail == 0) "已加入下载：$ok 集" else "成功 $ok 集，失败 $fail 集"
+                        onDismiss()
+                    }
+                },
+            ) { Text(if (working) "提交中…" else "下载${if (selected.isNotEmpty()) " (${selected.size})" else ""}") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
+}
 
 /** Queues this title for offline viewing, or opens 下载 when it is already there. Not for private accounts. */
 @Composable
