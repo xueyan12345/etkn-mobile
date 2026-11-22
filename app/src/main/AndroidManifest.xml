@@ -59,7 +59,7 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density"
             android:launchMode="singleTask"
             android:resizeableActivity="true"
-            android:screenOrientation="sensor"
+            android:screenOrientation="unspecified"
             android:supportsPictureInPicture="true"
             android:taskAffinity="xyz.etkn.mobile.player"
             android:excludeFromRecents="true"

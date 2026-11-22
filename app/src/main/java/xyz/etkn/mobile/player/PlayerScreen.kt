@@ -88,10 +88,13 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     var manualOrientation by remember { mutableStateOf(false) }
     val applyOrientation: (Boolean) -> Unit = { wantPortrait ->
         portrait = wantPortrait
+        // 用户口径（2026-11-23 重申）：绝对不能用 SENSOR_PORTRAIT / SENSOR_LANDSCAPE，
+        // 那两个是重力感应，会跟着手机怎么转。这里用固定值：
+        // 竖屏视频钉死竖屏，横屏视频钉死横屏，方向 100% 由视频宽高比决定。
         activity?.requestedOrientation = if (wantPortrait) {
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
     }
     var position by remember { mutableLongStateOf(0L) }
@@ -274,7 +277,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     ui = ui, playing = playing, position = position, duration = duration, buffered = buffered,
                     onBack = onBack, onPip = onPip,
                     onPlayPause = { core?.let { if (it.isPlaying) it.pause() else it.play() }; touch() },
-                    onSeek = { core?.seekTo(it); touch() },
+                    onSeek = { session.resetAutoSkipIfBefore(it); core?.seekTo(it); touch() },
                     onSeekBy = { delta -> core?.let { p -> p.seekTo((p.currentPosition + delta).coerceAtLeast(0)) }; touch() },
                     onSheet = { sheet = it; touch() },
                     onResize = { resize = (resize + 1) % ResizeModes.size; touch() },
@@ -283,6 +286,9 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     rotateLabel = if (portrait) "竖屏" else "横屏",
                     onLock = { locked = true; controls = false },
                     onNext = { session.playNext() },
+                    onPrevious = { session.playPrevious() },
+                    onSpeed = { session.setSpeed(it) },
+                    onScreenshot = { /* 截图能力待实现，先占位不崩 */ },
                     onToggleDanmaku = {
                         // 弹幕开关：直接翻转 enabled（样式其它项保持不变）
                         session.setDanmakuStyle(session.danmakuStyle.value.copy(enabled = !ui.danmakuOn))

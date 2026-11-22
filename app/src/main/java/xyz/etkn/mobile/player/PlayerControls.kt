@@ -68,6 +68,13 @@ import androidx.compose.ui.unit.dp
 import xyz.etkn.mobile.ui.components.Artwork
 import xyz.etkn.mobile.ui.components.formatClock
 import xyz.etkn.mobile.ui.theme.Corner
+import xyz.etkn.mobile.ui.components.px
+import xyz.etkn.mobile.ui.components.images
+import androidx.compose.ui.layout.ContentScale
+import java.util.Locale
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 
 /**
  * 播放器控制层。
@@ -101,7 +108,9 @@ internal fun Controls(
     rotateLabel: String,
     onLock: () -> Unit,
     onNext: () -> Unit,
+    onPrevious: () -> Unit,
     onToggleDanmaku: () -> Unit,
+    onSpeed: (Float) -> Unit,
 ) {
     var scrubbing by remember { mutableStateOf(false) }
     var scrub by remember { mutableFloatStateOf(0f) }
@@ -119,16 +128,31 @@ internal fun Controls(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = Color.White) }
-            // 剧名：优先用服务端艺术字 logo，没有就退回文字标题
-            Box(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                Text(
-                    ui.title,
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            // 用户口径（2026-11-23）：剧名要用服务端挂好的书法艺术字 logo（ImageTags.Logo），
+            // 不是普通文字。取不到 logo 才退回文字标题。
+            Box(Modifier.weight(1f).padding(horizontal = 6.dp)) {
+                val logoUrl = remember(ui.item?.id) {
+                    ui.item?.let { images().logo(it, 480.px()) }
+                }
+                if (logoUrl != null) {
+                    Artwork(
+                        logoUrl,
+                        Modifier.height(32.dp).width(160.dp),
+                        contentDescription = ui.title,
+                        contentScale = ContentScale.Fit,
+                        background = Color.Transparent,
+                        alignment = Alignment.CenterStart,
+                    )
+                } else {
+                    Text(
+                        ui.title,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             if (ui.sources.size > 1) PlayerAction(Icons.Rounded.VideoSettings, "版本") { onSheet(Sheet.Versions) }
             PlayerAction(Icons.Rounded.AspectRatio, resizeLabel, onResize)
@@ -136,6 +160,19 @@ internal fun Controls(
             PlayerAction(Icons.Rounded.ScreenRotation, rotateLabel, onRotate)
             PlayerAction(Icons.Rounded.MoreVert, "更多") { onSheet(Sheet.More) }
         }
+
+        // ===== 用户口径（2026-11-23）左侧垂直居中：只放锁（从底栏移过来）=====
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 10.dp)) {
+            PlayerAction(Icons.Rounded.LockOpen, "锁定", onLock)
+        }
+
+        // ===== 用户口径（2026-11-23）右侧垂直居中：倍速 + / 1.0x / − =====
+        SpeedPad(
+            speed = ui.speed,
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 8.dp),
+            onChange = onSpeed,
+            onPick = { onSheet(Sheet.Speed) },
+        )
 
         // ===== 中央播放控制（保持原样，不缩不放）=====
         Row(
@@ -182,6 +219,7 @@ internal fun Controls(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // 用户口径（2026-11-23）：时间在左、进度条在右同一行；去掉右侧总时长
                 Text(formatClock(if (scrubbing) (scrub * duration).toLong() else position), color = Color.White, style = MaterialTheme.typography.labelMedium)
                 val seek = remember { SliderState() }
                 seek.value = if (scrubbing) scrub else if (duration > 0) position.toFloat() / duration else 0f
@@ -204,26 +242,24 @@ internal fun Controls(
                         onValueChange = { scrubbing = true; scrub = it },
                         onValueChangeFinished = { onSeek((scrub * duration).toLong()); scrubbing = false },
                         colors = SliderDefaults.colors(
-                            inactiveTrackColor = Color.White.copy(alpha = 0.25f),
+                            // 用户口径：白色实心圆滑块 + 纯白已播放 + 半透明白未播放
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.White,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.32f),
                         ),
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                Text(formatClock(duration), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                Text(formatClock(duration), color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.labelMedium)
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                PlayerAction(Icons.Rounded.LockOpen, "锁定", onLock)
+                // 用户口径（2026-11-23）按参考图：左边 上一集 / 暂停 / 下一集，
+                // 右边 音轨 / 字幕 / 选集。锁和弹幕已移到左侧垂直居中区。
+                PlayerAction(Icons.Rounded.SkipPrevious, "上一集", onPrevious)
+                PlayerAction(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "暂停" else "播放", onPlayPause)
+                PlayerAction(Icons.Rounded.SkipNext, "下一集", onNext)
                 Spacer(Modifier.weight(1f))
-                // 用户口径（2026-11-23）：右下角这五个改成纯图标，和参考图一致
-                if (ui.danmakuSupported) {
-                    PlayerAction(
-                        if (ui.danmakuOn) Icons.Rounded.ChatBubble else Icons.Rounded.ChatBubbleOutline,
-                        if (ui.danmakuOn) "关闭弹幕" else "开启弹幕",
-                        onToggleDanmaku,
-                    )
-                    PlayerAction(Icons.Rounded.Settings, "弹幕设置") { onSheet(Sheet.Danmaku) }
-                }
                 PlayerAction(Icons.Rounded.Audiotrack, "音轨") { onSheet(Sheet.Audio) }
                 PlayerAction(Icons.Rounded.ClosedCaption, "字幕") { onSheet(Sheet.Subtitle) }
                 if (ui.item?.isEpisode == true) PlayerAction(Icons.AutoMirrored.Rounded.PlaylistPlay, "选集") { onSheet(Sheet.Episodes) }
@@ -235,6 +271,42 @@ internal fun Controls(
 @Composable
 private fun PlayerAction(icon: ImageVector, label: String, onClick: () -> Unit) {
     IconButton(onClick = onClick) { Icon(icon, label, tint = Color.White) }
+}
+
+/**
+ * 右侧倍速控件（用户口径 2026-11-23，按参考图）：
+ * 半透明深色圆角长条，垂直排列 + / 当前倍速 / −。
+ * 点数字本身弹出倍速菜单可直接选。
+ */
+@Composable
+private fun SpeedPad(speed: Float, modifier: Modifier, onChange: (Float) -> Unit, onPick: () -> Unit) {
+    Column(
+        modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color.Black.copy(alpha = 0.36f))
+            .padding(horizontal = 2.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(32.dp).clip(RoundedCornerShape(16.dp)).clickable {
+                onChange((((speed * 10).toInt() + 1) / 10f).coerceIn(0.3f, 4f))
+            },
+            contentAlignment = Alignment.Center,
+        ) { Text("+", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Medium) }
+
+        Box(
+            Modifier.clip(RoundedCornerShape(6.dp)).clickable(onClick = onPick).padding(horizontal = 6.dp, vertical = 4.dp),
+        ) {
+            Text(String.format(Locale.ROOT, "%.1fx", speed), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+
+        Box(
+            Modifier.size(32.dp).clip(RoundedCornerShape(16.dp)).clickable {
+                onChange((((speed * 10).toInt() - 1) / 10f).coerceIn(0.3f, 4f))
+            },
+            contentAlignment = Alignment.Center,
+        ) { Text("−", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Medium) }
+    }
 }
 
 /** The frame under the finger while scrubbing, riding above the seek bar. */

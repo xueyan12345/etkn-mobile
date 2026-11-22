@@ -168,6 +168,7 @@ class VideoSession(
     private var previewJob: Job? = null
     private var previewKey = ""
     private var autoSkippedIntro = false
+    private var autoSkippedCredits = false
 
     private val _danmakuStyle = MutableStateFlow(DanmakuStyle())
     val danmakuStyle: StateFlow<DanmakuStyle> = _danmakuStyle.asStateFlow()
@@ -344,7 +345,14 @@ class VideoSession(
         val full = detail.await()
         if (full != null && item?.id == full.id && full !== base) {
             showItem(full)
-            source?.let { src -> _ui.update { it.copy(segments = segments(src.chapters.ifEmpty { full.chapters }, src.runTimeTicks / TICKS_PER_MS)) } }
+            source?.let { src ->
+                val segs = segments(src.chapters.ifEmpty { full.chapters }, src.runTimeTicks / TICKS_PER_MS)
+                // 用户口径（2026-11-23）：续播点已经越过片头结束点才标记「已跳过」，
+                // 落在片头内部时仍然要跳。
+                val introEnd = segs.firstOrNull { it.kind == SkipSegment.Kind.Intro }?.endMs
+                if (introEnd != null && startMs >= introEnd) autoSkippedIntro = true
+                _ui.update { it.copy(segments = segs) }
+            }
         }
     }
 
@@ -375,7 +383,11 @@ class VideoSession(
         started = false
         stopped = false
         completedBySkip = false
-        autoSkippedIntro = startMs > 0
+        // 用户口径（2026-11-23）：原来是 startMs > 0 就标记「已跳过」，
+        // 结果续播点落在片头内部时永远不跳。改成「续播点已越过片头结束点」才算跳过。
+        // 注意此时 segments 还没算出来，先置 false，等 segments 生成后再判断。
+        autoSkippedIntro = false
+        autoSkippedCredits = false
         val url = PlaybackAddress.resolve(chosen, session.server, session.token, session.userId)
         val subtitles = chosen.subtitles.filter { it.isExternal && it.deliveryUrl != null && !offline }.mapNotNull { stream ->
             val address = PlaybackAddress.subtitle(stream.deliveryUrl!!, session.server, session.token) ?: return@mapNotNull null
@@ -439,6 +451,34 @@ class VideoSession(
         }
     }
 
+    /**
+     * 用户口径（2026-11-23）：播放器底部要有「上一集」。
+     * ETKN 没有 /PreviousEpisode（404），所以用 EpisodePage 拉整季列表，
+     * 找到当前集在列表里的位置，取前一个。
+     */
+    fun playPrevious() {
+        val current = item ?: return
+        if (!current.isEpisode) return
+        val seriesId = current.seriesId ?: return
+        stopReporting()
+        loadJob?.cancel()
+        loadJob = scope.launch {
+            try {
+                val page = api.episodePage(seriesId, current.seasonId, limit = 200)
+                val list = page.items
+                val index = list.indexOfFirst { it.id == current.id }
+                val prev = if (index > 0) list[index - 1] else null
+                if (prev == null) {
+                    _ui.update { it.copy(error = "已经是第一集") }
+                    return@launch
+                }
+                load(prev.id, if (prev.userData.played) 0 else prev.positionMs, null, prev)
+            } catch (error: Exception) {
+                _ui.update { it.copy(loading = false, error = error.message ?: "无法播放上一集") }
+            }
+        }
+    }
+
     fun playNext(completed: Boolean = false) {
         val next = _ui.value.next ?: return
         completedBySkip = completed
@@ -493,15 +533,44 @@ class VideoSession(
     fun segmentAt(positionMs: Long): SkipSegment? {
         val ui = _ui.value
         if (ui.skipMode == SkipMode.Off) return null
-        return ui.segments.firstOrNull { positionMs >= it.startMs && positionMs < it.endMs - 1_000 }
+        // 用户口径（2026-11-23）：原来要求「距结束至少 1 秒」才算在段内，
+        // 结果续播点恰好落在最后 1 秒时不显示按钮、也不跳。容差收到 300ms，
+        // 并且允许当前位置正好等于结束点之前一点点就算命中。
+        return ui.segments.firstOrNull { positionMs >= it.startMs && positionMs < it.endMs - 300 }
     }
 
-    /** Auto mode skips the intro once per item (not when resuming past its start). */
+    /**
+     * Auto mode：片头、片尾都自动跳（用户口径 2026-11-23）。
+     * 原来只处理 Intro，所以片尾永远只显按钮不跳。
+     * Credits 自动跳同样只触发一次，避免播完又回跳。
+     */
     fun autoSkip(segment: SkipSegment): Boolean {
-        if (_ui.value.skipMode != SkipMode.Auto || segment.kind != SkipSegment.Kind.Intro || autoSkippedIntro) return false
-        autoSkippedIntro = true
-        player?.seekTo(segment.endMs)
-        return true
+        if (_ui.value.skipMode != SkipMode.Auto) return false
+        return when (segment.kind) {
+            SkipSegment.Kind.Intro -> {
+                if (autoSkippedIntro) return false
+                autoSkippedIntro = true
+                player?.seekTo(segment.endMs)
+                true
+            }
+            SkipSegment.Kind.Credits -> {
+                if (autoSkippedCredits) return false
+                autoSkippedCredits = true
+                skip(segment)
+                true
+            }
+        }
+    }
+
+    /**
+     * 用户口径（2026-11-23）：手动拖回片头前（或重播）时，重置「已自动跳过」标记，
+     * 这样再进片头还会自动跳一次。原来该标记一旦置 true 本视频内永不复位。
+     */
+    fun resetAutoSkipIfBefore(positionMs: Long) {
+        val introStart = _ui.value.segments.firstOrNull { it.kind == SkipSegment.Kind.Intro }?.startMs ?: return
+        if (positionMs <= introStart + 1_000) autoSkippedIntro = false
+        val creditsStart = _ui.value.segments.firstOrNull { it.kind == SkipSegment.Kind.Credits }?.startMs ?: return
+        if (positionMs <= creditsStart + 1_000) autoSkippedCredits = false
     }
 
     fun skip(segment: SkipSegment) {
