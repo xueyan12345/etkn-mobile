@@ -57,9 +57,15 @@ class SearchViewModel(private val graph: AppGraph) : PagedViewModel() {
             }
         }
         viewModelScope.launch {
-            combine(paged, graph.discover.allowed) { page, allowed -> page to allowed }.collect { (page, allowed) ->
-                val empty = page.items.isEmpty() && page.endReached && page.error == null
-                if (allowed && empty && _scope.value == SearchScope.Video && current.isNotEmpty() && discoverTerm != current) searchDiscover(current)
+            combine(paged, graph.discover.allowed) { page, allowed -> page to allowed }.collect { (_, allowed) ->
+                /**
+                 * 用户口径（2026-11-23）：以前是「库内搜不到（empty）才去探索搜」，
+                 * 导致库里有的片子永远看不到在线资源。
+                 * 现在：无论库里有没有，只要输入了关键词就同时搜探索。
+                 */
+                if (allowed && _scope.value == SearchScope.Video && current.isNotEmpty() && discoverTerm != current) {
+                    searchDiscover(current)
+                }
             }
         }
     }

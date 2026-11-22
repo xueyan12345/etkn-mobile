@@ -96,7 +96,7 @@ fun CloudScreen(route: CloudRoute) {
                 ) {
                     val total = results.values.sumOf { (it as? Load.Ready)?.value?.size ?: 0 }
                     PillToggle(checked = source == null, onClick = { source = null }) { Text("全部 $total") }
-                    CloudProvider.entries.forEach { provider ->
+                    CloudProvider.enabled.forEach { provider ->
                         val count = (results[provider] as? Load.Ready)?.value?.size
                         PillToggle(checked = source == provider, onClick = { source = provider }) {
                             Text(provider.label + (count?.let { " $it" } ?: ""))
@@ -104,7 +104,7 @@ fun CloudScreen(route: CloudRoute) {
                     }
                 }
             }
-            CloudProvider.entries.filter { source == null || source == it }.forEach { provider ->
+            CloudProvider.enabled.filter { source == null || source == it }.forEach { provider ->
                 val state = results[provider] ?: Load.Loading
                 item(key = "head-${provider.wire}") {
                     Row(

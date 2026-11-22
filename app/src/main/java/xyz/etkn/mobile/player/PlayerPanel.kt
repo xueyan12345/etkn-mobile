@@ -84,10 +84,12 @@ fun PlayerSidePanel(onDismiss: () -> Unit, content: @Composable () -> Unit) {
                 width = (host.width * 0.42f).toInt().coerceIn((320 * dp).toInt(), (440 * dp).toInt()).coerceAtMost(host.width - margin * 2)
                 height = host.height - margin * 2
                 x = margin
-                // Barely dimmed: the picture stays the subject, the blur separates the panel.
-                dimAmount = 0.08f
+                // 用户口径（2026-11-23）：菜单外面那条半黑阴影去掉 —— 不再压暗视频。
+                // 面板自身的毛玻璃已经把层次分开，画面保持原亮度。
+                dimAmount = 0f
             }
-            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            // 不请求 FLAG_DIM_BEHIND：请求了才会在窗口外盖一层半透明黑。
+            window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             window.setBackgroundDrawable(
                 GradientDrawable().apply {
                     cornerRadius = 28 * dp

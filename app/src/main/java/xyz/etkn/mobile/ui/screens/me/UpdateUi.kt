@@ -135,10 +135,12 @@ private fun UpdatePanel(state: UpdateState) {
             )
         }
         val running = state.download is DownloadState.Running || state.download is DownloadState.Verifying
-        ChoiceRow("下载源", UpdateSource.entries, state.source, { it.label }) { source ->
-            if (!running) {
-                graph.updates.setSource(source)
-                scope.launch { graph.settings.setUpdateSource(source) }
+        // 用户口径（2026-11-23）：下载源选项框去掉，固定就用加速源（内部多镜像回落：
+        // ghfast.top → gh-proxy.net → 直连），用户不需要自己选。
+        LaunchedEffect(Unit) {
+            if (state.source != UpdateSource.Proxy) {
+                graph.updates.setSource(UpdateSource.Proxy)
+                scope.launch { graph.settings.setUpdateSource(UpdateSource.Proxy) }
             }
         }
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {

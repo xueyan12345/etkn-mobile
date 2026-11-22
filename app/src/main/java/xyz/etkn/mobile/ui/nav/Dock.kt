@@ -56,6 +56,8 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import xyz.etkn.mobile.ui.theme.Corner
+import xyz.etkn.mobile.ui.nav.AccountsRoute
+import androidx.compose.material.icons.rounded.ManageAccounts
 
 /**
  * Floating glass dock of the tab pager: a bar along the bottom, or a slim column at the side of
@@ -123,17 +125,31 @@ internal fun Dock(
                 val active = tab == current
                 val tint by animateColorAsState(if (active) colors.onSecondaryContainer else colors.onSurfaceVariant, label = "dockTint")
                 // 用户口径（2026-11-22）：长按底栏「我的」弹快捷切号浮层（不跳页，就地切）。
+                // 用户口径（2026-11-23）：账号管理整个搬到这里 ——「我的」页里那个
+                // 「切换账号」模块已删除。浮层底部固定加一项「管理账号 / 添加账号」，
+                // 进去就是原来的账号页（AccountsRoute）。单账号时也要能长按进去添加。
                 val accountMenu = if (tab == TopLevel.Me) rememberPopupAnchor() else null
-                val onLongClickTab: (() -> Unit)? = if (accountMenu != null && storedAccounts.size > 1) {
+                val onLongClickTab: (() -> Unit)? = if (accountMenu != null) {
                     {
                         accountMenu.open(
-                            storedAccounts.map { acc ->
-                                PopupChoice(
-                                    label = acc.userName,
-                                    icon = Icons.Rounded.Person,
-                                    selected = acc.key == activeAccountKey,
-                                    trailing = if (acc.sealedToken == null) Icons.Rounded.Lock else null,
-                                    onClick = { scope.launch { runCatching { onSwitchAccount(acc) } } },
+                            buildList {
+                                storedAccounts.forEach { acc ->
+                                    add(
+                                        PopupChoice(
+                                            label = acc.userName,
+                                            icon = Icons.Rounded.Person,
+                                            selected = acc.key == activeAccountKey,
+                                            trailing = if (acc.sealedToken == null) Icons.Rounded.Lock else null,
+                                            onClick = { scope.launch { runCatching { onSwitchAccount(acc) } } },
+                                        ),
+                                    )
+                                }
+                                add(
+                                    PopupChoice(
+                                        label = "管理账号 / 添加",
+                                        icon = Icons.Rounded.ManageAccounts,
+                                        onClick = { nav.to(AccountsRoute) },
+                                    ),
                                 )
                             },
                         )

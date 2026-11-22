@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.Canvas
+import xyz.etkn.mobile.ui.common.responsiveCardWidth
 
 val CardShape = Corner.card
 
@@ -155,7 +156,7 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
     val unplayed = item.userData.unplayedItemCount ?: 0
     val fraction = item.watchedFraction
     Box(
-        Modifier.align(Alignment.TopEnd).padding(7.dp).size(31.dp),
+        Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
@@ -174,17 +175,11 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
                     size = androidx.compose.ui.geometry.Size(size.width, size.height),
                 )
             }
-            // 细白描边，让角标在任何海报上都分得开
-            drawCircle(
-                color = Color.White.copy(alpha = 0.85f),
-                radius = radius - 0.6.dp.toPx(),
-                center = center,
-                style = Stroke(width = 1.2.dp.toPx()),
-            )
+            // 用户口径（2026-11-23）：外面那圈白描边去掉，只留浅灰圆底 + 白色扇形。
         }
         Text(
             unplayed.toString(),
-            fontSize = 12.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF23306B),
         )
@@ -197,7 +192,13 @@ fun WideCard(
     item: Item,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    width: Dp = if (LocalWindowLayout.current.wide) Etkn.space.wideCardWide else Etkn.space.wideCard,
+    // 用户口径（2026-11-23）：平板实测继续观看封面偏大 —— 改成按窗口宽度自适应。
+    // 手机上仍是 210dp；平板随屏宽放大但封顶 300dp（一屏至少放得下 3 张）。
+    width: Dp = responsiveCardWidth(
+        base = Etkn.space.wideCard,
+        maxWidth = 300.dp,
+        fractionOfScreen = 0.42f,
+    ),
     /** Continue-watching cards add 从继续观看移除 to the long-press menu. */
     resume: Boolean = false,
     /** Set: the centre button plays and the rest of the card does [onClick]; else the whole card plays. */
@@ -276,7 +277,8 @@ fun LibraryCard(
     item: Item,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    width: Dp = 200.dp,
+    // 用户口径（2026-11-23）：平板适配，媒体库卡也跟着屏宽走（手机 200dp，封顶 260dp）。
+    width: Dp = responsiveCardWidth(base = 200.dp, maxWidth = 260.dp, fractionOfScreen = 0.40f),
     /** 用户口径（2026-11-23）：长按弹服务端功能菜单（只有管理员给）。 */
     onLongClick: (() -> Unit)? = null,
 ) {

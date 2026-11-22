@@ -34,3 +34,25 @@ fun currentWindowLayout(): WindowLayout {
         else -> WindowLayout.Compact
     }
 }
+
+/**
+ * 用户口径（2026-11-23）：卡片尺寸不能只用两个固定档（手机 210dp / 宽屏 260dp）。
+ * 平板实测继续观看封面明显偏大 —— 固定 dp 在大屏上占屏比例失衡。
+ * 这里按窗口宽度算一个合理的卡片宽度，并夹在可用范围内。
+ *
+ * [base] 手机上想要的宽度；[fraction] 该宽度大约占手机屏宽的比例。
+ * 返回值随窗口线性放大，但不超过 [maxWidth]。
+ */
+@Composable
+fun responsiveCardWidth(
+    base: androidx.compose.ui.unit.Dp,
+    maxWidth: androidx.compose.ui.unit.Dp,
+    fractionOfScreen: Float = 0.56f,
+): androidx.compose.ui.unit.Dp {
+    val screen = windowSizeDp().width
+    val desired = screen * fractionOfScreen
+    // 宽屏上别太大：至少保证一屏能放下 2.2 张，避免封面占满半屏
+    val capped = if (desired > maxWidth) maxWidth else desired
+    // 不小于手机上的基准尺寸
+    return if (capped < base) base else capped
+}

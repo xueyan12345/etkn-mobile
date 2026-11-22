@@ -230,7 +230,7 @@ class DiscoverPersonViewModel(private val graph: AppGraph, private val id: Strin
 
 /** Three providers searched in parallel; each shows its own result or failure. */
 class CloudViewModel(private val graph: AppGraph, val item: DiscoverItem, val season: Int?) : ViewModel() {
-    private val _results = MutableStateFlow(CloudProvider.entries.associateWith<CloudProvider, Load<List<CloudResource>>> { Load.Loading })
+    private val _results = MutableStateFlow(CloudProvider.enabled.associateWith<CloudProvider, Load<List<CloudResource>>> { Load.Loading })
     val results: StateFlow<Map<CloudProvider, Load<List<CloudResource>>>> = _results.asStateFlow()
     private val _submitted = MutableStateFlow<Set<CloudResource>>(emptySet())
     val submitted: StateFlow<Set<CloudResource>> = _submitted.asStateFlow()
@@ -240,8 +240,8 @@ class CloudViewModel(private val graph: AppGraph, val item: DiscoverItem, val se
     }
 
     fun search() {
-        _results.value = CloudProvider.entries.associateWith { Load.Loading }
-        CloudProvider.entries.forEach { provider ->
+        _results.value = CloudProvider.enabled.associateWith { Load.Loading }
+        CloudProvider.enabled.forEach { provider ->
             viewModelScope.launch {
                 val result = runCatching { graph.api.cloudResources(provider, item, season) }
                 _results.update { it + (provider to result.fold({ rows -> Load.Ready(rows) }, { error -> Load.Failed(error.userMessage()) })) }

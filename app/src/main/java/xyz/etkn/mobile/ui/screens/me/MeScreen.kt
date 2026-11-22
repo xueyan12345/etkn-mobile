@@ -118,7 +118,8 @@ fun MeScreen() {
             SettingsGroup {
                 Entry(Icons.Rounded.Favorite, "我的收藏") { nav.to(FavoritesRoute) }
                 Entry(Icons.Rounded.Download, "下载") { nav.to(DownloadsRoute) }
-                Entry(Icons.Rounded.SwitchAccount, "切换账号") { nav.to(AccountsRoute) }
+                // 用户口径（2026-11-23）：这一项删掉 —— 切号/加号全部走
+                // 「长按底栏我的」弹出的浮层（见 Dock.kt）。
             }
         }
         item {

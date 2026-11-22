@@ -73,6 +73,8 @@ import xyz.etkn.mobile.ui.nav.LocalBottomInset
 import xyz.etkn.mobile.ui.nav.LocalNav
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.layout.ContentScale
 
 @Composable
 fun DiscoverDetailScreen(route: DiscoverDetailRoute) {
@@ -277,16 +279,34 @@ private fun SeasonRow(season: DiscoverSeason, busy: Boolean, onSubscribe: () -> 
 
 @Composable
 private fun CastAvatar(name: String, role: String, profilePath: String, onClick: () -> Unit) {
-    Column(Modifier.width(84.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    // 用户口径（2026-11-23）：演员改成方形卡（和媒体库详情页的演职人员一致），不再是圆形头像。
+    // 竖向圆角矩形 + 姓名 / 角色两行居中。
+    Column(Modifier.width(104.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Artwork(
             images().tmdb(profilePath, "w185"),
-            Modifier.size(76.dp).clip(CircleShape).clickable(onClick = onClick),
+            Modifier.width(104.dp).aspectRatio(0.78f).clip(Corner.card).clickable(onClick = onClick),
             name,
             placeholder = Icons.Rounded.Person,
         )
-        Text(name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+        Text(
+            name,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        )
         if (role.isNotEmpty()) {
-            Text(role, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "饰 ${role}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+            )
         }
     }
 }

@@ -74,6 +74,10 @@ import xyz.etkn.mobile.ui.components.LibraryTile
 import xyz.etkn.mobile.ui.components.GlassPiece
 import xyz.etkn.mobile.data.model.Item
 import androidx.compose.foundation.layout.Column
+import xyz.etkn.mobile.ui.common.Paged
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.width
 
 @Composable
 fun SearchScreen() {
@@ -110,19 +114,30 @@ fun SearchScreen() {
 
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().glassSource(haze)) {
+            /**
+             * 用户口径（2026-11-23）：库内结果和探索（在线）结果**永远同时展示**，
+             * 不再「库里搜不到才出在线」。库内在上（能直接播），在线在下（要订阅/获取）。
+             */
+            val open: (Item) -> Unit = { keyboard?.hide(); openResult(nav, scope, it) }
+            val libEmpty = paged.items.isEmpty() && paged.endReached
+            val onlineEmpty = discover == null
             when {
-                vm.current.isEmpty() && text.text.isEmpty() -> MessageState(scope.hint, icon = Icons.Rounded.Search)
-                paged.items.isEmpty() && paged.loading -> LoadingState()
-                paged.items.isEmpty() && paged.endReached -> discover?.let { results ->
-                    DiscoverFallback(results, top, vm::retryDiscover) { item ->
+                vm.current.isEmpty() && text.text.isEmpty() ->
+                    MessageState(scope.hint, icon = Icons.Rounded.Search)
+                paged.items.isEmpty() && paged.loading && onlineEmpty -> LoadingState()
+                libEmpty && onlineEmpty -> MessageState(scope.none)
+                scope == SearchScope.Video -> SearchResults(
+                    books = paged, grid = grid, top = top, online = discover,
+                    onOpenLib = open, onLoadMore = vm::loadMore, onRetry = vm::retry,
+                    onRetryOnline = vm::retryDiscover,
+                    onOpenOnline = { item ->
                         keyboard?.hide()
                         nav.to(DiscoverDetailRoute(item.id, item.kind.wire, item.title))
-                    }
-                } ?: MessageState(scope.none)
+                    },
+                )
                 else -> {
-                    val open: (Item) -> Unit = { keyboard?.hide(); openResult(nav, scope, it) }
+                    // 音乐 / MV 仍按原来的网格展示（探索只对影视开）
                     when (scope) {
-                        SearchScope.Video -> PosterGrid(paged, grid, vm::loadMore, vm::retry, top = top, onOpen = open)
                         SearchScope.Music -> PosterGrid(
                             paged, grid, vm::loadMore, vm::retry, top = top, cell = 140.dp,
                             card = { SquareCard(it, onClick = { open(it) }, width = null) }, onOpen = open,
@@ -131,6 +146,7 @@ fun SearchScreen() {
                             paged, grid, vm::loadMore, vm::retry, top = top, cell = 200.dp,
                             card = { LibraryTile(it, onClick = { open(it) }) }, onOpen = open,
                         )
+                        else -> Unit
                     }
                 }
             }
@@ -216,6 +232,109 @@ private fun DiscoverFallback(
                         items(load.value, key = { it.id }) { item -> DiscoverCard(item, onClick = { onOpen(item) }, width = width) }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：影视搜索结果的统一展示 ——
+ * 上面「媒体库」横向一排（能直接播），下面「在线资源」按电影/剧集分组横向一排。
+ * 两侧互不遮挡，谁有结果谁显示。
+ */
+@Composable
+private fun SearchResults(
+    books: Paged,
+    grid: androidx.compose.foundation.lazy.grid.LazyGridState,
+    top: Dp,
+    online: Map<DiscoverKind, Load<List<DiscoverItem>>>?,
+    onOpenLib: (Item) -> Unit,
+    onLoadMore: () -> Unit,
+    onRetry: () -> Unit,
+    onRetryOnline: () -> Unit,
+    onOpenOnline: (DiscoverItem) -> Unit,
+) {
+    val width = if (LocalWindowLayout.current.wide) Etkn.space.posterWidthWide else Etkn.space.posterWidth
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = top, bottom = LocalBottomInset.current + 16.dp),
+    ) {
+        if (books.items.isNotEmpty()) {
+            item(key = "lib-h", contentType = "h") { SectionHeader("媒体库") }
+            item(key = "lib-row", contentType = "row") {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = Etkn.space.screen),
+                    horizontalArrangement = Arrangement.spacedBy(Etkn.space.item),
+                    modifier = Modifier.padding(top = 4.dp, bottom = Etkn.space.section),
+                ) {
+                    items(books.items, key = { it.id }) { entry ->
+                        PosterCard(entry, onClick = { onOpenLib(entry) }, width = width)
+                    }
+                }
+            }
+        }
+        online?.forEach { (kind, load) ->
+            if (load is Load.Ready && load.value.isEmpty()) return@forEach
+            item(key = "on-h-${kind.wire}", contentType = "h") { SectionHeader("在线 · ${kind.label}") }
+            item(key = "on-r-${kind.wire}", contentType = "row") {
+                when (load) {
+                    Load.Loading -> Box(
+                        Modifier.fillMaxWidth().height(width * 1.6f),
+                        contentAlignment = Alignment.Center,
+                    ) { LoadingIndicator() }
+                    is Load.Failed -> Row(
+                        Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(load.message, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                        TextButton(onClick = onRetryOnline) { Text("重试") }
+                    }
+                    is Load.Ready -> LazyRow(
+                        contentPadding = PaddingValues(horizontal = Etkn.space.screen),
+                        horizontalArrangement = Arrangement.spacedBy(Etkn.space.item),
+                        modifier = Modifier.padding(top = 4.dp, bottom = Etkn.space.section),
+                    ) {
+                        // 用户口径（2026-11-23）：在线资源不显示封面，只给文字行。
+                        items(load.value, key = { it.id }) { item ->
+                            OnlineTextRow(item) { onOpenOnline(item) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：在线（探索）资源不显示封面图，只显示标题 + 年份 + 类型。
+ * 点一下进探索详情页（那儿才有订阅 / 云资源按钮）。
+ */
+@Composable
+private fun OnlineTextRow(item: DiscoverItem, onClick: () -> Unit) {
+    Surface(
+        shape = Corner.card,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.width(190.dp).clickable(onClick = onClick),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                item.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val meta = listOfNotNull(
+                item.year?.takeIf { it > 0 }?.toString(),
+                item.kind.label,
+            ).joinToString(" · ")
+            if (meta.isNotEmpty()) {
+                Text(
+                    meta,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
             }
         }
     }

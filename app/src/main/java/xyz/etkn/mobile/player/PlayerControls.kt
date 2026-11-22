@@ -352,12 +352,8 @@ internal fun Controls(
                 PlayerAction(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "暂停" else "播放", onPlayPause)
                 PlayerAction(Icons.Rounded.SkipNext, "下一集", onNext)
                 Spacer(Modifier.weight(1f))
-                PlayerAction(
-                    if (ui.danmakuOn) Icons.Rounded.ChatBubble else Icons.Rounded.ChatBubbleOutline,
-                    if (ui.danmakuOn) "关闭弹幕" else "开启弹幕",
-                    onToggleDanmaku,
-                )
-                PlayerAction(Icons.Rounded.Settings, "弹幕设置") { onSheet(Sheet.Danmaku) }
+                DanmakuAction(0, if (ui.danmakuOn) "关闭弹幕" else "开启弹幕", ui.danmakuOn, onToggleDanmaku)
+                DanmakuAction(1, "弹幕设置", ui.danmakuOn) { onSheet(Sheet.Danmaku) }
                 PlayerAction(Icons.Rounded.Audiotrack, "音轨") { onSheet(Sheet.Audio) }
                 PlayerAction(Icons.Rounded.ClosedCaption, "字幕") { onSheet(Sheet.Subtitle) }
                 if (ui.item?.isEpisode == true) PlayerAction(Icons.AutoMirrored.Rounded.PlaylistPlay, "选集") { onSheet(Sheet.Episodes) }
@@ -445,6 +441,48 @@ private fun BatteryGlyph(percent: Int) {
 @Composable
 private fun PlayerAction(icon: ImageVector, label: String, onClick: () -> Unit) {
     IconButton(onClick = onClick) { Icon(icon, label, tint = Color.White) }
+}
+
+/**
+ * 用户口径（2026-11-23）：弹幕那排两个按钮改成参考图的样式 ——
+ * 圆角矩形线框（无底板），内部横线/滑块意象，纯线条描边。
+ * Material Icons 没有同款，这里用 Canvas 自绘。
+ *
+ * [kind] = 0 弹幕开关（方框 + 内部字块）；1 弹幕设置（方框 + 内部滑块线）。
+ */
+@Composable
+private fun DanmakuAction(kind: Int, label: String, active: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Canvas(Modifier.size(24.dp)) {
+            val tint = if (active) Color.White else Color.White.copy(alpha = 0.55f)
+            val w = size.width
+            val h = size.height
+            val stroke = 1.7.dp.toPx()
+            val pad = w * 0.10f
+            val r = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx(), 4.dp.toPx())
+            // 外框：圆角矩形线框
+            drawRoundRect(
+                color = tint,
+                topLeft = androidx.compose.ui.geometry.Offset(pad, h * 0.18f),
+                size = androidx.compose.ui.geometry.Size(w - pad * 2, h * 0.64f),
+                cornerRadius = r,
+                style = Stroke(width = stroke),
+            )
+            if (kind == 0) {
+                // 弹幕：框内两条横线（模拟文字行）
+                val lx = pad + w * 0.13f
+                val rx = w - pad - w * 0.13f
+                drawLine(tint, androidx.compose.ui.geometry.Offset(lx, h * 0.40f), androidx.compose.ui.geometry.Offset(rx, h * 0.40f), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawLine(tint, androidx.compose.ui.geometry.Offset(lx, h * 0.60f), androidx.compose.ui.geometry.Offset(lx + (rx - lx) * 0.6f, h * 0.60f), strokeWidth = stroke, cap = StrokeCap.Round)
+            } else {
+                // 设置：框内一条滑轨 + 一个滑块
+                val lx = pad + w * 0.13f
+                val rx = w - pad - w * 0.13f
+                drawLine(tint, androidx.compose.ui.geometry.Offset(lx, h * 0.50f), androidx.compose.ui.geometry.Offset(rx, h * 0.50f), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawCircle(tint, radius = stroke * 1.5f, center = androidx.compose.ui.geometry.Offset(lx + (rx - lx) * 0.35f, h * 0.50f))
+            }
+        }
+    }
 }
 
 /**

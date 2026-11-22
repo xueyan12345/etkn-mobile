@@ -14,11 +14,26 @@ import xyz.etkn.mobile.data.net.rows
 import xyz.etkn.mobile.data.net.str
 import java.util.Locale
 
-/** Cloud resource providers searched in parallel for one title. */
+/**
+ * Cloud resource providers searched in parallel for one title.
+ *
+ * 用户口径（2026-11-23）：只保留「共享池」。re0 和频道监听这两个渠道用户没有配置，
+ * 之前会一路报错（re0 请求失败 500 HDHive access_token not found、频道监听未连接），
+ * 搜索结果里也不该出现。整个 App 里凡是遍历 [entries] 的地方现在只剩共享池。
+ */
 enum class CloudProvider(val wire: String, val label: String) {
     SharedPool("shared_pool", "共享池"),
     Re0("re0", "re0"),
-    Channel("channel", "频道"),
+    Channel("channel", "频道");
+
+    companion object {
+        /**
+         * 用户口径（2026-11-23）：实际要搜的渠道只有「共享池」。
+         * re0 和频道监听用户没配置（会报 HDHive access_token not found / 频道监听未连接），
+         * 所以界面上不查、不显示。枚举值保留是为了原有 when 分支不用改。
+         */
+        val enabled: List<CloudProvider> get() = listOf(SharedPool)
+    }
 }
 
 @Immutable
