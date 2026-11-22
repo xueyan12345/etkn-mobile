@@ -155,13 +155,17 @@ class UpdateManager(
         job = scope.launch {
             var lastError = "下载失败"
             for (source in mirrorOrder(_state.value.source)) {
-                _state.update { it.copy(download = DownloadState.Running(source, 0, asset.size, 0)) }
-                val target = runCatching { withContext(Dispatchers.IO) { Target.create(context, asset.name) } }.getOrElse {
-                    _state.update { s -> s.copy(download = DownloadState.Failed("无法写入下载目录")) }
-                    return@launch
-                }
-                try {
-                    val sha = transfer(source.wrap(asset.url), target, asset, source)
+                // 用户口径（2026-11-23）：同一次选择内，把该源的所有镜像依次试一遍。
+                // 加速源 = ghfast.top → gh-proxy.net → 直连；谁通用谁，
+                // 不再出现「选着加速源，实际走直连」的情况。
+                for (mirror in source.candidates(asset.url)) {
+                    _state.update { it.copy(download = DownloadState.Running(source, 0, asset.size, 0)) }
+                    val target = runCatching { withContext(Dispatchers.IO) { Target.create(context, asset.name) } }.getOrElse {
+                        _state.update { s -> s.copy(download = DownloadState.Failed("无法写入下载目录")) }
+                        return@launch
+                    }
+                    try {
+                    val sha = transfer(mirror, target, asset, source)
                     _state.update { it.copy(download = DownloadState.Verifying) }
                     if (asset.sha256 != null && sha != asset.sha256) throw IOException("校验失败，文件可能被篡改或损坏")
                     val uri = withContext(Dispatchers.IO) { target.commit() }
@@ -171,18 +175,20 @@ class UpdateManager(
                     withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { target.discard() }
                     _state.update { it.copy(download = DownloadState.Idle) }
                     throw cancel
-                } catch (error: Exception) {
-                    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { target.discard() }
-                    // Cancel aborts the socket, which surfaces as an IOException: stop, don't fall back.
-                    if (!isActive) {
-                        _state.update { it.copy(download = DownloadState.Idle) }
-                        return@launch
+                    } catch (error: Exception) {
+                        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { target.discard() }
+                        // Cancel aborts the socket, which surfaces as an IOException: stop, don't fall back.
+                        if (!isActive) {
+                            _state.update { it.copy(download = DownloadState.Idle) }
+                            return@launch
+                        }
+                        lastError = when {
+                            error.message?.startsWith("校验失败") == true -> error.message!!
+                            else -> "${source.label}下载失败（${error.message ?: error.javaClass.simpleName}）"
+                        }
+                        // 校验失败说明文件真的坏了，换镜像也没用，直接终止
+                        if (error.message?.startsWith("校验失败") == true) break
                     }
-                    lastError = when {
-                        error.message?.startsWith("校验失败") == true -> error.message!!
-                        else -> "${source.label}下载失败（${error.message ?: error.javaClass.simpleName}）"
-                    }
-                    if (error.message?.startsWith("校验失败") == true) break
                 }
             }
             _state.update { it.copy(download = DownloadState.Failed(lastError)) }

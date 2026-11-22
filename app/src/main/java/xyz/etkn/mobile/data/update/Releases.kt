@@ -15,15 +15,32 @@ object ReleaseRepo {
     fun assetUrl(tag: String, name: String) = "https://github.com/$SLUG/releases/download/$tag/$name"
 }
 
-/** Download mirrors, in default preference order. */
+/**
+ * Download mirrors, in default preference order.
+ *
+ * 用户口径（2026-11-23）：加速源必须真的能下，不能悄悄退回直连。
+ * 实测（2026-11-23）：
+ *   gh-proxy.com      → HTTP 403（失效，已弃用）
+ *   ghfast.top        → HTTP 206 正常，可断点续传（目前最稳，放第一位）
+ *   gh-proxy.net      → HTTP 200
+ * 所以「加速源」= 按顺序尝试多个镜像，谁通用谁；全都不通才退回 GitHub 直连。
+ */
 enum class UpdateSource(val label: String) {
     Proxy("加速源"),
     GitHub("GitHub 直连");
 
-    fun wrap(githubUrl: String): String = when (this) {
-        Proxy -> "https://gh-proxy.com/$githubUrl"
-        GitHub -> githubUrl
+    /** 加速源候选镜像（按成功率排序）。末尾那个才是 GitHub 原始地址。 */
+    fun candidates(githubUrl: String): List<String> = when (this) {
+        Proxy -> listOf(
+            "https://ghfast.top/$githubUrl",
+            "https://gh-proxy.net/$githubUrl",
+            githubUrl,
+        )
+        GitHub -> listOf(githubUrl)
     }
+
+    /** 首选地址（保持旧调用方可用）。 */
+    fun wrap(githubUrl: String): String = candidates(githubUrl).first()
 }
 
 @Immutable

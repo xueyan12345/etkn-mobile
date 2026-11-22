@@ -141,53 +141,50 @@ private fun androidx.compose.foundation.layout.BoxScope.PosterBadges(item: Item)
 }
 
 /**
- * 用户口径（2026-11-23）剧集角标按参考图重做：
- * 外圈 = 圆形进度环，按「已看集数/总集数」实时填充；
- * 内层 = 白色圆底（不透明，保证任何海报上都看得清）；
- * 中间 = 深蓝未看集数。
+ * 用户口径（2026-11-23，照参考图最终版）剧集角标：
+ * · 底色 = 浅蓝灰实心圆（参考图就是这个色，不是纯白）
+ * · 进度 = 圆内部按「已看集数/总集数」填出一块更亮的扇形（饼图式，从 12 点顺时针）
+ * · 数字 = 深蓝居中（未看集数）
  *
- * 关键（本次修 bug）：实测 ETKN 对 Series 的 PlayedPercentage 恒为 null，
- * 上一版直接用它 → 环画不出、只剩一个几乎看不见的白数字。
- * 现在用 Item.watchedFraction（= (总集数-未看集数)/总集数）。
+ * 上一版做的是「外圈描边圆环」，参考图确认不是那样，改成圆内扇形填充。
+ * watchedFraction 走 Item.watchedFraction（服务端 PlayedPercentage 对 Series 恒为 null，
+ * 用 (总集数-未看集数)/总集数 算）。
  */
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item) {
     val unplayed = item.userData.unplayedItemCount ?: 0
     val fraction = item.watchedFraction
-    val ringColor = MaterialTheme.colorScheme.primary
-    val size = 30.dp
     Box(
-        Modifier.align(Alignment.TopEnd).padding(6.dp).size(size),
+        Modifier.align(Alignment.TopEnd).padding(7.dp).size(31.dp),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            val stroke = 3.dp.toPx()
-            val inset = stroke / 2f
-            val arcSize = androidx.compose.ui.geometry.Size(
-                this.size.width - stroke, this.size.height - stroke,
-            )
-            // 白底圆（不透明，任何海报上都清晰）
-            drawCircle(color = Color.White, radius = this.size.minDimension / 2f)
-            // 底圈：浅灰
-            drawArc(
-                color = Color(0xFFD8D5E0),
-                startAngle = 0f, sweepAngle = 360f, useCenter = false,
-                topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = arcSize,
-                style = Stroke(width = stroke, cap = StrokeCap.Round),
-            )
-            // 进度环：已看（从 12 点顺时针）
+            val radius = size.minDimension / 2f
+            val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+            // 底：浅蓝灰实心圆（参考图底色）
+            drawCircle(color = Color(0xFFB9C6DE), radius = radius, center = center)
+            // 进度：内部更亮的扇形，从 12 点顺时针
             if (fraction > 0.001f) {
                 drawArc(
-                    color = ringColor,
-                    startAngle = -90f, sweepAngle = 360f * fraction, useCenter = false,
-                    topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = arcSize,
-                    style = Stroke(width = stroke, cap = StrokeCap.Round),
+                    color = Color(0xFFF2F6FF),
+                    startAngle = -90f,
+                    sweepAngle = 360f * fraction,
+                    useCenter = true,
+                    topLeft = androidx.compose.ui.geometry.Offset(0f, 0f),
+                    size = androidx.compose.ui.geometry.Size(size.width, size.height),
                 )
             }
+            // 细白描边，让角标在任何海报上都分得开
+            drawCircle(
+                color = Color.White.copy(alpha = 0.85f),
+                radius = radius - 0.6.dp.toPx(),
+                center = center,
+                style = Stroke(width = 1.2.dp.toPx()),
+            )
         }
         Text(
             unplayed.toString(),
-            fontSize = 11.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF23306B),
         )
