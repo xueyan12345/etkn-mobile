@@ -32,8 +32,11 @@ enum class UpdateSource(val label: String) {
     /** 加速源候选镜像（按成功率排序）。末尾那个才是 GitHub 原始地址。 */
     fun candidates(githubUrl: String): List<String> = when (this) {
         Proxy -> listOf(
+            // 实测（2026-11-23 两次采样）：ghproxy.net 稳定 206；
+            // ghfast.top 时好时坏（第 1 次超时、第 2 次 206），放第二位；
+            // gh-proxy.net 只返回 195 字节错误页，不可用，已剔除。
+            "https://ghproxy.net/$githubUrl",
             "https://ghfast.top/$githubUrl",
-            "https://gh-proxy.net/$githubUrl",
             githubUrl,
         )
         GitHub -> listOf(githubUrl)
