@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Cast
 import androidx.compose.material.icons.rounded.CastConnected
@@ -80,6 +81,8 @@ internal fun Controls(
     onSheet: (Sheet) -> Unit,
     onResize: () -> Unit,
     resizeLabel: String,
+    onRotate: () -> Unit,
+    rotateLabel: String,
     onLock: () -> Unit,
     onNext: () -> Unit,
 ) {
@@ -154,6 +157,7 @@ internal fun Controls(
                 }
                 PlayerTextAction(Icons.Rounded.Speed, if (ui.speed == 1f) "倍速" else "${ui.speed}×") { onSheet(Sheet.Speed) }
                 PlayerTextAction(Icons.Rounded.AspectRatio, resizeLabel, onResize)
+                PlayerTextAction(Icons.Rounded.ScreenRotation, rotateLabel, onRotate)
                 if (ui.item?.isEpisode == true) PlayerTextAction(Icons.AutoMirrored.Rounded.PlaylistPlay, "选集") { onSheet(Sheet.Episodes) }
                 if (ui.next != null) PlayerTextAction(Icons.Rounded.SkipNext, "下一集", onNext)
             }

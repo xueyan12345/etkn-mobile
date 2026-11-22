@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.AudioManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,7 +25,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,8 +37,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.Player
 import kotlin.math.abs
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import xyz.etkn.mobile.ui.components.formatClock
 import xyz.etkn.mobile.ui.theme.Corner
 
@@ -46,6 +44,8 @@ internal sealed interface GestureFeedback {
     data class Seek(val targetMs: Long, val deltaMs: Long) : GestureFeedback
     data class Level(val icon: ImageVector, val fraction: Float) : GestureFeedback
     data class Text(val text: String) : GestureFeedback
+    /** 长按调速时的当前倍速；[hideAfterMs] 到点后自动消失，不挡画面。 */
+    data class Speed(val speed: Float) : GestureFeedback
 }
 
 @Composable
@@ -59,7 +59,6 @@ internal fun GestureLayer(
     val context = LocalContext.current
     val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val activity = context as? Activity
-    val scope = rememberCoroutineScope()
     Box(
         Modifier.fillMaxSize()
             .pointerInput(enabled, player) {
@@ -80,26 +79,50 @@ internal fun GestureLayer(
                             onFeedback(GestureFeedback.Seek(target, delta))
                         }
                     },
-                    // Consumes the long press so releasing it does not count as a tap.
-                    onLongPress = { },
-                    onPress = {
-                        var boosted = false
-                        var previous = 1f
-                        val boost = scope.launch {
-                            delay(450)
-                            if (enabled && player.isPlaying) {
-                                boosted = true
-                                previous = player.playbackParameters.speed
-                                player.setPlaybackSpeed(2f)
-                                onFeedback(GestureFeedback.Text("2× 倍速"))
-                            }
+                )
+            }
+            // 用户口径（2026-11-22）：长按倍速 + 长按期间左右滑动调速。
+            //   长按（系统长按时长）→ 2.0×，保持原来「长按 2 倍速」的观感
+            //   继续右滑 → 每 40dp +0.1×，上限 4.0×
+            //   左滑     → 每 40dp -0.1×，下限 0.3×
+            //   松手恢复原速；倍速徽标 5 秒后自动隐藏，不挡画面。
+            // 用 detectDragGesturesAfterLongPress 而不是手搓 awaitPointerEventScope：
+            // 后者会和双击手势抢事件，把双击快进退吃掉。
+            .pointerInput(enabled, player) {
+                if (!enabled) return@pointerInput
+                val stepPx = 40.dp.toPx()
+                // 累计水平位移（跨 onDrag 帧），只在这次手势内有效
+                var dxTotal = 0f
+                var prevSpeed = 1f
+                var lastSpeed = 2f
+                detectDragGesturesAfterLongPress(
+                    onDragStart = {
+                        dxTotal = 0f
+                        prevSpeed = player.playbackParameters.speed
+                        lastSpeed = 2f
+                        if (player.isPlaying) {
+                            player.setPlaybackSpeed(2f)
+                            onFeedback(GestureFeedback.Speed(2f))
                         }
-                        tryAwaitRelease()
-                        boost.cancel()
-                        if (boosted) {
-                            player.setPlaybackSpeed(previous)
-                            onFeedback(null)
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        dxTotal += change.position.x - change.previousPosition.x
+                        val steps = (dxTotal / stepPx).toInt()
+                        val target = kotlin.math.round(((2f + steps * 0.1f).coerceIn(0.3f, 4f)) * 10f) / 10f
+                        if (target != lastSpeed) {
+                            lastSpeed = target
+                            player.setPlaybackSpeed(target)
+                            onFeedback(GestureFeedback.Speed(target))
                         }
+                    },
+                    onDragEnd = {
+                        player.setPlaybackSpeed(prevSpeed)
+                        onFeedback(null)
+                    },
+                    onDragCancel = {
+                        player.setPlaybackSpeed(prevSpeed)
+                        onFeedback(null)
                     },
                 )
             }
@@ -174,6 +197,14 @@ internal fun GestureBadge(feedback: GestureFeedback, modifier: Modifier) {
         )
         return
     }
+    // 长按调速：只显示「2.3×」，同样裸字 + 阴影，不盖画面。
+    if (feedback is GestureFeedback.Speed) {
+        Text(
+            "%.1f×".format(feedback.speed), modifier = modifier, color = Color.White, fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.titleMedium.copy(shadow = Shadow(Color.Black.copy(alpha = 0.7f), blurRadius = 10f)),
+        )
+        return
+    }
     Box(
         modifier.clip(Corner.card).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 20.dp, vertical = 14.dp),
         contentAlignment = Alignment.Center,
@@ -190,6 +221,7 @@ internal fun GestureBadge(feedback: GestureFeedback, modifier: Modifier) {
                 LinearProgressIndicator(progress = { feedback.fraction }, modifier = Modifier.width(140.dp).height(6.dp), drawStopIndicator = {})
             }
             is GestureFeedback.Text -> Unit
+            is GestureFeedback.Speed -> Unit
         }
     }
 }

@@ -101,8 +101,13 @@ object Spacing {
     val item: Dp = 12.dp
     val posterWidth: Dp = 118.dp
     val posterWidthWide: Dp = 150.dp
-    val wideCardWide: Dp = 300.dp
-    val wideCard: Dp = 236.dp
+    val wideCardWide: Dp = 260.dp
+    /**
+     * 继续观看卡片宽度。用户口径（2026-11-22）：要跟媒体库卡片差不多、只稍大一点，
+     * 原来 236dp/300dp 在最小缩放下也显得很大，现在收到 210dp/228dp
+     * （媒体库卡片是 200dp，所以正好「稍大一点点」）。
+     */
+    val wideCard: Dp = 210.dp
     val dockBottomInset: Dp = 104.dp
     /** Tablet side dock: its width, and the space tab pages leave for it (margin + dock + gap). */
     val sideDock: Dp = 76.dp

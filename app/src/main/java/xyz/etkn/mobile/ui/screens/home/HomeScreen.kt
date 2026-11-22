@@ -51,7 +51,6 @@ import dev.chrisbanes.haze.rememberHazeState
 import java.text.NumberFormat
 import xyz.etkn.mobile.data.model.LibraryCounts
 import xyz.etkn.mobile.data.session.SessionState
-import xyz.etkn.mobile.data.settings.HeroMode
 import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.ui.actions.PopupChoice
 import xyz.etkn.mobile.ui.actions.rememberPopupAnchor
@@ -63,7 +62,6 @@ import xyz.etkn.mobile.ui.common.windowSizeDp
 import xyz.etkn.mobile.ui.components.Artwork
 import xyz.etkn.mobile.ui.components.ErrorState
 import xyz.etkn.mobile.ui.components.GlassPiece
-import xyz.etkn.mobile.ui.components.HeroCarousel
 import xyz.etkn.mobile.ui.components.LibraryCard
 import xyz.etkn.mobile.ui.components.LoadingState
 import xyz.etkn.mobile.ui.components.PosterCard
@@ -79,7 +77,6 @@ import xyz.etkn.mobile.ui.nav.LocalNav
 import xyz.etkn.mobile.ui.nav.LocalStartInset
 import xyz.etkn.mobile.ui.nav.TopLevel
 import xyz.etkn.mobile.ui.theme.Etkn
-import xyz.etkn.mobile.ui.theme.LocalSettings
 import xyz.etkn.mobile.ui.theme.Corner
 
 @Composable
@@ -105,35 +102,16 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
     val list = rememberLazyListState()
     val screenHeight = windowSizeDp().height
     val wide = LocalWindowLayout.current.wide
-    // Tablets: a cinematic band instead of a near-full-screen poster.
-    val heroHeight = if (wide) (screenHeight * 0.58f).coerceIn(380.dp, 560.dp) else (screenHeight * 0.64f).coerceIn(420.dp, 620.dp)
     val revealPx = with(LocalDensity.current) { 96.dp.toPx() }
-    val heroMode = LocalSettings.current.heroMode
-    val hasHero = data.hero.isNotEmpty() && heroMode != HeroMode.Off
-    // 0 over the untouched hero (bar invisible, poster unobstructed) → 1 after ~96 dp of scrolling.
-    val reveal by remember(hasHero) {
-        derivedStateOf {
-            if (!hasHero || list.firstVisibleItemIndex > 0) 1f else (list.firstVisibleItemScrollOffset / revealPx).coerceIn(0f, 1f)
-        }
-    }
+    // 用户口径（2026-11-22）：首页顶部那块大图轮播整块不要了，改成普通标题起头。
+    // 保留 reveal 机制：顶栏毛玻璃从 0 渐显到 1，只是不再有 hero 可滚。
+    val hasHero = false
+    val reveal by remember { derivedStateOf { 1f } }
     val haze = rememberHazeState()
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(state = list, modifier = Modifier.fillMaxSize().glassSource(haze)) {
-            if (hasHero) {
-                item(key = "hero", contentType = "hero") {
-                    HeroCarousel(
-                        items = data.hero,
-                        height = heroHeight,
-                        autoAdvance = heroMode == HeroMode.Auto,
-                        scrollOffsetPx = { if (list.firstVisibleItemIndex == 0) list.firstVisibleItemScrollOffset else 0 },
-                        onPlay = { nav.play(it) },
-                        onOpen = { nav.open(it) },
-                    )
-                }
-            } else {
-                item(key = "top-space") { Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars).height(64.dp)) }
-            }
+            item(key = "top-space") { Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars).height(64.dp)) }
             shelf("resume", "继续观看", data.resume) { item ->
                 WideCard(item, onClick = { nav.openTitle(item) }, resume = true, onPlay = { nav.play(item) })
             }

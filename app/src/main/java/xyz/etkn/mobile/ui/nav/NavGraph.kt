@@ -2,13 +2,8 @@ package xyz.etkn.mobile.ui.nav
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContentScope
-import androidx.compose.animation.EnterExitState
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -27,9 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavBackStackEntry
@@ -38,7 +31,6 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
-import kotlin.math.acos
 import kotlinx.coroutines.launch
 import xyz.etkn.mobile.ui.screens.detail.DetailScreen
 import xyz.etkn.mobile.ui.screens.detail.EpisodesScreen
@@ -61,6 +53,7 @@ import xyz.etkn.mobile.ui.screens.music.MusicListScreen
 import xyz.etkn.mobile.ui.screens.music.NowPlayingScreen
 import xyz.etkn.mobile.ui.screens.person.PersonScreen
 import xyz.etkn.mobile.ui.screens.search.SearchScreen
+import xyz.etkn.mobile.ui.theme.Motion
 
 /**
  * False while a tab sits in the pager without being the page shown: the neighbours are composed
@@ -72,23 +65,20 @@ val LocalTabActive = compositionLocalOf { true }
 /** Every destination inside the shell. */
 @Composable
 internal fun AppNavHost(controller: NavHostController, tabs: List<TopLevel>, pager: PagerState, verticalTabs: Boolean, modifier: Modifier = Modifier) {
-    // Pages turn like the leaves of a book (see PageFrame): NavHost itself only keeps both pages
-    // composed for the length of the turn and records which way it goes. All six transitions are
-    // set, so none of NavHost's defaults (fades, the back gesture's shrink) ever runs.
-    val turn = remember { PageTurn() }
-    CompositionLocalProvider(LocalPageTurn provides turn) {
-        NavHost(
+    // 用户口径（2026-11-22）：翻书动画删掉，页面之间改成淡入淡出。
+    // 六个转场照样全部显式设置，避免 NavHost 默认的缩小/滑动冒出来。
+    val fadeIn = fadeIn(tween(Motion.FADE_IN))
+    val fadeOut = fadeOut(tween(Motion.FADE_OUT))
+    NavHost(
             navController = controller,
             startDestination = TabsRoute,
             modifier = modifier,
-            enterTransition = { turn.set(Turn.Open); EnterTransition.None },
-            exitTransition = { turn.set(Turn.Open); ExitTransition.KeepUntilTransitionsFinished },
-            popEnterTransition = { turn.set(Turn.Back); EnterTransition.None },
-            popExitTransition = { turn.set(Turn.Back); ExitTransition.KeepUntilTransitionsFinished },
-            // The back gesture has its own pair, defaulting to a 70 % shrink of the leaving page;
-            // it is the same turn, scrubbed by the finger and hinged away from the edge it came from.
-            predictivePopEnterTransition = { turn.set(Turn.Gesture, fromRight = it == EDGE_RIGHT); EnterTransition.None },
-            predictivePopExitTransition = { turn.set(Turn.Gesture, fromRight = it == EDGE_RIGHT); ExitTransition.KeepUntilTransitionsFinished },
+            enterTransition = { fadeIn },
+            exitTransition = { fadeOut },
+            popEnterTransition = { fadeIn },
+            popExitTransition = { fadeOut },
+            predictivePopEnterTransition = { fadeIn },
+            predictivePopExitTransition = { fadeOut },
         ) {
             page<TabsRoute> { TabPager(tabs, pager, verticalTabs) }
             // Tabs left out of the dock still open as ordinary pages.
@@ -116,7 +106,6 @@ internal fun AppNavHost(controller: NavHostController, tabs: List<TopLevel>, pag
                 SettingsScreen(SettingsPage.entries.firstOrNull { it.name == page } ?: SettingsPage.Appearance)
             }
         }
-    }
 }
 
 /**
@@ -167,86 +156,17 @@ private inline fun <reified T : Any> NavGraphBuilder.page(
     noinline content: @Composable AnimatedContentScope.(NavBackStackEntry) -> Unit,
 ) = composable<T> { entry -> PageFrame { content(entry) } }
 
-/** The running page transition: set where NavHost picks a transition, read while drawing. */
-private class PageTurn {
-    var kind = Turn.Open
-    /** A back swipe from the right edge: the leaf hinges on its left edge so its free edge stays under the finger. */
-    var fromRight = false
-
-    fun set(kind: Turn, fromRight: Boolean = false) {
-        this.kind = kind
-        this.fromRight = fromRight
-    }
-}
-
-private enum class Turn { Open, Back, Gesture }
-
-/** The swipe edge NavHost passes for a back swipe from the right (BackEvent / NavigationEvent EDGE_RIGHT). */
-private const val EDGE_RIGHT = 1
-
-private val LocalPageTurn = staticCompositionLocalOf { PageTurn() }
-
 /**
- * The page turn, the same for every page and both directions. The page on top is a leaf hinged
- * on one edge: opening lays it down over the current page, going back lifts it off to reveal the
- * page underneath, which brightens as it is uncovered.
- *
- * The leaf's angle is arccos(1 - t), so its free edge (seen flat-on) has travelled exactly t of
- * the page width: a linear angle would leave the edge almost still for the first third and then
- * rush. During the back gesture t is the gesture's progress (NavHost seeks the transition with
- * it), so the edge stays under the finger; that timeline is linear for the same reason, and a
- * swipe from the right edge hinges the leaf on the left. Only layer properties change (rotation,
- * alpha, one dim rect), so a turn costs no relayout or recomposition per frame.
+ * 页面切换：翻书动画已按用户要求删除（2026-11-22），这里只保留每个目标自己的不透明底。
+ * 转场由 NavHost 的 fadeIn/fadeOut 负责（见 AppNavHost）。
  */
 @Composable
 private fun AnimatedContentScope.PageFrame(content: @Composable () -> Unit) {
-    val turn = LocalPageTurn.current
-    // 1 = lying flat on the stack; 0 = turned off it (where an opening leaf starts, a leaving one ends).
-    val flat = transition.animateFloat(
-        transitionSpec = { when (turn.kind) { Turn.Open -> OpenTurn; Turn.Back -> BackTurn; Turn.Gesture -> GestureTurn } },
-        label = "pageTurn",
-    ) { if (it == EnterExitState.Visible) 1f else 0f }
-    // The leaf is the page entering when opening and the page leaving when going back.
-    fun onTop() = (transition.targetState == EnterExitState.Visible) == (turn.kind == Turn.Open)
-    // Every per-frame value is a layer property, so a turn never re-records either page: the leaf
-    // only changes its layer's rotation / alpha, and the page underneath is dimmed by a separate
-    // black layer whose alpha changes (drawing the dim inside the page's own layer would re-record
-    // the whole page, and every blur sampling it, on each frame).
     Box(
         Modifier.fillMaxSize()
-            .graphicsLayer {
-                val lifted = 1f - flat.value
-                if (lifted > 0f && onTop()) {
-                    val degrees = Math.toDegrees(acos(1.0 - lifted)).toFloat()
-                    transformOrigin = TransformOrigin(if (turn.fromRight) 0f else 1f, 0.5f)
-                    cameraDistance = CAMERA_DISTANCE * density
-                    rotationY = if (turn.fromRight) -degrees else degrees
-                    alpha = ((1f - lifted) / FADE_SPAN).coerceIn(0f, 1f)
-                } else {
-                    rotationY = 0f
-                    alpha = 1f
-                }
-                // A nearly edge-on leaf fading out needs no full-screen offscreen buffer.
-                compositingStrategy = CompositingStrategy.ModulateAlpha
-            }
+            .graphicsLayer { compositingStrategy = CompositingStrategy.ModulateAlpha }
             .background(MaterialTheme.colorScheme.surface),
     ) {
         content()
-        Box(
-            Modifier.matchParentSize().graphicsLayer {
-                val lifted = 1f - flat.value
-                alpha = if (lifted > 0f && !onTop()) UNDER_DIM * lifted else 0f
-            }.background(Color.Black),
-        )
     }
 }
-
-private val OpenTurn = tween<Float>(480, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))
-private val BackTurn = tween<Float>(420, easing = FastOutSlowInEasing)
-private val GestureTurn = tween<Float>(420, easing = LinearEasing)
-/** Far enough that the leaf's near edge barely swells, so the edge the eye follows is the one the finger holds. */
-private const val CAMERA_DISTANCE = 24f
-/** The leaf is nearly edge-on by then; fading it hides the last sliver. */
-private const val FADE_SPAN = 0.12f
-/** How dark the page underneath is while fully covered. */
-private const val UNDER_DIM = 0.3f

@@ -77,6 +77,23 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     var locked by remember { mutableStateOf(false) }
     var resize by remember { mutableIntStateOf(0) }
     var sheet by remember { mutableStateOf(Sheet.None) }
+    // 用户口径（2026-11-22）：播放器原本被 manifest 钉死在 sensorLandscape，
+    // 竖屏视频只能显示中间一条，也没有转屏按钮。这里加一个手动方向开关：
+    // 默认跟随视频本身的比例（竖屏视频就竖屏显示），也可手动切到另一方向。
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = context as? android.app.Activity
+    // true = 竖屏（portrait），false = 横屏（landscape）
+    var portrait by remember {
+        mutableStateOf(activity?.resources?.configuration?.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT)
+    }
+    val applyOrientation: (Boolean) -> Unit = { wantPortrait ->
+        portrait = wantPortrait
+        activity?.requestedOrientation = if (wantPortrait) {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        } else {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+    }
     var position by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var buffered by remember { mutableLongStateOf(0L) }
@@ -205,10 +222,20 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         }
         gesture?.let { feedback ->
             // Notices sit high, clear of faces and subtitles; seek and level readouts stay central.
-            val place = if (feedback is GestureFeedback.Text) {
+            // 长按调速（Speed）也算 notice：放顶部，且 5 秒后自动消失，不长期挡画面。
+            val isNotice = feedback is GestureFeedback.Text || feedback is GestureFeedback.Speed
+            val place = if (isNotice) {
                 Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.statusBars).padding(top = 48.dp)
             } else Modifier.align(Alignment.Center)
             GestureBadge(feedback, place)
+        }
+        // 用户口径（2026-11-22）：倍速徽标持续 5 秒后自动隐藏。
+        // 用 key(gesture) 让每次倍速变化重新计时；松手本身已清空 gesture，这里兜住「一直按住不放」的情况。
+        if (gesture is GestureFeedback.Speed) {
+            LaunchedEffect(gesture) {
+                delay(5000)
+                if (gesture is GestureFeedback.Speed) gesture = null
+            }
         }
         ui.notice?.let { message ->
             LaunchedEffect(message) {
@@ -236,6 +263,8 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     onSheet = { sheet = it; touch() },
                     onResize = { resize = (resize + 1) % ResizeModes.size; touch() },
                     resizeLabel = ResizeModes[resize].second,
+                    onRotate = { applyOrientation(!portrait); touch() },
+                    rotateLabel = if (portrait) "竖屏" else "横屏",
                     onLock = { locked = true; controls = false },
                     onNext = { session.playNext() },
                 )
