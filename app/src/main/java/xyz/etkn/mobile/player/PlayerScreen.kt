@@ -111,6 +111,16 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         }
     }
     /**
+     * 用户口径（2026-11-23）：打开播放器瞬间默认就是横屏。
+     * 绝大多数片源是横屏，先按横屏起，等服务端/播放器给出真实尺寸后
+     * 如果判断是竖屏视频，再切成竖屏。这样避免「先竖屏站着，过一会儿才转过去」的闪动。
+     * 这个 LaunchedEffect 必须声明在「服务端尺寸判断」之前，保证先执行。
+     */
+    LaunchedEffect(Unit) {
+        if (!manualOrientation) applyOrientation(false)
+    }
+
+    /**
      * 用户口径（2026-11-23，修「记忆上次亮度不生效」）：
      * 原来只在拖动手势里写 SharedPreferences（screen_brightness），
      * 进播放器时从来没人读回来应用 → 每次都是系统默认亮度。
