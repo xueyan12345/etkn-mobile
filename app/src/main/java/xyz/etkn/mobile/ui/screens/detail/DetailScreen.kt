@@ -230,7 +230,7 @@ private fun DetailContent(data: DetailData, vm: DetailViewModel, nav: AppNav) {
             GlassBackBar(item.seriesName?.takeIf { item.isEpisode || item.isSeason } ?: item.name, collapsed, haze, nav::back) { onGlass ->
                 // 用户口径（2026-11-23）：右上角三个图标 —— 下载 / 收藏 / 已播放。
                 // 原来的搜索按钮删掉（没用），位置换成下载。
-                DetailTopActions(item, source, onGlass, vm)
+                DetailTopActions(item, null, onGlass, vm)
             }
         }
     }
