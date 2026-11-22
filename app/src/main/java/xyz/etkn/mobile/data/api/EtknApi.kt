@@ -676,7 +676,11 @@ class EtknApi(
         private const val MV_SEARCH_LIMIT = 200
         const val LIST_FIELDS =
             "PrimaryImageAspectRatio,Overview,CommunityRating,TMDbRating,DoubanRating,IMDbRating,CriticRating,ProductionYear,RecursiveItemCount,UserData"
-        const val DETAIL_FIELDS = "MediaSources,MediaStreams,Overview"
+        // 用户口径（2026-11-23）：片头片尾跳过要能用，必须向服务端索取 Chapters。
+        // 原来这里只有 MediaSources/MediaStreams/Overview，ETKN 就不会返回章节标记，
+        // App 永远拿不到 IntroStart/IntroEnd/CreditsStart → 片头片尾跳不了、按钮也不显示。
+        // 数据在 media.version_analysis.chapter_markers_json 里是全的（谷雨 30/30 集都有）。
+        const val DETAIL_FIELDS = "MediaSources,MediaStreams,Overview,Chapters"
 
         fun includeTypesFor(collectionType: String?): String? = when (collectionType) {
             "movies" -> "Movie"
