@@ -30,17 +30,15 @@ enum class UpdateSource(val label: String) {
     GitHub("GitHub 直连");
 
     /** 加速源候选镜像（按成功率排序）。末尾那个才是 GitHub 原始地址。 */
-    fun candidates(githubUrl: String): List<String> = when (this) {
-        Proxy -> listOf(
-            // 实测（2026-11-23 两次采样）：ghproxy.net 稳定 206；
-            // ghfast.top 时好时坏（第 1 次超时、第 2 次 206），放第二位；
-            // gh-proxy.net 只返回 195 字节错误页，不可用，已剔除。
-            "https://ghproxy.net/$githubUrl",
-            "https://ghfast.top/$githubUrl",
-            githubUrl,
-        )
-        GitHub -> listOf(githubUrl)
-    }
+    /**
+     * 用户口径（2026-11-23）：不再折腾第三方加速镜像，直接走自己的公网代理。
+     * 实测（2026-11-23）：走 http://xy:***@891730.xyz:23423 直连 GitHub Release，
+     * APK 返回 206、3.13 MB/s，SHA256SUMS 200 —— 比 ghproxy/ghfast 稳定得多。
+     *
+     * 这里不再改写 URL；代理由 OkHttp 的 Proxy 配置负责（见 UpdateManager）。
+     * 保留列表形式是为了传 GitHub 原始地址 + 直连兜底。
+     */
+    fun candidates(githubUrl: String): List<String> = listOf(githubUrl)
 
     /** 首选地址（保持旧调用方可用）。 */
     fun wrap(githubUrl: String): String = candidates(githubUrl).first()

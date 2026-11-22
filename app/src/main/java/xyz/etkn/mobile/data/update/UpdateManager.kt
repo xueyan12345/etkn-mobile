@@ -74,6 +74,33 @@ class UpdateManager(
     @Volatile private var activeCall: Call? = null
     private val userAgent = "ETKN-Mobile/${BuildConfig.VERSION_NAME} (Android)"
 
+    /**
+     * 用户口径（2026-11-23）：GitHub 下载走用户自己的公网代理
+     * http://xy:***@891730.xyz:23423。
+     *
+     * 为什么不用第三方加速镜像：实测 gh-proxy.com 403、gh-proxy.net 只返 195 字节错误页、
+     * ghfast.top 时好时坏。而走这个代理直连 GitHub Release 实测 206 / 3.13 MB/s，稳定。
+     *
+     * 代理不通时自动回退直连（client），保证任何网络环境下都能下。
+     */
+    private val proxyClient: OkHttpClient by lazy {
+        runCatching {
+            val proxy = java.net.Proxy(
+                java.net.Proxy.Type.HTTP,
+                java.net.InetSocketAddress("891730.xyz", 23423),
+            )
+            val auth = okhttp3.Authenticator { _, response ->
+                val raw = okhttp3.Credentials.basic("xy", "xueyan123")
+                if (response.request.header("Proxy-Authorization") != null) null
+                else response.request.newBuilder().header("Proxy-Authorization", raw).build()
+            }
+            client.newBuilder().proxy(proxy).proxyAuthenticator(auth).build()
+        }.getOrDefault(client)
+    }
+
+    /** 当前该用哪个 client：优先代理，失败由调用方回退 [client]。 */
+    private fun clientFor(useProxy: Boolean): OkHttpClient = if (useProxy) proxyClient else client
+
     /** Startup check, once per process. */
     fun autoCheck() {
         if (autoChecked) return
@@ -121,18 +148,28 @@ class UpdateManager(
         throw IOException("unreachable")
     }
 
-    private suspend fun fetchText(url: String, accept: String = "*/*"): String =
-        withCall(Request.Builder().url(url).header("User-Agent", userAgent).header("Accept", accept).build()) { response ->
-            if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
-            response.body.string()
-        }
+    private suspend fun fetchText(url: String, accept: String = "*/*"): String {
+        val request = Request.Builder().url(url).header("User-Agent", userAgent).header("Accept", accept).build()
+        // 先走用户公网代理；代理不通（超时/拒绝）就退回直连。
+        return runCatching { withCall(request, proxyClient) { it.requireOk().body.string() } }
+            .getOrElse { withCall(request) { it.requireOk().body.string() } }
+    }
+
+    private fun Response.requireOk(): Response {
+        if (!isSuccessful) throw IOException("HTTP ${code}")
+        return this
+    }
 
     /**
      * Blocking OkHttp call on the IO pool. Cancelling the coroutine is not enough to unblock a
      * stalled socket read, so [cancel] also cancels the call itself.
      */
-    private suspend fun <T> withCall(request: Request, block: suspend (Response) -> T): T = withContext(Dispatchers.IO) {
-        val call = client.newCall(request)
+    private suspend fun <T> withCall(
+        request: Request,
+        http: OkHttpClient = client,
+        block: suspend (Response) -> T,
+    ): T = withContext(Dispatchers.IO) {
+        val call = http.newCall(request)
         activeCall = call
         try {
             call.execute().use { block(it) }
@@ -202,8 +239,16 @@ class UpdateManager(
 
     /** Streams to [target] while hashing; publishes progress and speed about four times a second. */
     private suspend fun transfer(url: String, target: Target, asset: ReleaseAsset, source: UpdateSource): String {
+        // 用户口径（2026-11-23）：优先走公网代理；代理失败再直连试一次。
+        return runCatching { transferOnce(url, target, asset, source, proxyClient) }
+            .getOrElse { transferOnce(url, target, asset, source, client) }
+    }
+
+    private suspend fun transferOnce(
+        url: String, target: Target, asset: ReleaseAsset, source: UpdateSource, http: OkHttpClient,
+    ): String {
         val request = Request.Builder().url(url).header("User-Agent", userAgent).build()
-        return withCall(request) { response ->
+        return withCall(request, http) { response ->
             if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
             val total = response.body.contentLength().takeIf { it > 0 } ?: asset.size
             run {

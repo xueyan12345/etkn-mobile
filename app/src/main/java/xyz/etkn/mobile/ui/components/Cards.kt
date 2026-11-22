@@ -162,12 +162,13 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
         Canvas(Modifier.fillMaxSize()) {
             val radius = size.minDimension / 2f
             val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
-            // 底：浅蓝灰实心圆（参考图底色）
-            drawCircle(color = Color(0xFFB9C6DE), radius = radius, center = center)
+            // 用户口径（2026-11-23）：颜色对调 —— 白底 = 没播放的部分；
+            // 灰色扇形 = 已播放的部分。
+            drawCircle(color = Color.White, radius = radius, center = center)
             // 进度：内部更亮的扇形，从 12 点顺时针
             if (fraction > 0.001f) {
                 drawArc(
-                    color = Color(0xFFF2F6FF),
+                    color = Color(0xFFC3CBD9),
                     startAngle = -90f,
                     sweepAngle = 360f * fraction,
                     useCenter = true,
@@ -196,8 +197,11 @@ fun WideCard(
     // 手机上仍是 210dp；平板随屏宽放大但封顶 300dp（一屏至少放得下 3 张）。
     width: Dp = responsiveCardWidth(
         base = Etkn.space.wideCard,
-        maxWidth = 300.dp,
-        fractionOfScreen = 0.42f,
+        // 用户口径（2026-11-23）：平板上一张继续观看卡不该占太多屏宽 ——
+        // 之前 maxWidth=300dp 反而比原来的 260dp 更大。收到 210dp 封顶，
+        // 一屏能放下 4 张左右，和手机观感一致。
+        maxWidth = 210.dp,
+        fractionOfScreen = 0.26f,
     ),
     /** Continue-watching cards add 从继续观看移除 to the long-press menu. */
     resume: Boolean = false,

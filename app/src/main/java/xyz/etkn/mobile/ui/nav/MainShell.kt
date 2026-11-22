@@ -80,7 +80,9 @@ val LocalStartInset = staticCompositionLocalOf { 0.dp }
 fun MainShell(session: ActiveSession) {
     val context = LocalContext.current
     val controller = rememberNavController()
-    val nav = remember(controller) { AppNav(controller, context) }
+    // 用户口径（2026-11-23）：列表页点击时要异步查续播，所以把 composition scope 交给 AppNav。
+    val navScope = rememberCoroutineScope()
+    val nav = remember(controller, navScope) { AppNav(controller, context, navScope) }
     val hazeState = rememberHazeState()
     val backStack by controller.currentBackStackEntryAsState()
     val destination = backStack?.destination

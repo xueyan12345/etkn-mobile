@@ -164,7 +164,9 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                 )
             }
             shelf("resume", "继续观看", data.resume) { item ->
-                WideCard(item, onClick = { nav.openTitle(item) }, resume = true, onPlay = { nav.play(item) })
+                // 用户口径（2026-11-23）：继续观看里点「四周」直接进这一集的单集详情页（第二层），
+                // 不再走 openTitle（那样会先落到剧集详情页 = 第一层）。中间播放按钮仍然直接播。
+                WideCard(item, onClick = { nav.open(item) }, resume = true, onPlay = { nav.play(item) })
             }
             data.latest.forEach { shelfData ->
                 val library = shelfData.library

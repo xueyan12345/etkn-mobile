@@ -728,7 +728,10 @@ private fun InfoBlock(item: Item, centered: Boolean) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = if (expanded) Int.MAX_VALUE else 4,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth().animateContentSize().clip(Corner.card).clickable { expanded = !expanded },
+                // 用户口径（2026-11-23）：这里原来有 .clip(Corner.card)，把 16dp 圆角直接裁在文字上，
+                // 满宽文字的四个角就被圆角切掉了（「2」的左半边看着像被吃掉一块）。
+                // 简介是纯文字、本来就没有底色，不需要裁切，去掉。
+                modifier = Modifier.fillMaxWidth().animateContentSize().clickable { expanded = !expanded },
             )
         }
     }

@@ -11,7 +11,12 @@ import xyz.etkn.mobile.player.PlayerLauncher
 
 /** Thin navigation facade so screens never touch the NavController directly. */
 @Stable
-class AppNav(private val controller: NavHostController, private val context: Context) {
+class AppNav(
+    private val controller: NavHostController,
+    private val context: Context,
+    /** 点击时查续播用（不阻塞 UI 线程）。由 MainShell 传入 composition 的 scope。 */
+    private val scope: kotlinx.coroutines.CoroutineScope,
+) {
 
     fun back() {
         controller.popBackStack()
@@ -37,6 +42,20 @@ class AppNav(private val controller: NavHostController, private val context: Con
     fun openTitle(item: Item) {
         val series = item.seriesId
         if (item.isEpisode && series != null) to(DetailRoute(series)) else open(item)
+    }
+
+    /**
+     * 用户口径（2026-11-23，列表页点击行为 = 方案 B：点的时候才查，不预加载）：
+     * · 这部剧有播放记录 → 查出续播的是哪一集 → 直接进那一集的单集详情页（第二层）
+     * · 没有播放记录 / 查不到 → 进剧集详情页（第一层）
+     * 只有剧集（Series）需要判断；电影、单集、文件夹等直接走 [open]。
+     */
+    fun openSmart(item: Item) {
+        if (!item.isSeries) { open(item); return }
+        scope.launch {
+            val resume = runCatching { context.graph.api.resumeEpisodeOf(item.id) }.getOrNull()
+            if (resume != null) to(DetailRoute(resume.id)) else to(DetailRoute(item.id))
+        }
     }
 
     fun open(item: Item) {

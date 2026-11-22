@@ -190,4 +190,14 @@ jobs:
           TAG: ${{ github.ref_name }}
         shell: bash
         run: |
-          gh release create "$TAG" "$RUNNER_TEMP"/release/* --repo "$GITHUB_REPOSITORY" --title "ETKN Mobile $TAG" --generate-notes
+          # 用户口径（2026-11-23）：更新日志必须显示实际改动，不能用 --generate-notes
+          # （它只生成一条 compare 链接，把 tag 上写的说明覆盖掉，App 弹窗里就是空的）。
+          # 有 release_notes_<tag>.md 就用它当正文；没有才退回自动生成的链接。
+          NOTES="release_notes_${TAG}.md"
+          if [ -f "$NOTES" ]; then
+            gh release create "$TAG" "$RUNNER_TEMP"/release/* \
+              --repo "$GITHUB_REPOSITORY" --title "ETKN Mobile $TAG" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" "$RUNNER_TEMP"/release/* \
+              --repo "$GITHUB_REPOSITORY" --title "ETKN Mobile $TAG" --generate-notes
+          fi

@@ -572,6 +572,27 @@ class EtknApi(
         return post("$D/subscribe", body).str("demand_id")
     }
 
+    /**
+     * 用户口径（2026-11-23，列表页点击行为）：查这部剧「看到哪一集」。
+     * 实测 /Users/{uid}/Items/Resume 返回 Episode 且带 SeriesId（25 条样本）。
+     * 只翻前若干页就够：续播列表按最近播放排序，目标剧通常在前几十条内。
+     * 找不到就返回 null，调用方回退到剧集详情页（第一层）。
+     */
+    suspend fun resumeEpisodeOf(seriesId: String): Item? {
+        var start = 0
+        val limit = 100
+        repeat(3) {
+            val result = runCatching {
+                get(query("${u()}/Items/Resume", "Limit" to limit, "StartIndex" to start, "Fields" to "SeriesId,UserData"))
+            }.getOrNull() ?: return null
+            val rows = result.rows().map(Item::from)
+            rows.firstOrNull { it.isEpisode && it.seriesId == seriesId }?.let { return it }
+            if (rows.size < limit) return null
+            start += limit
+        }
+        return null
+    }
+
     suspend fun cloudResources(provider: CloudProvider, item: DiscoverItem, season: Int?): List<CloudResource> {
         val type = item.kind.mediaType
         val path = when (provider) {

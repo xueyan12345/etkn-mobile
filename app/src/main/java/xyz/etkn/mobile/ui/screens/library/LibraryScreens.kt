@@ -198,7 +198,9 @@ fun LibraryScreen(route: LibraryRoute) {
         onLoadMore = vm::loadMore,
         onRetry = vm::retry,
         onOpen = { item ->
-            if (item.isFacet) nav.to(FacetRoute(route.id, item.kind.orEmpty(), item.name)) else nav.open(item)
+            // 用户口径（2026-11-23）：列表里点剧集时——有播放记录直接进续播那一集的单集详情页（第二层），
+            // 没记录进剧集详情页（第一层）。判定走 openSmart（点的时候才查续播，方案 B）。
+            if (item.isFacet) nav.to(FacetRoute(route.id, item.kind.orEmpty(), item.name)) else nav.openSmart(item)
         },
         cell = if (facets) 156.dp else null,
         card = if (facets) { item -> FacetCard(route.id, item, vm) } else null,
