@@ -32,8 +32,10 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.chrisbanes.haze.rememberHazeState
 import java.text.NumberFormat
+import kotlinx.coroutines.launch
 import xyz.etkn.mobile.data.model.LibraryCounts
 import xyz.etkn.mobile.data.settings.HeroMode
+import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.ui.common.Load
 import xyz.etkn.mobile.ui.common.LocalWindowLayout
 import xyz.etkn.mobile.ui.common.WhileStarted
@@ -88,10 +90,13 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
     val heroMode = remember(accountKey, settingsHero) {
         xyz.etkn.mobile.data.settings.HeroModePerAccount.read(context, accountKey, settingsHero)
     }
-    // 用户口径（2026-11-23）：媒体库长按菜单只给有管理权限的账号。
+    // 用户口径（2026-11-23）：媒体库长按菜单只给有管理权限的账号（与「媒体库」页同一套接口）。
     val session = (context.graph.sessions.state.collectAsStateWithLifecycle().value as? xyz.etkn.mobile.data.session.SessionState.SignedIn)?.session
     val canManage = session?.isAdmin == true
-    val libMenu = rememberLibraryActions()
+    val refreshAccount = session?.canRefreshMetadata == true
+    val itemMenu = xyz.etkn.mobile.ui.actions.LocalItemMenu.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val graph = context.graph
     // 用户口径（2026-11-22）：轮播图要保留（上次误删，已恢复）。
     val hasHero = data.hero.isNotEmpty() && heroMode != HeroMode.Off
     // 0 over the untouched hero (bar invisible, poster unobstructed) → 1 after ~96 dp of scrolling.
@@ -122,12 +127,35 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
             // 用户口径（2026-11-23）：媒体库提到最上面（原来在继续观看下面），标题带 > 且可点。
             // 长按封面 → 弹服务端功能菜单（生成封面/提取缩略图/扫描/刷新），非管理员自动不出菜单项。
             shelf("libraries", "媒体库", data.libraries, onMore = { nav.top(TopLevel.Libraries) }, showChevron = true) { library ->
+                val anchor = xyz.etkn.mobile.ui.actions.rememberPopupAnchor()
+                val actions = buildList {
+                    if (canManage) {
+                        add(xyz.etkn.mobile.ui.actions.PopupChoice("生成封面", androidx.compose.material.icons.Icons.Rounded.Image) {
+                            scope.launch { itemMenu?.notice = runCatching { graph.api.generateLibraryCover(library.id) }
+                                .fold({ "「${library.name}」封面已生成" }, { it.message ?: "失败" }) }
+                        })
+                        if (library.collectionType != "music") {
+                            add(xyz.etkn.mobile.ui.actions.PopupChoice("提取缩略图", androidx.compose.material.icons.Icons.Rounded.Slideshow) {
+                                scope.launch { itemMenu?.notice = runCatching { graph.api.extractLibraryPreviews(library.id) }
+                                    .fold({ "缩略图任务已提交" }, { it.message ?: "失败" }) }
+                            })
+                        }
+                        add(xyz.etkn.mobile.ui.actions.PopupChoice("扫描", androidx.compose.material.icons.Icons.Rounded.Sync) {
+                            scope.launch { itemMenu?.notice = runCatching { graph.api.scanLibrary(library.id) }
+                                .fold({ "已开始扫描「${library.name}」" }, { it.message ?: "失败" }) }
+                        })
+                    }
+                    if (refreshAccount) {
+                        add(xyz.etkn.mobile.ui.actions.PopupChoice("刷新", androidx.compose.material.icons.Icons.Rounded.Refresh) {
+                            scope.launch { itemMenu?.notice = runCatching { graph.api.refreshLibrary(library.id, "full") }
+                                .fold({ "已刷新「${library.name}」" }, { it.message ?: "失败" }) }
+                        })
+                    }
+                }
                 LibraryCard(
                     library,
                     onClick = { nav.openLibrary(library) },
-                    onLongClick = if (canManage) {
-                        { libMenu.openMenu(library) }
-                    } else null,
+                    onLongClick = if (actions.isNotEmpty()) { { anchor.open(actions) } } else null,
                 )
             }
             shelf("resume", "继续观看", data.resume) { item ->
@@ -143,7 +171,7 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
             }
             data.musicLatest?.let { (library, albums) ->
                 shelf("music-${library.id}", "新专辑", albums,
-                    onMore = { nav.openLibrary(library) }, showArrow = false) { album ->
+                    onMore = { nav.openLibrary(library) }, showChevron = false) { album ->
                     SquareCard(album, onClick = { nav.open(album) })
                 }
             }

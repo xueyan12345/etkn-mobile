@@ -227,37 +227,6 @@ class EtknApi(
         post("/api/tv/Items/${enc(libraryId)}/Scan")
     }
 
-    // ===== 用户口径（2026-11-23）：长按媒体库封面弹的服务端功能菜单 =====
-    // 对应 ETKN 网页版媒体库封面上的：生成封面 / 提取缩略图 / 扫描 / 刷新。
-    // /api/tv 的 token 可以直接打主站管理接口（实测 202），所以不用单独登录。
-
-    /** 生成封面：让服务端重新生成该媒体库的封面图。 */
-    suspend fun generateLibraryCover(libraryId: String) {
-        post("/api/tv/Items/${enc(libraryId)}/Refresh?ImageRefreshMode=Default&ReplaceAllImages=true")
-    }
-
-    /** 提取缩略图：只补图片，不重读元数据。 */
-    suspend fun extractLibraryThumbnails(libraryId: String) {
-        post("/api/tv/Items/${enc(libraryId)}/Refresh?ImageRefreshMode=FullRefresh&ReplaceAllImages=false&MetadataRefreshMode=None")
-    }
-
-    /** 扫描：走主站 task-center，限定这一个库（本地库 id 用数字，从 library-N 里取 N）。 */
-    suspend fun scanLibraryFiles(libraryId: String) {
-        val numeric = libraryId.substringAfterLast('-').toIntOrNull()
-        val body = if (numeric != null) {
-            EtknJson.parseToJsonElement("""{"parameters":{"local_library_ids":[$numeric]}}""")
-        } else {
-            EMPTY
-        }
-        post("/api/task-center/tasks/scan-media-library/runs", body)
-    }
-
-    /** 刷新：走主站 virtual-libraries 刷新，让界面立刻更新显示。 */
-    suspend fun refreshLibraryView(libraryId: String) {
-        val numeric = libraryId.substringAfterLast('-').toIntOrNull() ?: return
-        post("/api/virtual-libraries/$numeric/refresh")
-    }
-
     suspend fun favorites(start: Int, limit: Int): ItemsPage {
         val path = query(
             "${u()}/Browse",
