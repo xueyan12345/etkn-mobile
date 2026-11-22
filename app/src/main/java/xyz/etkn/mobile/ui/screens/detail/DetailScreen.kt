@@ -130,6 +130,7 @@ import xyz.etkn.mobile.ui.components.PillToggle
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.AlertDialog
 import xyz.etkn.mobile.ui.actions.ItemPress
+import xyz.etkn.mobile.ui.components.PersonCard
 
 @Composable
 fun DetailScreen(id: String) {
