@@ -77,6 +77,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.drawscope.Stroke
 
 /**
  * 播放器控制层。
@@ -126,22 +127,38 @@ internal fun Controls(
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.84f)))),
         )
 
-        // ===== 用户口径（2026-11-23）顶部中间：系统时间 + 网速 + 电量 =====
+        // ===== 用户口径（2026-11-23，照参考图重排）=====
+        // 正中间：只有时间。
+        Text(
+            status.time,
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(top = 8.dp),
+        )
+        // 右上角：网速 + 电量百分比 + 电池图标（同一行，紧贴右边）。
         Row(
-            Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 4.dp),
+            Modifier.align(Alignment.TopEnd)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(end = 16.dp, top = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(status.time, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             if (status.speed.isNotEmpty()) {
                 Text(status.speed, color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
             }
             Text("${status.battery}%", color = Color.White, fontSize = 12.sp)
+            // 电池图标：随电量变长度（像素风）
+            BatteryGlyph(status.battery)
         }
 
         // ===== 顶栏：返回 + 剧名 + 右侧功能图标 =====
+        // 用户口径（2026-11-23）：功能图标整体下移，明显低于「时间」那一行（照参考图）。
         Row(
-            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 8.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 8.dp).padding(top = 30.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = Color.White) }
@@ -328,12 +345,19 @@ internal fun Controls(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 用户口径（2026-11-23）按参考图：左边 上一集 / 暂停 / 下一集，
-                // 右边 音轨 / 字幕 / 选集。锁和弹幕已移到左侧垂直居中区。
+                // 用户口径（2026-11-23）按参考图：左边 上一集 / 暂停 / 下一集；
+                // 右边 弹幕开关 / 弹幕设置 / 音轨 / 字幕 / 选集（共 5 个）。
+                // 弹幕那两个是这次按用户要求加回来的（之前换成了音轨/字幕/选集）。
                 PlayerAction(Icons.Rounded.SkipPrevious, "上一集", onPrevious)
                 PlayerAction(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "暂停" else "播放", onPlayPause)
                 PlayerAction(Icons.Rounded.SkipNext, "下一集", onNext)
                 Spacer(Modifier.weight(1f))
+                PlayerAction(
+                    if (ui.danmakuOn) Icons.Rounded.ChatBubble else Icons.Rounded.ChatBubbleOutline,
+                    if (ui.danmakuOn) "关闭弹幕" else "开启弹幕",
+                    onToggleDanmaku,
+                )
+                PlayerAction(Icons.Rounded.Settings, "弹幕设置") { onSheet(Sheet.Danmaku) }
                 PlayerAction(Icons.Rounded.Audiotrack, "音轨") { onSheet(Sheet.Audio) }
                 PlayerAction(Icons.Rounded.ClosedCaption, "字幕") { onSheet(Sheet.Subtitle) }
                 if (ui.item?.isEpisode == true) PlayerAction(Icons.AutoMirrored.Rounded.PlaylistPlay, "选集") { onSheet(Sheet.Episodes) }
@@ -379,6 +403,43 @@ private fun rememberPlayerStatus(): PlayerStatus {
         }
     }
     return state
+}
+
+/** 像素风电池图标：外壳 + 右侧凸起 + 按电量填充的内部格子。 */
+@Composable
+private fun BatteryGlyph(percent: Int) {
+    val level = percent.coerceIn(0, 100)
+    val filled = (level / 20f).let { if (level > 0) it.coerceAtLeast(0.6f) else 0f }
+    Canvas(Modifier.size(width = 24.dp, height = 12.dp)) {
+        val bodyW = size.width - 3.dp.toPx()
+        val stroke = 1.5.dp.toPx()
+        val r = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
+        // 外壳
+        drawRoundRect(
+            color = Color.White,
+            size = androidx.compose.ui.geometry.Size(bodyW, size.height),
+            cornerRadius = r,
+            style = Stroke(width = stroke),
+        )
+        // 右侧凸起（正极）
+        drawRoundRect(
+            color = Color.White,
+            topLeft = androidx.compose.ui.geometry.Offset(bodyW, size.height * 0.30f),
+            size = androidx.compose.ui.geometry.Size(2.5.dp.toPx(), size.height * 0.40f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(0.8.dp.toPx(), 0.8.dp.toPx()),
+        )
+        // 内部填充
+        if (filled > 0f) {
+            val inset = stroke + 1.dp.toPx()
+            val innerW = (bodyW - inset * 2) * (filled / 5f)
+            drawRoundRect(
+                color = Color.White,
+                topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+                size = androidx.compose.ui.geometry.Size(innerW, size.height - inset * 2),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx(), 1.dp.toPx()),
+            )
+        }
+    }
 }
 
 @Composable

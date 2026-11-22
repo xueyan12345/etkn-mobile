@@ -127,9 +127,11 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                 // 用户口径（2026-11-22）：没有轮播图时不要留 64dp 空档，直接贴状态栏起头。
                 item(key = "top-space") { Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars).height(12.dp)) }
             }
-            // 用户口径（2026-11-23）：媒体库提到最上面（原来在继续观看下面），标题带 > 且可点。
+            // 用户口径（2026-11-23）：媒体库提到最上面。
+            // 用户口径（2026-11-23 后续）：最上面这个「媒体库」标题去掉 > 并且整行不可点
+            // （下面的「国产剧集」「华语电影」等分区标题保持可点带 >，不动）。
             // 长按封面 → 弹服务端功能菜单（生成封面/提取缩略图/扫描/刷新），非管理员自动不出菜单项。
-            shelf("libraries", "媒体库", data.libraries, onMore = { nav.top(TopLevel.Libraries) }, showChevron = true) { library ->
+            shelf("libraries", "媒体库", data.libraries, onMore = null, showChevron = false) { library ->
                 val anchor = xyz.etkn.mobile.ui.actions.rememberPopupAnchor()
                 val actions = buildList {
                     if (canManage) {

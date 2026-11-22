@@ -90,25 +90,10 @@ internal fun Dock(
     BoxWithConstraints(modifier.then(frame).glass(Corner.panel, elevation = 14.dp).padding(6.dp)) {
         val slot: Dp = if (vertical) SIDE_SLOT else maxWidth / tabs.size.coerceAtLeast(1)
         val slotPx = with(LocalDensity.current) { slot.toPx() }
-        val drag = rememberDraggableState { delta ->
-            val page = pager.layoutInfo.pageSize + pager.layoutInfo.pageSpacing
-            if (page > 0) pager.dispatchRawDelta(delta * page / slotPx)
-        }
-        val gestures = Modifier.draggable(
-            drag,
-            if (vertical) Orientation.Vertical else Orientation.Horizontal,
-            onDragStarted = { held = true },
-            onDragStopped = { velocity ->
-                held = false
-                val at = position()
-                val target = when {
-                    velocity > FLICK -> ceil(at)
-                    velocity < -FLICK -> floor(at)
-                    else -> at.roundToInt().toFloat()
-                }.toInt().coerceIn(0, last.toInt())
-                pager.animateScrollToPage(target, animationSpec = spring)
-            },
-        )
+        // 用户口径（2026-11-23）：禁止滑动底栏切换标签，只能点图标。
+        // 之前 HorizontalPager 的 userScrollEnabled=false 只禁了页面本体，
+        // 滑动底栏这条手势还在走 pager.dispatchRawDelta → 照样能换页。这里彻底去掉。
+        val gestures = Modifier
         if (current != null) {
             Box(
                 // Read in layout and draw only: the pill tracks the pager (finger or spring) frame by frame.

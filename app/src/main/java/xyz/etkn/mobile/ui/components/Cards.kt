@@ -142,15 +142,18 @@ private fun androidx.compose.foundation.layout.BoxScope.PosterBadges(item: Item)
 
 /**
  * 用户口径（2026-11-23）剧集角标按参考图重做：
- * 外圈 = 圆形进度环，按该剧已播放百分比**实时**填充；
- * 内层 = 白色圆底；
- * 中间 = 深蓝色未看集数。
+ * 外圈 = 圆形进度环，按「已看集数/总集数」实时填充；
+ * 内层 = 白色圆底（不透明，保证任何海报上都看得清）；
+ * 中间 = 深蓝未看集数。
+ *
+ * 关键（本次修 bug）：实测 ETKN 对 Series 的 PlayedPercentage 恒为 null，
+ * 上一版直接用它 → 环画不出、只剩一个几乎看不见的白数字。
+ * 现在用 Item.watchedFraction（= (总集数-未看集数)/总集数）。
  */
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item) {
     val unplayed = item.userData.unplayedItemCount ?: 0
-    // 已播放比例：优先 PlayedPercentage（服务端给的已看百分比），没有就用 0
-    val fraction = ((item.userData.playedPercentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
+    val fraction = item.watchedFraction
     val ringColor = MaterialTheme.colorScheme.primary
     val size = 30.dp
     Box(
@@ -158,31 +161,27 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            val stroke = 2.5.dp.toPx()
+            val stroke = 3.dp.toPx()
             val inset = stroke / 2f
             val arcSize = androidx.compose.ui.geometry.Size(
                 this.size.width - stroke, this.size.height - stroke,
             )
-            // 白底圆
-            drawCircle(color = Color(0xFFF3F1F8), radius = this.size.minDimension / 2f)
-            // 进度环：底圈（浅灰）
+            // 白底圆（不透明，任何海报上都清晰）
+            drawCircle(color = Color.White, radius = this.size.minDimension / 2f)
+            // 底圈：浅灰
             drawArc(
-                color = Color.White.copy(alpha = 0.55f),
+                color = Color(0xFFD8D5E0),
                 startAngle = 0f, sweepAngle = 360f, useCenter = false,
                 topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = arcSize,
-                style = androidx.compose.ui.graphics.drawscope.Stroke(
-                    width = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                ),
+                style = Stroke(width = stroke, cap = StrokeCap.Round),
             )
-            // 进度环：已播放（从 12 点顺时针）
+            // 进度环：已看（从 12 点顺时针）
             if (fraction > 0.001f) {
                 drawArc(
                     color = ringColor,
                     startAngle = -90f, sweepAngle = 360f * fraction, useCenter = false,
                     topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = arcSize,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(
-                        width = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                    ),
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
                 )
             }
         }
@@ -228,12 +227,7 @@ fun WideCard(
                     tint = Color.White,
                 )
             }
-            item.episodeCode?.let {
-                Text(
-                    it, style = MaterialTheme.typography.labelMedium, color = tokens.onImage,
-                    modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
-                )
-            }
+            // 用户口径（2026-11-23 照参考图）：集数不再叠在缩略图上，移到文字区第二行行首。
             val remaining = (item.runtimeMs - item.positionMs).coerceAtLeast(0)
             if (remaining > 0 && item.positionMs > 0) {
                 Text(
@@ -253,19 +247,24 @@ fun WideCard(
                 )
             }
         }
+        // 用户口径（2026-11-23 照参考图）：剧名居中。
         Text(
             item.seriesName ?: item.name,
-            // 用户口径（2026-11-22）：继续观看的标题字偏大，收到 bodyMedium 加粗，看着舒服些。
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 2.dp, end = 2.dp),
         )
         if (item.isEpisode) {
+            // 第二行 = 集数（S1E34）+ 剧集标题，整行居中。
+            val code = item.episodeCode
+            val label = listOfNotNull(code, item.name.takeIf { it.isNotBlank() }).joinToString(" ")
             Text(
-                item.name, style = MaterialTheme.typography.bodySmall,
+                label, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 2.dp, end = 2.dp, bottom = 6.dp),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, bottom = 6.dp),
             )
         }
     }
@@ -300,11 +299,13 @@ fun LibraryCard(
             item.name,
             // 用户口径（2026-11-22）：媒体库分类名（国产剧集/华语电影…）比上一版调大一档，
             // 参考图里这个字是明显加粗、有分量的；区块标题（最新·xx）保持小一些。
+            // 用户口径（2026-11-23）：分类名居中（照参考图）。
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp, bottom = 4.dp),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 2.dp, end = 2.dp, bottom = 4.dp),
         )
     }
 }

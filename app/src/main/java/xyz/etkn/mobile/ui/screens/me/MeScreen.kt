@@ -160,16 +160,29 @@ fun MeScreen() {
             ),
         ) {
             androidx.compose.material3.Surface(Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxSize()) {
-                    SearchScreen()
-                    IconButton(
-                        onClick = { showSearch = false },
-                        modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars).padding(8.dp),
+                Column(Modifier.fillMaxSize()) {
+                    // 用户口径（2026-11-23 修 bug）：返回按钮原来浮在 SearchScreen 上面，
+                    // 正好压在搜索框的放大镜图标上。改成独立一行工具栏，搜索框整体下移。
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .windowInsetsPadding(WindowInsets.statusBars)
+                            .padding(start = 4.dp, top = 4.dp, end = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            Icons.AutoMirrored.Rounded.ArrowBack, "返回",
-                            tint = MaterialTheme.colorScheme.onSurface,
+                        IconButton(onClick = { showSearch = false }) {
+                            Icon(
+                                Icons.AutoMirrored.Rounded.ArrowBack, "返回",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                        Text(
+                            "搜索",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(start = 4.dp),
                         )
+                    }
+                    Box(Modifier.weight(1f)) {
+                        SearchScreen()
                     }
                 }
             }

@@ -81,7 +81,14 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     // 宽 > 高 → 横屏；高 > 宽 → 竖屏。切下一集时视频尺寸会变，这里监听 videoSize 重判，
     // 不用退出播放器。手动旋转按钮仍然可以临时覆盖，换集后会重新跟随视频比例。
     val context = androidx.compose.ui.platform.LocalContext.current
-    val activity = context as? android.app.Activity
+    /**
+     * 用户口径（2026-11-23 修「所有视频都默认竖屏」）：
+     * 原来写 `context as? android.app.Activity` —— Compose 里 LocalContext 常常是
+     * ContextWrapper（主题包装 / 缩放包装），强转直接得 null，于是 applyOrientation()
+     * 静默什么都不做，方向永远是 Manifest 的默认值 = 竖屏。
+     * 改成沿 ContextWrapper 链一路往上找真正的 Activity。
+     */
+    val activity = remember(context) { context.findActivity() }
     // true = 竖屏（portrait），false = 横屏（landscape）
     var portrait by remember { mutableStateOf(false) }
     // 用户手动覆盖过方向就不再自动跟随，直到换集重置
@@ -97,6 +104,22 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
     }
+    /**
+     * 用户口径（2026-11-23，修「记忆上次亮度不生效」）：
+     * 原来只在拖动手势里写 SharedPreferences（screen_brightness），
+     * 进播放器时从来没人读回来应用 → 每次都是系统默认亮度。
+     * 这里进播放器就恢复上次的亮度。
+     */
+    LaunchedEffect(Unit) {
+        val act = activity ?: return@LaunchedEffect
+        val saved = context
+            .getSharedPreferences("etkn_player", android.content.Context.MODE_PRIVATE)
+            .getFloat("screen_brightness", -1f)
+        if (saved in 0.01f..1f) {
+            act.window?.attributes = act.window.attributes.apply { screenBrightness = saved }
+        }
+    }
+
     var position by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var buffered by remember { mutableLongStateOf(0L) }
@@ -346,4 +369,14 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             portrait = portrait,
         )
     }
+}
+
+/** 沿 ContextWrapper 链往上找到真正的 Activity（LocalContext 不一定是 Activity）。 */
+private fun android.content.Context.findActivity(): android.app.Activity? {
+    var c: android.content.Context? = this
+    while (c is android.content.ContextWrapper) {
+        if (c is android.app.Activity) return c
+        c = c.baseContext
+    }
+    return c as? android.app.Activity
 }

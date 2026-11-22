@@ -55,6 +55,17 @@ import xyz.etkn.mobile.ui.components.px
 import xyz.etkn.mobile.ui.screens.me.DanmakuControls
 import java.util.Locale
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.material.icons.rounded.Audiotrack
+import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.height
 
 @Composable
 internal fun PlayerSheet(
@@ -142,15 +153,61 @@ private fun MoreSheet(
     portrait: Boolean,
 ) {
     val context = LocalContext.current
-    // 用户口径（2026-11-23）：旋转屏幕从三点菜单删掉（右上角已有旋转图标，重复）。
-    val options = listOf(
-        "定时关闭" + (ui.sleep?.let { " · ${it.label}" } ?: "") to (ui.sleep != null),
-        "用其他播放器打开" to false,
-    )
-    OptionList("更多", options) { index ->
-        when (index) {
-            0 -> onSheet(Sheet.Sleep)
-            1 -> {
+    val graph = context.graph
+    var showStats by remember { mutableStateOf(false) }
+    /**
+     * 用户口径（2026-11-23）：三点菜单照参考图重做 —— 右侧浮层，每行 = 图标 + 文字，
+     * 不再用居中的普通列表。项目按参考图：旋转屏幕 / 跳过片头片尾 / 仅音频播放 /
+     * 定时关闭 / 切换至 Mpv 播放器 / 统计信息，底部显示当前倍速。
+     */
+    Row(
+        Modifier.fillMaxWidth().fillMaxHeight(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Column(
+            Modifier.width(300.dp).fillMaxHeight()
+                .background(Color.Black.copy(alpha = 0.88f))
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(vertical = 12.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            // 顶部：倍速状态
+            Row(
+                Modifier.fillMaxWidth().clickable { onDismiss(); onSheet(Sheet.Speed) }
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Speed, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(14.dp))
+                Text("倍速", color = Color.White, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                Text(
+                    "%.1fx".format(ui.speed),
+                    color = Color(0xFF8FD8C8),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            MenuDivider()
+            MoreMenuItem(Icons.Rounded.ScreenRotation, "旋转屏幕") {
+                onDismiss(); onRotate()
+            }
+            MoreMenuItem(
+                Icons.Rounded.SkipNext,
+                "跳过片头片尾",
+                trailing = ui.skipMode.label,
+            ) { onDismiss() }
+            MoreMenuItem(
+                Icons.Rounded.Timer,
+                "定时关闭",
+                trailing = ui.sleep?.label,
+            ) {
+                onDismiss(); onSheet(Sheet.Sleep)
+            }
+            MoreMenuItem(Icons.Rounded.Info, "统计信息") {
+                onDismiss(); showStats = true
+            }
+            MenuDivider()
+            MoreMenuItem(Icons.Rounded.OpenInNew, "用其他播放器打开") {
                 onDismiss()
                 session.portableStream()?.let { (url, title) ->
                     val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(url), "video/*")
@@ -160,6 +217,65 @@ private fun MoreSheet(
             }
         }
     }
+    if (showStats) {
+        StatsDialog(ui, onDismiss = { showStats = false })
+    }
+}
+
+/** 三点菜单的一行：图标 + 文字 +（可选）右侧状态值。 */
+@Composable
+private fun MoreMenuItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    trailing: String? = null,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(label, color = Color.White, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        if (!trailing.isNullOrEmpty()) {
+            Text(trailing, color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun MenuDivider() {
+    Box(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 18.dp).height(0.5.dp).background(Color.White.copy(alpha = 0.18f)))
+}
+
+/** 统计信息：把播放器的关键数据摊开，方便排查卡顿/解码问题。 */
+@Composable
+private fun StatsDialog(ui: VideoUi, onDismiss: () -> Unit) {
+    val source = ui.sources.getOrNull(ui.sourceIndex)
+    val video = source?.video
+    val lines = buildList {
+        add("剧集：" + ui.title)
+        add("容器：" + (source?.container?.uppercase() ?: "-"))
+        video?.let {
+            add("画面：%d×%d".format(it.width, it.height))
+            add("编码：" + it.codec.uppercase())
+        }
+        add("总码率：%.1f Mbps".format((source?.bitrate ?: 0L) / 1_000_000.0))
+        add("音轨：" + ((source?.audio?.size ?: 0)).toString() + " 条")
+        add("字幕：" + ((source?.subtitles?.size ?: 0)).toString() + " 条")
+        add("倍速：%.2fx".format(ui.speed))
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("统计信息") },
+        text = {
+            Column {
+                lines.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }
 
 /** DLNA renderers on the Wi-Fi; picking one hands the title over at the current position. */

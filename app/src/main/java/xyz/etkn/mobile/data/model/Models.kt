@@ -296,6 +296,22 @@ data class Item(
             else -> ((userData.playedPercentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
         }
 
+    /**
+     * 用户口径（2026-11-23）：剧集看过的比例，用来画首页角标的进度环。
+     * 实测 ETKN 对 Series 的 PlayedPercentage 恒为 null（服务端不给），
+     * 但会给 UnplayedItemCount 和 RecursiveItemCount（总集数）。
+     * 所以：已看 = 总集数 - 未看集数，比例 = 已看 / 总集数。
+     * 服务端将来真给了 PlayedPercentage 就用它，优先更准的那个。
+     */
+    val watchedFraction: Float
+        get() {
+            userData.playedPercentage?.let { return (it / 100.0).toFloat().coerceIn(0f, 1f) }
+            val total = recursiveItemCount ?: 0
+            val unplayed = userData.unplayedItemCount ?: return 0f
+            if (total <= 0) return 0f
+            return ((total - unplayed).toFloat() / total).coerceIn(0f, 1f)
+        }
+
     val bestRating: Double? get() = tmdbRating ?: doubanRating ?: communityRating ?: imdbRating
 
     val episodeCode: String?

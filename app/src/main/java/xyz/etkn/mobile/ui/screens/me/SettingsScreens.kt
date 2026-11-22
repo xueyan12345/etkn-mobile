@@ -113,8 +113,10 @@ fun SettingsScreen(page: SettingsPage) {
                         val sessionKey = (graph.sessions.state.collectAsStateWithLifecycle().value as? SessionState.SignedIn)?.session?.key
                         val heroNow = remember(sessionKey, settings.heroMode) { HeroModePerAccount.read(context, sessionKey, settings.heroMode) }
                         ChoiceRow("首页推荐", HeroMode.entries, heroNow, { it.label }) {
+                            // 用户口径（2026-11-23）：只写当前账号，绝不改全局默认值。
+                            // 原来这里同时 setHeroMode(it) 会把全局值也改掉，
+                            // 于是没单独设置过的账号跟着一起变 —— 按账号独立就失效了。
                             HeroModePerAccount.write(context, sessionKey, it)
-                            scope.launch { graph.settings.setHeroMode(it) }
                             (context as? Activity)?.recreate()
                         }
                         val wide = LocalWindowLayout.current.wide

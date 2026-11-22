@@ -438,6 +438,21 @@ private fun ActionRow(
                     onClick = { play(resume = true) },
                 )
             }
+            // 用户口径（2026-11-23）：「从头播放」挪到「继续播放」和三点之间，同一行排开：
+            // 继续播放 | 从头播放 | ⋮
+            if (resumable) {
+                Box(Modifier.padding(start = 8.dp)) {
+                    FilledTonalButton(
+                        onClick = { play(resume = false) },
+                        modifier = Modifier.height(SmallAction),
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                    ) {
+                        Icon(Icons.Rounded.Replay, null, Modifier.size(17.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("从头播放", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
             if (press.enabled) {
                 Box(Modifier.padding(start = 8.dp)) {
                     FilledTonalIconButton(onClick = press::open, modifier = Modifier.size(SmallAction).then(press.modifier)) {
@@ -446,16 +461,10 @@ private fun ActionRow(
                 }
             }
         }
-        Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            // 继续播放 resumes at the saved position; this one starts the same title at 00:00.
-            if (resumable) {
-                FilledTonalButton(onClick = { play(resume = false) }, modifier = Modifier.height(SmallAction), contentPadding = PaddingValues(horizontal = 14.dp)) {
-                    Icon(Icons.Rounded.Replay, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("从头播放", style = MaterialTheme.typography.labelLarge)
-                }
+        if (item.trailers.isNotEmpty()) {
+            Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                TrailerButton(item.trailers)
             }
-            if (item.trailers.isNotEmpty()) TrailerButton(item.trailers)
         }
     }
 }

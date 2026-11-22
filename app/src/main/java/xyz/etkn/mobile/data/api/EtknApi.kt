@@ -277,15 +277,38 @@ class EtknApi(
      * Albums whose name or artist matches (pinyin too), across every music library the user sees:
      * `U/Music` without `ParentId` reads all of them, groups included.
      */
-    suspend fun searchMusic(term: String, start: Int, limit: Int): ItemsPage {
-        val result = get(
-            query(
-                "${u()}/Music", "Tab" to "albums", "SearchTerm" to term,
-                "SortBy" to "Name", "SortOrder" to "Ascending", "StartIndex" to start, "Limit" to limit,
-            ),
-        )
-        val items = result.items()
-        return ItemsPage(items, result.int("TotalRecordCount", start + items.size))
+    /**
+     * 用户口径（2026-11-23，修「只能搜到专辑，搜不到歌名」）：
+     * 原来写死 Tab=albums —— 实测 ETKN 回 0 条（搜「晴天」得 0）。
+     * 现在两路并发取，合并成一个列表：
+     *   ①音频（歌名）Items?IncludeItemTypes=Audio&SearchTerm=  → 晴天 / 叶惠美
+     *   ②专辑     Users/{uid}/Music/Albums/Search?keyword=    → 专辑封面卡
+     * 专辑排前面（视觉主体），音频紧随其后。
+     */
+    suspend fun searchMusic(term: String, start: Int, limit: Int): ItemsPage = coroutineScope {
+        val albumsDeferred = async {
+            runCatching {
+                get(query("${u()}/Music/Albums/Search", "keyword" to term))
+                    .items()
+            }.getOrDefault(emptyList())
+        }
+        val audioDeferred = async {
+            runCatching {
+                get(
+                    query(
+                        "${u()}/Items", "Recursive" to true, "IncludeItemTypes" to "Audio",
+                        "SearchTerm" to term, "SortBy" to "SortName", "Limit" to limit,
+                        "Fields" to "PrimaryImageAspectRatio,ProductionYear,UserData",
+                    ),
+                ).items()
+            }.getOrDefault(emptyList())
+        }
+        val albums = albumsDeferred.await()
+        val audio = audioDeferred.await()
+        // 分页只在合并结果上做，避免两路各自分页错位
+        val merged = (albums + audio).distinctBy { it.id }
+        val page = merged.drop(start).take(limit)
+        ItemsPage(page, merged.size)
     }
 
     /**
