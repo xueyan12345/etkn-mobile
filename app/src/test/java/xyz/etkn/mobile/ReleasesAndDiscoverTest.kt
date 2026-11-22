@@ -56,7 +56,7 @@ class ReleasesAndDiscoverTest {
         )!!
         assertEquals("v0.2.0", release.tag)
         val asset = release.assetFor(listOf("arm64-v8a"))!!
-        assertEquals("https://github.com/Alumos/etkn-mobile/releases/download/v0.2.0/ETKN-Mobile-0.2.0-arm64-v8a.apk", asset.url)
+        assertEquals("https://github.com/xueyan12345/etkn-mobile/releases/download/v0.2.0/ETKN-Mobile-0.2.0-arm64-v8a.apk", asset.url)
         assertEquals("https://gh-proxy.com/" + asset.url, UpdateSource.Proxy.wrap(asset.url))
         assertEquals("b".repeat(64), asset.sha256)
     }
