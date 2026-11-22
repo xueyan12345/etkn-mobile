@@ -51,6 +51,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import xyz.etkn.mobile.OpenRequest
 import xyz.etkn.mobile.data.session.ActiveSession
+import xyz.etkn.mobile.data.session.SavedAccount
+import xyz.etkn.mobile.data.session.StoredSessions
 import xyz.etkn.mobile.data.settings.NavPosition
 import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.ui.actions.ItemMenu
@@ -64,8 +66,6 @@ import xyz.etkn.mobile.ui.components.glassSource
 import xyz.etkn.mobile.ui.screens.music.MiniPlayer
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.LocalSettings
-xyz.etkn.mobile.data.session.StoredSessions
-xyz.etkn.mobile.data.session.SavedAccount
 
 /** Space screens must leave at the bottom for the floating dock / mini player. */
 val LocalBottomInset = staticCompositionLocalOf { 0.dp }
