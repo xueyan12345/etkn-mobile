@@ -184,7 +184,12 @@ private fun DetailContent(data: DetailData, vm: DetailViewModel, nav: AppNav) {
         val list = rememberLazyListState()
         val collapsed by remember { derivedStateOf { list.firstVisibleItemIndex > 0 } }
         val haze = rememberHazeState()
-        val centered = !LocalWindowLayout.current.wide
+        /**
+     * 用户口径（2026-11-23）：手机端详情页原来整体居中，平板端左对齐，两边看着不一致。
+     * 现在手机也统一成左对齐（和平台端一致）：简介、标签、标题、按钮全部靠左。
+     * 这个开关保留，将来要恢复手机居中只需改回 !wide。
+     */
+    val centered = false
         val seriesId = if (item.isSeries) item.id else item.seriesId
         val press = rememberItemPress(item)
         // Another episode took this page's place: bring its header into view.
