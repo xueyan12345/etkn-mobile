@@ -33,6 +33,11 @@ data class StoredSessions(
     val accounts: List<SavedAccount> = emptyList(),
     val activeKey: String? = null,
     val lastServer: String? = null,
+    /**
+     * 用户口径（2026-11-22）：冷启动默认登录哪个账号。
+     * null = 沿用上次退出时的 activeKey（老行为）。
+     */
+    val defaultKey: String? = null,
 )
 
 /** A signed-in account. Tokens only live in memory here; disk copies are sealed. */

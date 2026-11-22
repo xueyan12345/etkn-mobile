@@ -99,15 +99,13 @@ fun SearchScreen() {
     }
     // Open with the keyboard up, but only once this is the page shown: as a pre-composed pager
     // neighbour the focus request would scroll the pager here. Leaving the tab drops the keyboard.
+    // 用户口径（2026-11-22）：切到搜索页不再自动弹输入法，点了搜索框才弹。
+    // 离开标签仍然收起键盘，避免切走时留着焦点。
     val active = LocalTabActive.current
     val focusManager = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
     LaunchedEffect(active) {
-        if (active) {
-            if (text.text.isEmpty()) focus.requestFocus()
-        } else if (focused) {
-            focusManager.clearFocus()
-        }
+        if (!active && focused) focusManager.clearFocus()
     }
 
     Box(Modifier.fillMaxSize()) {

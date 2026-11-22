@@ -32,10 +32,12 @@ fun SectionHeader(title: String, modifier: Modifier = Modifier, onMore: (() -> U
     ) {
         Text(
             title,
-            style = MaterialTheme.typography.titleLarge,
+            // 用户口径（2026-11-22）：区块标题参考图那种更黑、更硬气的样式 —— 加粗 + 稍小字号，看着匀称不抢戏。
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            modifier = Modifier.weight(1f).padding(vertical = 6.dp),
         )
         if (onMore != null) {
             IconButton(onClick = onMore) { Icon(Icons.AutoMirrored.Rounded.ArrowForward, "查看全部") }
@@ -57,8 +59,9 @@ fun Shelf(
         LazyRow(
             // Starts clear of the side dock but scrolls on under its glass.
             contentPadding = PaddingValues(start = LocalStartInset.current + Etkn.space.screen, end = Etkn.space.screen),
+            // 用户口径（2026-11-22）：卡片间距加大一点（原来 12dp 显得稀稀拉拉，现在 14dp 更紧凑整齐）。
             horizontalArrangement = Arrangement.spacedBy(Etkn.space.item),
-            modifier = Modifier.padding(top = 4.dp),
+            modifier = Modifier.padding(top = 6.dp),
         ) {
             items(items, key = { it.id.ifEmpty { it.key ?: it.name } }, contentType = { it.type }) { itemContent(it) }
         }

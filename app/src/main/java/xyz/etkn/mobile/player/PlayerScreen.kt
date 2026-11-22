@@ -263,8 +263,6 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     onSheet = { sheet = it; touch() },
                     onResize = { resize = (resize + 1) % ResizeModes.size; touch() },
                     resizeLabel = ResizeModes[resize].second,
-                    onRotate = { applyOrientation(!portrait); touch() },
-                    rotateLabel = if (portrait) "竖屏" else "横屏",
                     onLock = { locked = true; controls = false },
                     onNext = { session.playNext() },
                 )
@@ -291,6 +289,12 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     }
 
     if (sheet != Sheet.None) {
-        PlayerSheet(sheet, ui, session, onSheet = { sheet = it }, onDismiss = { sheet = Sheet.None })
+        PlayerSheet(
+            sheet, ui, session,
+            onSheet = { sheet = it },
+            onDismiss = { sheet = Sheet.None },
+            onRotate = { applyOrientation(!portrait); touch() },
+            portrait = portrait,
+        )
     }
 }

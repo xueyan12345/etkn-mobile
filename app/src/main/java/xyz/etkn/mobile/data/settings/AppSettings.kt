@@ -28,35 +28,60 @@ enum class PlayerEngine(val label: String) { Auto("自动"), Exo("ExoPlayer"), M
 
 enum class SkipMode(val label: String) { Button("显示按钮"), Auto("自动跳过"), Off("关闭") }
 
-/** Whole-app size: scales density (layout and text together) like the system display size. */
-enum class UiScale(val label: String, val factor: Float) {
-    Small("小", 0.9f), Default("标准", 1f), Large("大", 1.1f), Larger("特大", 1.2f);
+/**
+ * Whole-app size: scales density (layout and text together) like the system display size.
+ *
+ * 用户口径（2026-11-22）：原来四个写死档位（小/标准/大/特大）换成 0.8x~1.3x 的连续倍率，
+ * 外观页用滑块调、实时显示「0.9x」。手机平板上各自调到合适为止。
+ * 存储仍沿用这份 SharedPreferences（attachBaseContext 时同步读，早于任何资源访问）。
+ */
+object UiScale {
+    /** 可调区间。低于 0.8 布局会挤，高于 1.3 字会溢出卡片。 */
+    const val MIN = 0.8f
+    const val MAX = 1.3f
+    /** 滑块步长：0.05 一档，够细也不至于滑不到。 */
+    const val STEP = 0.05f
+    const val DEFAULT = 1f
 
-    companion object {
-        private const val FILE = "etkn_display"
-        private const val KEY = "ui_scale"
+    private const val FILE = "etkn_display"
+    private const val KEY = "ui_scale_factor"
+    /** 旧的四档枚举存在同一个 key 下（Small/Default/Large/Larger），读时做一次迁移。 */
+    private const val LEGACY_KEY = "ui_scale"
 
-        /**
-         * Read synchronously in `attachBaseContext`, before any resource is touched, so it lives
-         * in plain SharedPreferences rather than DataStore.
-         */
-        fun read(context: Context): UiScale = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-            .getString(KEY, null)?.let { name -> entries.firstOrNull { it.name == name } } ?: Default
+    private fun clamp(value: Float) = value.coerceIn(MIN, MAX)
 
-        fun write(context: Context, scale: UiScale) {
-            context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit(commit = true) { putString(KEY, scale.name) }
+    fun readFactor(context: Context): Float {
+        val prefs = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        val raw = prefs.getFloat(KEY, Float.NaN)
+        if (!raw.isNaN()) return clamp(raw)
+        // 迁移：老版本的枚举名 → 对应倍率
+        val legacy = prefs.getString(LEGACY_KEY, null)
+        val migrated = when (legacy) {
+            "Small" -> 0.9f
+            "Large" -> 1.1f
+            "Larger" -> 1.2f
+            else -> DEFAULT
         }
+        prefs.edit(commit = true) { putFloat(KEY, migrated) }
+        return migrated
+    }
 
-        /**
-         * Overrides only `densityDpi`: every window of the activity (dialogs, sheets, menus)
-         * then measures with the scaled density, exactly like the system display-size setting.
-         */
-        fun applyTo(activity: android.view.ContextThemeWrapper, base: Context) {
-            val factor = read(base).factor
-            if (factor == 1f) return
-            val dpi = base.resources.configuration.densityDpi
-            activity.applyOverrideConfiguration(android.content.res.Configuration().apply { densityDpi = (dpi * factor).toInt() })
-        }
+    fun writeFactor(context: Context, factor: Float) {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit(commit = true) { putFloat(KEY, clamp(factor)) }
+    }
+
+    /** 「0.9x」这种展示文案。 */
+    fun label(factor: Float): String = String.format(java.util.Locale.ROOT, "%.2fx", clamp(factor)).replace(".00x", "x").replace(Regex("\\.(\\d)0x"), ".$1x")
+
+    /**
+     * Overrides only `densityDpi`: every window of the activity (dialogs, sheets, menus)
+     * then measures with the scaled density, exactly like the system display-size setting.
+     */
+    fun applyTo(activity: android.view.ContextThemeWrapper, base: Context) {
+        val factor = readFactor(base)
+        if (factor == 1f) return
+        val dpi = base.resources.configuration.densityDpi
+        activity.applyOverrideConfiguration(android.content.res.Configuration().apply { densityDpi = (dpi * factor).toInt() })
     }
 }
 

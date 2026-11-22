@@ -90,10 +90,20 @@ fun SettingsScreen(page: SettingsPage) {
                         }
                         SwitchRow("纯黑深色", settings.amoled) { scope.launch { graph.settings.setAmoled(it) } }
                         val context = LocalContext.current
-                        val scale = remember { UiScale.read(context) }
-                        ChoiceRow("页面大小", UiScale.entries, scale, { it.label }) {
-                            if (it != scale) {
-                                UiScale.write(context, it)
+                        // 用户口径（2026-11-22）：写死的四档换成连续倍率滑块（0.8x~1.3x）。
+                        // 拖动时只更新文案，松手才写入并重建 Activity —— 拖动过程中反复 recreate 会闪屏。
+                        var scaleFactor by remember { mutableFloatStateOf(UiScale.readFactor(context)) }
+                        SliderRow(
+                            label = "封面缩放倍率",
+                            value = scaleFactor,
+                            range = UiScale.MIN..UiScale.MAX,
+                            step = UiScale.STEP,
+                            format = { UiScale.label(it) },
+                        ) { value ->
+                            scaleFactor = value
+                            val snapped = (value / UiScale.STEP).roundToInt() * UiScale.STEP
+                            if (snapped != UiScale.readFactor(context)) {
+                                UiScale.writeFactor(context, snapped)
                                 (context as? Activity)?.recreate()
                             }
                         }

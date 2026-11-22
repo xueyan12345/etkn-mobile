@@ -92,10 +92,12 @@ fun PosterCard(
             if (meta.isNotEmpty()) {
                 Text(
                     meta,
+                    // 用户口径（2026-11-22）：原来没有底部留白，年份行下缘贴在容器底边被裁掉一截，
+                    // 现在补 bottom padding，四位数完整可见。
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    modifier = Modifier.padding(horizontal = 2.dp),
+                    modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 1.dp, bottom = 6.dp),
                 )
             }
         }
@@ -200,36 +202,41 @@ fun WideCard(
         }
         Text(
             item.seriesName ?: item.name,
-            style = MaterialTheme.typography.titleSmall,
+            // 用户口径（2026-11-22）：继续观看的标题字偏大，收到 bodyMedium 加粗，看着舒服些。
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp, start = 2.dp),
+            modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp),
         )
         if (item.isEpisode) {
             Text(
                 item.name, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 2.dp),
+                modifier = Modifier.padding(start = 2.dp, end = 2.dp, bottom = 6.dp),
             )
         }
     }
 }
 
-/** Library entry with its server-generated cover. */
+/**
+ * Library entry: server-generated 16:9 cover with the name underneath (not on the artwork).
+ * 用户口径（2026-11-22）：文字从「压在图片上」改成「放在图片下方」，字加粗，间距留够。
+ */
 @Composable
 fun LibraryCard(item: Item, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp = 200.dp) {
     val url = images().primary(item, width.px())
-    Box(
-        modifier.width(width).aspectRatio(16f / 9f).clip(CardShape).clickable(onClick = onClick),
-    ) {
-        Artwork(url, Modifier.fillMaxSize(), item.name, placeholder = libraryIcon(item.collectionType))
-        Box(Modifier.fillMaxSize().background(Etkn.tokens.posterScrim))
+    Column(modifier.width(width).clip(CardShape).clickable(onClick = onClick)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(CardShape)) {
+            Artwork(url, Modifier.fillMaxSize(), item.name, placeholder = libraryIcon(item.collectionType))
+            Box(Modifier.fillMaxSize().background(Etkn.tokens.posterScrim))
+        }
         Text(
             item.name,
-            style = MaterialTheme.typography.titleMedium,
-            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+            modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp, bottom = 4.dp),
         )
     }
 }

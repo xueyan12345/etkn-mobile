@@ -48,7 +48,9 @@ class SessionManager(
     fun restore() {
         scope.launch {
             val saved = store.read()
-            val account = saved.accounts.firstOrNull { it.key == saved.activeKey }
+            // 用户口径（2026-11-22）：设了默认账号就优先用它冷启动；没设则沿用上次的 activeKey。
+            val key = saved.defaultKey?.takeIf { k -> saved.accounts.any { it.key == k } } ?: saved.activeKey
+            val account = saved.accounts.firstOrNull { it.key == key }
             val token = account?.sealedToken?.let(SecureBox::decrypt)
             if (account == null || token == null) {
                 _state.value = SessionState.SignedOut
@@ -96,6 +98,9 @@ class SessionManager(
         persist(server.url, server.id, server.name, token, user, remember)
         activate(server.url, server.id, server.name, token, user)
     }
+
+    /** 用户口径（2026-11-22）：设/取消冷启动默认账号。key=null 表示恢复「跟随上次」。 */
+    suspend fun setDefaultAccount(key: String?) = store.update { it.copy(defaultKey = key) }
 
     /** Switch to a stored account; returns false when it needs a password. */
     suspend fun switchTo(account: SavedAccount): Boolean {

@@ -1,5 +1,9 @@
 package xyz.etkn.mobile.ui.nav
 
+androidx.compose.foundation.combinedClickable
+androidx.compose.runtime.rememberCoroutineScope
+androidx.compose.material.icons.rounded.Person
+androidx.compose.material.icons.rounded.Lock
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -19,7 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.PagerState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +51,10 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import xyz.etkn.mobile.ui.theme.Corner
+kotlinx.coroutines.launch
+xyz.etkn.mobile.ui.actions.PopupChoice
+xyz.etkn.mobile.ui.actions.rememberPopupAnchor
+xyz.etkn.mobile.data.session.SavedAccount
 
 /**
  * Floating glass dock of the tab pager: a bar along the bottom, or a slim column at the side of
@@ -58,8 +65,20 @@ import xyz.etkn.mobile.ui.theme.Corner
  * pill stretches along the dock and slims across it, so it reads as one drop moving over.
  */
 @Composable
-internal fun Dock(tabs: List<TopLevel>, current: TopLevel?, nav: AppNav, pager: PagerState, vertical: Boolean, modifier: Modifier = Modifier) {
+internal fun Dock(
+    tabs: List<TopLevel>,
+    current: TopLevel?,
+    nav: AppNav,
+    pager: PagerState,
+    vertical: Boolean,
+    modifier: Modifier = Modifier,
+    /** 用户口径（2026-11-22）：长按「我的」快捷切号所需数据与动作。 */
+    storedAccounts: List<SavedAccount> = emptyList(),
+    activeAccountKey: String? = null,
+    onSwitchAccount: suspend (SavedAccount) -> Unit = {},
+) {
     val colors = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
     val spring = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
     val pillShape = Corner.inPanel(6.dp)
     val last = (tabs.size - 1).coerceAtLeast(0).toFloat()
@@ -117,8 +136,33 @@ internal fun Dock(tabs: List<TopLevel>, current: TopLevel?, nav: AppNav, pager: 
             tabs.forEach { tab ->
                 val active = tab == current
                 val tint by animateColorAsState(if (active) colors.onSecondaryContainer else colors.onSurfaceVariant, label = "dockTint")
+                // 用户口径（2026-11-22）：长按底栏「我的」弹快捷切号浮层（不跳页，就地切）。
+                val accountMenu = if (tab == TopLevel.Me) rememberPopupAnchor() else null
+                val onLongClickTab: (() -> Unit)? = if (accountMenu != null && storedAccounts.size > 1) {
+                    {
+                        accountMenu.open(
+                            storedAccounts.map { acc ->
+                                PopupChoice(
+                                    label = acc.userName,
+                                    icon = Icons.Rounded.Person,
+                                    selected = acc.key == activeAccountKey,
+                                    trailing = if (acc.sealedToken == null) Icons.Rounded.Lock else null,
+                                    onClick = { scope.launch { runCatching { onSwitchAccount(acc) } } },
+                                )
+                            },
+                        )
+                    }
+                } else null
                 Column(
-                    itemModifier.clip(pillShape).selectable(selected = active, role = Role.Tab, onClick = { nav.top(tab) }),
+                    itemModifier.then(accountMenu?.modifier ?: Modifier)
+                        .clip(pillShape)
+                        .combinedClickable(
+                            role = Role.Tab,
+                            onClickLabel = tab.label,
+                            onLongClickLabel = if (onLongClickTab != null) "切换账号" else null,
+                            onLongClick = onLongClickTab,
+                            onClick = { nav.top(tab) },
+                        ),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {

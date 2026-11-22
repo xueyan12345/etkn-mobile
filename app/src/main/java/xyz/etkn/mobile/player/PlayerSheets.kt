@@ -57,7 +57,16 @@ import java.util.Locale
 import xyz.etkn.mobile.ui.theme.Corner
 
 @Composable
-internal fun PlayerSheet(sheet: Sheet, ui: VideoUi, session: VideoSession, onSheet: (Sheet) -> Unit, onDismiss: () -> Unit) {
+internal fun PlayerSheet(
+    sheet: Sheet,
+    ui: VideoUi,
+    session: VideoSession,
+    onSheet: (Sheet) -> Unit,
+    onDismiss: () -> Unit,
+    /** 用户口径（2026-11-22）：横竖屏切换挪到「三点」菜单最上方。 */
+    onRotate: () -> Unit = {},
+    portrait: Boolean = false,
+) {
     PlayerSidePanel(onDismiss) {
         when (sheet) {
             Sheet.Audio -> OptionList("音轨", ui.audio.map { it.label to it.selected }) { i -> session.selectTrack(ui.audio[i]); onDismiss() }
@@ -77,7 +86,7 @@ internal fun PlayerSheet(sheet: Sheet, ui: VideoUi, session: VideoSession, onShe
                 onDismiss()
             }
             Sheet.Cast -> CastSheet(ui, session, onDismiss)
-            Sheet.More -> MoreSheet(ui, session, onSheet, onDismiss)
+            Sheet.More -> MoreSheet(ui, session, onSheet, onDismiss, onRotate, portrait)
             Sheet.Episodes -> EpisodeSheet(ui, session, onDismiss)
             Sheet.Danmaku -> DanmakuSheet(session)
             Sheet.None -> Unit
@@ -124,16 +133,30 @@ private fun SubtitleOffsetRow(offset: SubtitleOffset, session: VideoSession) {
 
 /** 定时关闭 and 用其他播放器打开. */
 @Composable
-private fun MoreSheet(ui: VideoUi, session: VideoSession, onSheet: (Sheet) -> Unit, onDismiss: () -> Unit) {
+private fun MoreSheet(
+    ui: VideoUi,
+    session: VideoSession,
+    onSheet: (Sheet) -> Unit,
+    onDismiss: () -> Unit,
+    onRotate: () -> Unit,
+    portrait: Boolean,
+) {
     val context = LocalContext.current
+    // 用户口径（2026-11-22）：横竖屏切换放在「三点」菜单最上方（原来在底部控制栏，
+    // 变竖屏后底部按钮被折叠看不到，所以挪进来）。
     val options = listOf(
+        (if (portrait) "切换到横屏" else "切换到竖屏") to false,
         "定时关闭" + (ui.sleep?.let { " · ${it.label}" } ?: "") to (ui.sleep != null),
         "用其他播放器打开" to false,
     )
     OptionList("更多", options) { index ->
         when (index) {
-            0 -> onSheet(Sheet.Sleep)
-            1 -> {
+            0 -> {
+                onDismiss()
+                onRotate()
+            }
+            1 -> onSheet(Sheet.Sleep)
+            2 -> {
                 onDismiss()
                 session.portableStream()?.let { (url, title) ->
                     val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(url), "video/*")

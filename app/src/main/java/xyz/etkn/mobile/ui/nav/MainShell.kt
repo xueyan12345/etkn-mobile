@@ -64,6 +64,8 @@ import xyz.etkn.mobile.ui.components.glassSource
 import xyz.etkn.mobile.ui.screens.music.MiniPlayer
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.LocalSettings
+xyz.etkn.mobile.data.session.StoredSessions
+xyz.etkn.mobile.data.session.SavedAccount
 
 /** Space screens must leave at the bottom for the floating dock / mini player. */
 val LocalBottomInset = staticCompositionLocalOf { 0.dp }
@@ -132,6 +134,11 @@ fun MainShell(session: ActiveSession) {
 
     val menuScope = rememberCoroutineScope()
     val itemMenu = remember(session.key) { ItemMenu(context.graph, menuScope) }
+    // 用户口径（2026-11-22）：底栏长按「我的」快捷切号。
+    val storedSessions by context.graph.sessions.accounts.collectAsStateWithLifecycle(initialValue = StoredSessions())
+    val switchAccount: suspend (SavedAccount) -> Unit = { account ->
+        if (account.key != session.key) context.graph.sessions.switchTo(account)
+    }
 
     CompositionLocalProvider(
         LocalNav provides nav,
@@ -151,7 +158,12 @@ fun MainShell(session: ActiveSession) {
                 enter = fadeIn() + slideInHorizontally { -it },
                 exit = fadeOut() + slideOutHorizontally { -it },
             ) {
-                Dock(tabs, current, nav, pager, vertical = true)
+                Dock(
+                    tabs, current, nav, pager, vertical = true,
+                    storedAccounts = storedSessions.accounts,
+                    activeAccountKey = session.key,
+                    onSwitchAccount = switchAccount,
+                )
             }
             Column(
                 Modifier.align(if (side) Alignment.BottomEnd else Alignment.BottomCenter)
@@ -165,7 +177,12 @@ fun MainShell(session: ActiveSession) {
                     MiniPlayer(onOpen = { nav.to(NowPlayingRoute) }, modifier = Modifier.padding(bottom = 8.dp))
                 }
                 AnimatedVisibility(dockVisible, enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }) {
-                    Dock(tabs, current, nav, pager, vertical = false)
+                    Dock(
+                        tabs, current, nav, pager, vertical = false,
+                        storedAccounts = storedSessions.accounts,
+                        activeAccountKey = session.key,
+                        onSwitchAccount = switchAccount,
+                    )
                 }
             }
             ItemMenuHost(itemMenu, hazeState)

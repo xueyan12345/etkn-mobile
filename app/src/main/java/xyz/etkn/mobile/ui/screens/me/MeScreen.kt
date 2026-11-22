@@ -1,5 +1,11 @@
 package xyz.etkn.mobile.ui.screens.me
 
+androidx.compose.foundation.layout.WindowInsets
+androidx.compose.foundation.layout.statusBars
+androidx.compose.foundation.layout.windowInsetsPadding
+androidx.compose.material.icons.rounded.MoreVert
+androidx.compose.material.icons.rounded.Clear
+androidx.compose.material3.IconButton
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,7 +76,6 @@ import xyz.etkn.mobile.ui.nav.LocalBottomInset
 import xyz.etkn.mobile.ui.nav.LocalNav
 import xyz.etkn.mobile.ui.nav.SettingsRoute
 import xyz.etkn.mobile.ui.screens.connect.ConnectScreen
-import xyz.etkn.mobile.ui.screens.library.LargeTitle
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
 
@@ -87,7 +92,12 @@ fun MeScreen() {
     // Tablets: a readable centred column instead of edge-to-edge rows.
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
     LazyColumn(Modifier.widthIn(max = 720.dp).fillMaxSize(), contentPadding = PaddingValues(bottom = LocalBottomInset.current)) {
-        item { LargeTitle("我的") }
+        // 用户口径（2026-11-22）：顶部那个大字「我的」删掉，账号卡片直接起头（补一点状态栏留白）。
+        item {
+            Spacer(
+                Modifier.windowInsetsPadding(WindowInsets.statusBars).height(12.dp),
+            )
+        }
         item {
             Surface(
                 shape = Corner.panel,
@@ -194,6 +204,7 @@ fun AccountsScreen() {
         SettingsGroup {
             stored.accounts.forEach { account ->
                 val active = account.key == current?.key
+                val isDefault = account.key == stored.defaultKey
                 ListItem(
                     onClick = {
                         if (!active) scope.launch {
@@ -201,9 +212,38 @@ fun AccountsScreen() {
                             if (!ok) { message = "该账号需要重新输入密码"; adding = true }
                         }
                     },
-                    supportingContent = { Text(account.serverName + if (account.sealedToken == null && !active) " · 需要密码" else "") },
+                    supportingContent = {
+                        // 用户口径（2026-11-22）：显示「当前」（正在用）和「默认」（冷启动用它），两者可以不是同一个。
+                        Text(
+                            account.serverName +
+                                if (account.sealedToken == null && !active) " · 需要密码" else "",
+                        )
+                    },
                     leadingContent = { Icon(Icons.Rounded.Person, null) },
-                    trailingContent = { if (active) Text("当前", color = MaterialTheme.colorScheme.primary) },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (isDefault) Text("默认", color = MaterialTheme.colorScheme.primary)
+                            if (active) Text(if (isDefault) " · 当前" else "当前", color = MaterialTheme.colorScheme.primary)
+                            val menu = rememberPopupAnchor()
+                            IconButton(onClick = {
+                                menu.open(
+                                    listOf(
+                                        PopupChoice(
+                                            label = "设为默认账号",
+                                            icon = Icons.Rounded.Star,
+                                            selected = isDefault,
+                                            onClick = {
+                                                scope.launch {
+                                                    graph.sessions.setDefaultAccount(if (isDefault) null else account.key)
+                                                    message = if (isDefault) "已取消默认，改为跟随上次使用的账号" else "已设为默认：${account.userName}"
+                                                }
+                                            },
+                                        ),
+                                    ),
+                                )
+                            }) { Icon(Icons.Rounded.MoreVert, "更多", modifier = menu.modifier) }
+                        }
+                    },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 ) { Text(account.userName) }
             }
