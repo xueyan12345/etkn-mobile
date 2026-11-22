@@ -105,6 +105,8 @@ data class VideoUi(
     val sleep: SleepTimer? = null,
     /** Name of the DLNA renderer this title was handed to. */
     val castingTo: String? = null,
+    /** 用户口径（2026-11-23）：进度条要显示已缓冲区间。 */
+    val bufferedPosition: Long = 0L,
 )
 
 private const val TAG = "ETKN-Play"

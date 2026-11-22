@@ -8,7 +8,8 @@ import xyz.etkn.mobile.data.net.str
 
 /** Public release channel of this app. */
 object ReleaseRepo {
-    const val SLUG = "Alumos/etkn-mobile"
+    // 用户口径（2026-11-23）：改成自己 fork 的仓库，App 内「检查更新」直接从这里的 Release 拉包。
+    const val SLUG = "xueyan12345/etkn-mobile"
     const val LATEST_API = "https://api.github.com/repos/$SLUG/releases/latest"
     const val LATEST_SUMS = "https://github.com/$SLUG/releases/latest/download/SHA256SUMS.txt"
     fun assetUrl(tag: String, name: String) = "https://github.com/$SLUG/releases/download/$tag/$name"

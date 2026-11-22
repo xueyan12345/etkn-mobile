@@ -136,6 +136,27 @@ data class Settings(
     val backgroundPlay: Boolean = false,
 )
 
+/**
+ * 用户口径（2026-11-23）：轮播图（首页推荐）按账号独立设置。
+ * 之前 heroMode 存在全局 Settings 里，一个账号改了所有账号都跟着变。
+ * 现在每个账号一份，key 用 session.key（serverId|userId）。没设置过的账号用 fallback。
+ */
+object HeroModePerAccount {
+    private const val FILE = "etkn_hero_mode"
+    private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+
+    fun read(context: Context, accountKey: String?, fallback: HeroMode): HeroMode {
+        if (accountKey.isNullOrBlank()) return fallback
+        val name = prefs(context).getString(accountKey, null) ?: return fallback
+        return runCatching { HeroMode.valueOf(name) }.getOrDefault(fallback)
+    }
+
+    fun write(context: Context, accountKey: String?, mode: HeroMode) {
+        if (accountKey.isNullOrBlank()) return
+        prefs(context).edit(commit = true) { putString(accountKey, mode.name) }
+    }
+}
+
 class AppSettings(private val context: Context) {
     private object Keys {
         val theme = stringPreferencesKey("theme_mode")

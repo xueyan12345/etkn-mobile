@@ -77,15 +77,15 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     var locked by remember { mutableStateOf(false) }
     var resize by remember { mutableIntStateOf(0) }
     var sheet by remember { mutableStateOf(Sheet.None) }
-    // 用户口径（2026-11-22）：播放器原本被 manifest 钉死在 sensorLandscape，
-    // 竖屏视频只能显示中间一条，也没有转屏按钮。这里加一个手动方向开关：
-    // 默认跟随视频本身的比例（竖屏视频就竖屏显示），也可手动切到另一方向。
+    // 用户口径（2026-11-23）：去掉重力感应横竖屏，改成「按视频宽高比自动判断」。
+    // 宽 > 高 → 横屏；高 > 宽 → 竖屏。切下一集时视频尺寸会变，这里监听 videoSize 重判，
+    // 不用退出播放器。手动旋转按钮仍然可以临时覆盖，换集后会重新跟随视频比例。
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = context as? android.app.Activity
     // true = 竖屏（portrait），false = 横屏（landscape）
-    var portrait by remember {
-        mutableStateOf(activity?.resources?.configuration?.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT)
-    }
+    var portrait by remember { mutableStateOf(false) }
+    // 用户手动覆盖过方向就不再自动跟随，直到换集重置
+    var manualOrientation by remember { mutableStateOf(false) }
     val applyOrientation: (Boolean) -> Unit = { wantPortrait ->
         portrait = wantPortrait
         activity?.requestedOrientation = if (wantPortrait) {
@@ -106,10 +106,26 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         playing = current?.isPlaying == true
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+
+            /**
+             * 用户口径（2026-11-23）：按视频宽高比自动决定横竖屏。
+             * 这个回调在每次载入新视频时都会触发（包括不退出播放器直接切下一集），
+             * 所以切集后方向会重新跟随新视频，不用手动干预。
+             */
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                if (manualOrientation) return
+                val w = videoSize.width
+                val h = videoSize.height
+                if (w <= 0 || h <= 0) return
+                val wantPortrait = h > w
+                if (wantPortrait != portrait) applyOrientation(wantPortrait)
+            }
         }
         current?.addListener(listener)
         onDispose { current?.removeListener(listener) }
     }
+    // 切集时重置手动覆盖，让新视频自己决定方向
+    LaunchedEffect(ui.item?.id) { manualOrientation = false }
     LaunchedEffect(ui.finished) { if (ui.finished) onBack() }
     // Poll the clock only as fast as the UI needs it: 4 Hz while the controls show it, else 1 Hz
     // (enough for the skip-intro / credits segments).
@@ -263,8 +279,15 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     onSheet = { sheet = it; touch() },
                     onResize = { resize = (resize + 1) % ResizeModes.size; touch() },
                     resizeLabel = ResizeModes[resize].second,
+                    onRotate = { manualOrientation = true; applyOrientation(!portrait); touch() },
+                    rotateLabel = if (portrait) "竖屏" else "横屏",
                     onLock = { locked = true; controls = false },
                     onNext = { session.playNext() },
+                    onToggleDanmaku = {
+                        // 弹幕开关：直接翻转 enabled（样式其它项保持不变）
+                        session.setDanmakuStyle(session.danmakuStyle.value.copy(enabled = !ui.danmakuOn))
+                        touch()
+                    },
                 )
             }
             if (locked) {
@@ -293,7 +316,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             sheet, ui, session,
             onSheet = { sheet = it },
             onDismiss = { sheet = Sheet.None },
-            onRotate = { applyOrientation(!portrait); touch() },
+            onRotate = { manualOrientation = true; applyOrientation(!portrait); touch() },
             portrait = portrait,
         )
     }

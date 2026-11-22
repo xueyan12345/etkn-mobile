@@ -88,7 +88,6 @@ import xyz.etkn.mobile.ui.components.MessageState
 import xyz.etkn.mobile.ui.components.PillGap
 import xyz.etkn.mobile.ui.components.PillToggle
 import xyz.etkn.mobile.ui.components.PosterCard
-import xyz.etkn.mobile.ui.components.CardShape
 import xyz.etkn.mobile.ui.components.glass
 import xyz.etkn.mobile.ui.components.glassSource
 import xyz.etkn.mobile.ui.components.images

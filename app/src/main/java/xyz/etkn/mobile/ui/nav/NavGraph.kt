@@ -123,7 +123,8 @@ private fun TabPager(tabs: List<TopLevel>, pager: PagerState, vertical: Boolean)
     if (vertical) {
         VerticalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, userScrollEnabled = false, key = key, pageContent = content)
     } else {
-        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, key = key, pageContent = content)
+        // 用户口径（2026-11-23）：禁止在页面上左右滑动切换标签，只能点底栏图标切换。
+        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, userScrollEnabled = false, key = key, pageContent = content)
     }
 }
 

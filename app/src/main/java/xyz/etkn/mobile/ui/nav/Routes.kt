@@ -67,8 +67,11 @@ enum class TopLevel(val route: Any, val label: String, val icon: ImageVector, va
  * right; the phone dock holds at most [DOCK_MAX] tabs.
  */
 fun visibleTabs(chosen: Set<String>?, canDiscover: Boolean, side: Boolean): List<TopLevel> {
-    val picked = chosen?.let { names -> TopLevel.entries.filter { it == TopLevel.Home || it.name in names } }
-        ?: TopLevel.entries.filter { tab ->
+    // 用户口径（2026-11-23）：底栏不再显示「媒体库」入口（首页里有那一行可点进去）。
+    // 注意：只是不放进底栏，LibrariesRoute 页面本身保留，顶部入口仍可导航过去。
+    val all = TopLevel.entries.filter { it != TopLevel.Libraries }
+    val picked = chosen?.let { names -> all.filter { it == TopLevel.Home || it.name in names } }
+        ?: all.filter { tab ->
             when (tab) {
                 TopLevel.Search -> side || !canDiscover
                 else -> true

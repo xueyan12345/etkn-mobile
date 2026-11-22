@@ -1,5 +1,6 @@
 package xyz.etkn.mobile.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,6 +10,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,9 +28,10 @@ import xyz.etkn.mobile.ui.theme.Etkn
 /**
  * 区块标题。
  *
- * 用户口径（2026-11-22）：
- * · 去掉右侧的 → 箭头（参考图没有箭头，点了也多余）
- * · 标题字号比上一版稍大一点（titleMedium → 17sp 左右），加粗，看着有分量但不抢戏
+ * 用户口径（2026-11-23）：
+ * · 字号在上一版基础再放大一档（titleMedium → titleLarge），加粗有分量
+ * · 只有「媒体库」带 > 并且整行可点（点进去看媒体库列表）；
+ *   其他区块（国产剧集/华语电影…）不带箭头
  * · 上下留白收紧，跟参考图一样紧凑
  */
 @Composable
@@ -34,20 +39,30 @@ fun SectionHeader(
     title: String,
     modifier: Modifier = Modifier,
     onMore: (() -> Unit)? = null,
-    showArrow: Boolean = true,
+    /** 标题后是否显示 > 并使整行可点。只有媒体库用。 */
+    showChevron: Boolean = false,
 ) {
+    val clickable = if (showChevron && onMore != null) Modifier.clickable(onClick = onMore) else Modifier
     Row(
-        modifier.fillMaxWidth().padding(start = LocalStartInset.current + Etkn.space.screen, end = 8.dp),
+        modifier.fillMaxWidth().padding(start = LocalStartInset.current + Etkn.space.screen, end = 8.dp).then(clickable),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             title,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+            modifier = if (showChevron) Modifier else Modifier.weight(1f),
         )
+        if (showChevron) {
+            Icon(
+                Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = "查看全部",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 2.dp),
+            )
+        }
     }
 }
 
@@ -58,12 +73,12 @@ fun Shelf(
     items: List<Item>,
     modifier: Modifier = Modifier,
     onMore: (() -> Unit)? = null,
-    showArrow: Boolean = true,
+    showChevron: Boolean = false,
     itemContent: @Composable (Item) -> Unit,
 ) {
-    // 用户口径（2026-11-22）：模块之间的竖向间距从 28dp 收到 18dp，整页更紧凑（参考图那密度）。
+    // 用户口径（2026-11-23）：模块之间的竖向间距 18dp，紧凑（参考图那密度）。
     Column(modifier.fillMaxWidth().padding(top = 18.dp)) {
-        SectionHeader(title, onMore = onMore, showArrow = showArrow)
+        SectionHeader(title, onMore = onMore, showChevron = showChevron)
         LazyRow(
             // Starts clear of the side dock but scrolls on under its glass.
             contentPadding = PaddingValues(start = LocalStartInset.current + Etkn.space.screen, end = Etkn.space.screen),
@@ -80,11 +95,11 @@ fun LazyListScope.shelf(
     title: String,
     items: List<Item>,
     onMore: (() -> Unit)? = null,
-    showArrow: Boolean = true,
+    showChevron: Boolean = false,
     itemContent: @Composable (Item) -> Unit,
 ) {
     if (items.isEmpty()) return
     item(key = key, contentType = "shelf") {
-        Shelf(title, items, onMore = onMore, showArrow = showArrow, itemContent = itemContent)
+        Shelf(title, items, onMore = onMore, showChevron = showChevron, itemContent = itemContent)
     }
 }

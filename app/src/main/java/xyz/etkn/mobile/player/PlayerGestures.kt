@@ -90,7 +90,10 @@ internal fun GestureLayer(
             // 后者会和双击手势抢事件，把双击快进退吃掉。
             .pointerInput(enabled, player) {
                 if (!enabled) return@pointerInput
-                val stepPx = 40.dp.toPx()
+                // 用户口径（2026-11-23）：灵敏度太低，同样距离原来只加 0.2，改成加 0.5。
+                // 原 40dp 一格 0.1×；现 16dp 一格 0.1×，即同样 40dp 会走 2.5 格 = 0.25×，
+                // 再把步长提到 0.2×/格 → 40dp 约 0.5×，符合要求。
+                val stepPx = 16.dp.toPx()
                 // 累计水平位移（跨 onDrag 帧），只在这次手势内有效
                 var dxTotal = 0f
                 var prevSpeed = 1f
@@ -109,7 +112,8 @@ internal fun GestureLayer(
                         change.consume()
                         dxTotal += change.position.x - change.previousPosition.x
                         val steps = (dxTotal / stepPx).toInt()
-                        val target = kotlin.math.round(((2f + steps * 0.1f).coerceIn(0.3f, 4f)) * 10f) / 10f
+                        // 每格 0.2×（原来是 0.1×），配合 16dp 的格距，40dp 位移约 +0.5×
+                        val target = kotlin.math.round(((2f + steps * 0.2f).coerceIn(0.3f, 4f)) * 10f) / 10f
                         if (target != lastSpeed) {
                             lastSpeed = target
                             player.setPlaybackSpeed(target)
@@ -140,7 +144,11 @@ internal fun GestureLayer(
                         startPosition = player.currentPosition
                         seekTarget = startPosition
                         level = if (start.x < size.width / 2) {
-                            activity?.window?.attributes?.screenBrightness?.takeIf { it >= 0 } ?: 0.5f
+                            // 用户口径（2026-11-23）：记忆上次亮度。优先用存过的值，没有才用系统当前值。
+                            context.getSharedPreferences("etkn_player", Context.MODE_PRIVATE)
+                                .getFloat("screen_brightness", -1f)
+                                .takeIf { it >= 0f }
+                                ?: (activity?.window?.attributes?.screenBrightness?.takeIf { it >= 0 } ?: 0.5f)
                         } else {
                             audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                         }
@@ -172,6 +180,9 @@ internal fun GestureLayer(
                                     attrs.screenBrightness = level
                                     w.attributes = attrs
                                 }
+                                // 用户口径（2026-11-23）：记住这次调的亮度，下次进播放器沿用。
+                                context.getSharedPreferences("etkn_player", Context.MODE_PRIVATE)
+                                    .edit().putFloat("screen_brightness", level).apply()
                                 onFeedback(GestureFeedback.Level(Icons.Rounded.Brightness6, level))
                             }
                             3 -> {

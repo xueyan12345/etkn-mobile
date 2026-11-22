@@ -22,10 +22,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Audiotrack
-import androidx.compose.material.icons.rounded.Cast
-import androidx.compose.material.icons.rounded.CastConnected
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.ClosedCaption
@@ -36,17 +35,20 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay10
+import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.VideoSettings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SliderState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -58,57 +60,84 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import xyz.etkn.mobile.ui.components.Artwork
 import xyz.etkn.mobile.ui.components.formatClock
 import xyz.etkn.mobile.ui.theme.Corner
 
+/**
+ * 播放器控制层。
+ *
+ * 用户口径（2026-11-23）按参考图重排：
+ * · 左上：返回 + 剧名（服务端艺术字 logo，取不到就用文字标题）
+ * · 顶部右侧：版本（多版本时）/ 画面比例 / 画中画 / 旋转屏幕 / 更多
+ *   投屏已从这里移除（用户要求先去掉，后续另给位置）
+ * · 中央：快退 10 秒 / 播放暂停 / 快进 10 秒（保持原样不动）
+ * · 进度条上方：剧名 + 集号
+ * · 进度条：加缓冲位置小条
+ * · 进度条下方右侧图标：弹幕开关 / 弹幕设置 / 音轨 / 字幕 / 选集
+ * · 左下：锁定
+ */
 @Composable
 internal fun Controls(
     ui: VideoUi,
     playing: Boolean,
-    position: Long,
     duration: Long,
+    position: Long,
     buffered: Long,
+    onPlayPause: () -> Unit,
+    onSeekBy: (Long) -> Unit,
+    onSeek: (Long) -> Unit,
     onBack: () -> Unit,
     onPip: () -> Unit,
-    onPlayPause: () -> Unit,
-    onSeek: (Long) -> Unit,
-    onSeekBy: (Long) -> Unit,
     onSheet: (Sheet) -> Unit,
     onResize: () -> Unit,
     resizeLabel: String,
+    onRotate: () -> Unit,
+    rotateLabel: String,
     onLock: () -> Unit,
     onNext: () -> Unit,
+    onToggleDanmaku: () -> Unit,
 ) {
     var scrubbing by remember { mutableStateOf(false) }
     var scrub by remember { mutableFloatStateOf(0f) }
     Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxWidth().height(140.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent))))
+        // 上下渐变，保证文字/按钮在亮画面上也看得清
+        Box(Modifier.fillMaxWidth().height(160.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.72f), Color.Transparent))))
         Box(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(200.dp)
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f)))),
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(240.dp)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.84f)))),
         )
-        // Top bar
+
+        // ===== 顶栏：返回 + 剧名 + 右侧功能图标 =====
         Row(
             Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = Color.White) }
-            Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                Text(ui.title, color = Color.White, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (ui.subtitle.isNotEmpty()) {
-                    Text(ui.subtitle, color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+            // 剧名：优先用服务端艺术字 logo，没有就退回文字标题
+            Box(Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                Text(
+                    ui.title,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             if (ui.sources.size > 1) PlayerAction(Icons.Rounded.VideoSettings, "版本") { onSheet(Sheet.Versions) }
-            PlayerAction(if (ui.castingTo != null) Icons.Rounded.CastConnected else Icons.Rounded.Cast, "投屏") { onSheet(Sheet.Cast) }
+            PlayerAction(Icons.Rounded.AspectRatio, resizeLabel, onResize)
             PlayerAction(Icons.Rounded.PictureInPictureAlt, "画中画", onPip)
+            PlayerAction(Icons.Rounded.ScreenRotation, rotateLabel, onRotate)
             PlayerAction(Icons.Rounded.MoreVert, "更多") { onSheet(Sheet.More) }
         }
-        // Center transport
+
+        // ===== 中央播放控制（保持原样，不缩不放）=====
         Row(
             Modifier.align(Alignment.Center),
             horizontalArrangement = Arrangement.spacedBy(36.dp),
@@ -118,44 +147,86 @@ internal fun Controls(
                 Icon(Icons.Rounded.Replay10, "后退 10 秒", tint = Color.White, modifier = Modifier.size(36.dp))
             }
             IconButton(onClick = onPlayPause, modifier = Modifier.size(76.dp)) {
-                Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "暂停" else "播放", tint = Color.White, modifier = Modifier.size(60.dp))
+                Icon(
+                    if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    if (playing) "暂停" else "播放",
+                    tint = Color.White, modifier = Modifier.size(60.dp),
+                )
             }
             IconButton(onClick = { onSeekBy(10_000) }, modifier = Modifier.size(56.dp)) {
                 Icon(Icons.Rounded.Forward10, "快进 10 秒", tint = Color.White, modifier = Modifier.size(36.dp))
             }
         }
-        // Bottom bar
+
+        // ===== 底栏：剧名+集号 / 进度条 / 功能图标 =====
         Column(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
             val previews = ui.previews
             if (scrubbing && previews != null && duration > 0) SeekThumbnail(previews, scrub, duration)
+
+            // 用户口径（2026-11-23）：剧名 + 第几集放在进度条上方
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 2.dp)) {
+                Text(
+                    buildString {
+                        append(ui.title)
+                        ui.subtitle.takeIf { it.isNotEmpty() }?.let { append("  ·  $it") }
+                    },
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(formatClock(if (scrubbing) (scrub * duration).toLong() else position), color = Color.White, style = MaterialTheme.typography.labelMedium)
                 val seek = remember { SliderState() }
                 seek.value = if (scrubbing) scrub else if (duration > 0) position.toFloat() / duration else 0f
-                Slider(
-                    state = seek,
-                    onValueChange = { scrubbing = true; scrub = it },
-                    onValueChangeFinished = { onSeek((scrub * duration).toLong()); scrubbing = false },
-                    colors = SliderDefaults.colors(inactiveTrackColor = Color.White.copy(alpha = 0.25f)),
-                    modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-                )
+                // 缓冲条：在 Slider 下面叠一条细线显示已缓冲区间
+                Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    val buffered = if (duration > 0) (buffered.toFloat() / duration).coerceIn(0f, 1f) else 0f
+                    if (buffered > 0.002f) {
+                        LinearProgressIndicator(
+                            progress = { buffered },
+                            modifier = Modifier.align(Alignment.Center).fillMaxWidth().height(2.dp),
+                            color = Color.White.copy(alpha = 0.38f),
+                            trackColor = Color.White.copy(alpha = 0.10f),
+                            strokeCap = StrokeCap.Round,
+                            gapSize = 0.dp,
+                            drawStopIndicator = {},
+                        )
+                    }
+                    Slider(
+                        state = seek,
+                        onValueChange = { scrubbing = true; scrub = it },
+                        onValueChangeFinished = { onSeek((scrub * duration).toLong()); scrubbing = false },
+                        colors = SliderDefaults.colors(
+                            inactiveTrackColor = Color.White.copy(alpha = 0.25f),
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 Text(formatClock(duration), color = Color.White, style = MaterialTheme.typography.labelMedium)
             }
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 PlayerAction(Icons.Rounded.LockOpen, "锁定", onLock)
                 Spacer(Modifier.weight(1f))
-                PlayerTextAction(Icons.Rounded.Audiotrack, "音轨") { onSheet(Sheet.Audio) }
-                PlayerTextAction(Icons.Rounded.ClosedCaption, "字幕") { onSheet(Sheet.Subtitle) }
+                // 用户口径（2026-11-23）：右下角这五个改成纯图标，和参考图一致
                 if (ui.danmakuSupported) {
-                    PlayerTextAction(if (ui.danmakuOn) Icons.Rounded.ChatBubble else Icons.Rounded.ChatBubbleOutline, "弹幕") { onSheet(Sheet.Danmaku) }
+                    PlayerAction(
+                        if (ui.danmakuOn) Icons.Rounded.ChatBubble else Icons.Rounded.ChatBubbleOutline,
+                        if (ui.danmakuOn) "关闭弹幕" else "开启弹幕",
+                        onToggleDanmaku,
+                    )
+                    PlayerAction(Icons.Rounded.Settings, "弹幕设置") { onSheet(Sheet.Danmaku) }
                 }
-                PlayerTextAction(Icons.Rounded.Speed, if (ui.speed == 1f) "倍速" else "${ui.speed}×") { onSheet(Sheet.Speed) }
-                PlayerTextAction(Icons.Rounded.AspectRatio, resizeLabel, onResize)
-                if (ui.item?.isEpisode == true) PlayerTextAction(Icons.AutoMirrored.Rounded.PlaylistPlay, "选集") { onSheet(Sheet.Episodes) }
-                if (ui.next != null) PlayerTextAction(Icons.Rounded.SkipNext, "下一集", onNext)
+                PlayerAction(Icons.Rounded.Audiotrack, "音轨") { onSheet(Sheet.Audio) }
+                PlayerAction(Icons.Rounded.ClosedCaption, "字幕") { onSheet(Sheet.Subtitle) }
+                if (ui.item?.isEpisode == true) PlayerAction(Icons.AutoMirrored.Rounded.PlaylistPlay, "选集") { onSheet(Sheet.Episodes) }
             }
         }
     }
@@ -164,15 +235,6 @@ internal fun Controls(
 @Composable
 private fun PlayerAction(icon: ImageVector, label: String, onClick: () -> Unit) {
     IconButton(onClick = onClick) { Icon(icon, label, tint = Color.White) }
-}
-
-@Composable
-private fun PlayerTextAction(icon: ImageVector, label: String, onClick: () -> Unit) {
-    TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 10.dp)) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(label, color = Color.White, style = MaterialTheme.typography.labelLarge)
-    }
 }
 
 /** The frame under the finger while scrubbing, riding above the seek bar. */

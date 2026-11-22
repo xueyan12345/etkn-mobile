@@ -1,5 +1,6 @@
 package xyz.etkn.mobile.ui.components
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -31,7 +32,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -127,18 +132,50 @@ private fun androidx.compose.foundation.layout.BoxScope.PosterBadges(item: Item)
                 .background(Color.Black.copy(alpha = 0.35f), CircleShape),
             tint = MaterialTheme.colorScheme.primary,
         )
-        item.isSeries && unplayed > 0 -> Surface(
-            modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
-            shape = Corner.small,
-            color = MaterialTheme.colorScheme.primary,
-        ) {
-            Text(
-                unplayed.toString(),
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+        item.isSeries && unplayed > 0 -> EpisodesRing(item)
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：未看集数从纯数字方块改成环形进度圈。
+ * 圆环按「已看/总集数」的比例填充，中间显示剩余未看集数 —— 一眼就能看出进度。
+ */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item) {
+    val unplayed = item.userData.unplayedItemCount ?: 0
+    // 接口没给总集数，用 PlayedPercentage（已看百分比）当进度。没有就用 0（只显示底圈+数字）。
+    val fraction = ((item.userData.playedPercentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
+    val track = Color.Black.copy(alpha = 0.45f)
+    val accent = MaterialTheme.colorScheme.primary
+    Box(
+        Modifier.align(Alignment.TopEnd).padding(6.dp).size(30.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = size.minDimension * 0.11f
+            val inset = stroke / 2
+            val arcSize = Size(size.width - stroke, size.height - stroke)
+            // 底圈
+            drawArc(
+                color = track, startAngle = 0f, sweepAngle = 360f, useCenter = false,
+                topLeft = Offset(inset, inset), size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round),
             )
+            // 进度圈（从 12 点方向顺时针）
+            if (fraction > 0f) {
+                drawArc(
+                    color = accent, startAngle = -90f, sweepAngle = 360f * fraction, useCenter = false,
+                    topLeft = Offset(inset, inset), size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
+                )
+            }
         }
+        Text(
+            unplayed.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+        )
     }
 }
 
@@ -223,9 +260,22 @@ fun WideCard(
  * 用户口径（2026-11-22）：文字从「压在图片上」改成「放在图片下方」，字加粗，间距留够。
  */
 @Composable
-fun LibraryCard(item: Item, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp = 200.dp) {
+fun LibraryCard(
+    item: Item,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    width: Dp = 200.dp,
+    /** 用户口径（2026-11-23）：长按弹服务端功能菜单（只有管理员给）。 */
+    onLongClick: (() -> Unit)? = null,
+) {
     val url = images().primary(item, width.px())
-    Column(modifier.width(width).clip(CardShape).clickable(onClick = onClick)) {
+    Column(
+        modifier.width(width).clip(CardShape)
+            .then(
+                if (onLongClick != null) Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                else Modifier.clickable(onClick = onClick)
+            ),
+    ) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(CardShape)) {
             Artwork(url, Modifier.fillMaxSize(), item.name, placeholder = libraryIcon(item.collectionType))
             Box(Modifier.fillMaxSize().background(Etkn.tokens.posterScrim))

@@ -81,7 +81,17 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
     // Tablets: a cinematic band instead of a near-full-screen poster.
     val heroHeight = if (wide) (screenHeight * 0.58f).coerceIn(380.dp, 560.dp) else (screenHeight * 0.64f).coerceIn(420.dp, 620.dp)
     val revealPx = with(LocalDensity.current) { 96.dp.toPx() }
-    val heroMode = LocalSettings.current.heroMode
+    // 用户口径（2026-11-23）：轮播图按账号独立设置。
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val accountKey = (context.graph.sessions.state.collectAsStateWithLifecycle().value as? xyz.etkn.mobile.data.session.SessionState.SignedIn)?.session?.key
+    val settingsHero = LocalSettings.current.heroMode
+    val heroMode = remember(accountKey, settingsHero) {
+        xyz.etkn.mobile.data.settings.HeroModePerAccount.read(context, accountKey, settingsHero)
+    }
+    // 用户口径（2026-11-23）：媒体库长按菜单只给有管理权限的账号。
+    val session = (context.graph.sessions.state.collectAsStateWithLifecycle().value as? xyz.etkn.mobile.data.session.SessionState.SignedIn)?.session
+    val canManage = session?.isAdmin == true
+    val libMenu = rememberLibraryActions()
     // 用户口径（2026-11-22）：轮播图要保留（上次误删，已恢复）。
     val hasHero = data.hero.isNotEmpty() && heroMode != HeroMode.Off
     // 0 over the untouched hero (bar invisible, poster unobstructed) → 1 after ~96 dp of scrolling.
@@ -109,17 +119,25 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                 // 用户口径（2026-11-22）：没有轮播图时不要留 64dp 空档，直接贴状态栏起头。
                 item(key = "top-space") { Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars).height(12.dp)) }
             }
+            // 用户口径（2026-11-23）：媒体库提到最上面（原来在继续观看下面），标题带 > 且可点。
+            // 长按封面 → 弹服务端功能菜单（生成封面/提取缩略图/扫描/刷新），非管理员自动不出菜单项。
+            shelf("libraries", "媒体库", data.libraries, onMore = { nav.top(TopLevel.Libraries) }, showChevron = true) { library ->
+                LibraryCard(
+                    library,
+                    onClick = { nav.openLibrary(library) },
+                    onLongClick = if (canManage) {
+                        { libMenu.openMenu(library) }
+                    } else null,
+                )
+            }
             shelf("resume", "继续观看", data.resume) { item ->
                 WideCard(item, onClick = { nav.openTitle(item) }, resume = true, onPlay = { nav.play(item) })
             }
-            // 用户口径（2026-11-22）：去掉标题右侧的 → 箭头（参考图里没有）。
-            shelf("libraries", "媒体库", data.libraries, onMore = { nav.top(TopLevel.Libraries) }, showArrow = false) { library ->
-                LibraryCard(library, onClick = { nav.openLibrary(library) })
-            }
             data.latest.forEach { shelfData ->
                 val library = shelfData.library
-                shelf("latest-${library.id}", "最新 · ${library.name}", shelfData.items,
-                    onMore = { nav.openLibrary(library) }, showArrow = false) { item ->
+                // 用户口径（2026-11-23）：去掉「最新 · 」前缀，直接显示库名。
+                shelf("latest-${library.id}", library.name, shelfData.items,
+                    onMore = { nav.openLibrary(library) }) { item ->
                     PosterCard(item, onClick = { nav.open(item) })
                 }
             }

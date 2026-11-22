@@ -82,7 +82,6 @@ import xyz.etkn.mobile.ui.components.LoadingState
 import xyz.etkn.mobile.ui.components.MessageState
 import xyz.etkn.mobile.ui.components.PillGap
 import xyz.etkn.mobile.ui.components.PillToggle
-import xyz.etkn.mobile.ui.components.CardShape
 import xyz.etkn.mobile.ui.components.formatRating
 import xyz.etkn.mobile.ui.components.glassSource
 import xyz.etkn.mobile.ui.components.images
@@ -170,24 +169,33 @@ private fun DiscoverTopBar(
         modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(horizontal = Etkn.space.screen, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // 用户口径（2026-11-23）：顶部这排按钮太大，按整体协调感缩小一档（40dp 高度、图标 20dp）。
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                 GlassPiece(haze, Corner.pill) {
-                    Row(Modifier.padding(4.dp), horizontalArrangement = Arrangement.spacedBy(PillGap)) {
+                    Row(Modifier.padding(horizontal = 3.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(PillGap)) {
                         DiscoverKind.entries.forEach { option ->
-                            PillToggle(checked = option == kind, onClick = { onKind(option) }) { Text(option.label) }
+                            PillToggle(checked = option == kind, onClick = { onKind(option) }) {
+                                Text(option.label, style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                     }
                 }
             }
             GlassPiece(haze, CircleShape) {
-                IconButton(onClick = onToggleSearch) {
-                    Icon(if (searching) Icons.Rounded.Close else Icons.Rounded.Search, if (searching) "关闭搜索" else "搜索")
+                IconButton(onClick = onToggleSearch, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        if (searching) Icons.Rounded.Close else Icons.Rounded.Search,
+                        if (searching) "关闭搜索" else "搜索",
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
             }
             GlassPiece(haze, CircleShape) {
-                IconButton(onClick = onFilter) {
-                    BadgedBox(badge = { if (filters > 0) Badge { Text(filters.toString()) } }) { Icon(Icons.Rounded.Tune, "筛选") }
+                IconButton(onClick = onFilter, modifier = Modifier.size(40.dp)) {
+                    BadgedBox(badge = { if (filters > 0) Badge { Text(filters.toString()) } }) {
+                        Icon(Icons.Rounded.Tune, "筛选", modifier = Modifier.size(20.dp))
+                    }
                 }
             }
         }

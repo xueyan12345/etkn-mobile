@@ -42,10 +42,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.chrisbanes.haze.rememberHazeState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import xyz.etkn.mobile.data.session.SessionState
 import xyz.etkn.mobile.data.settings.ColorSource
 import xyz.etkn.mobile.data.settings.DanmakuStyle
 import xyz.etkn.mobile.data.settings.DecoderPreference
 import xyz.etkn.mobile.data.settings.HeroMode
+import xyz.etkn.mobile.data.settings.HeroModePerAccount
 import xyz.etkn.mobile.data.settings.NavPosition
 import xyz.etkn.mobile.data.settings.PlayerEngine
 import xyz.etkn.mobile.data.settings.Settings
@@ -107,7 +109,14 @@ fun SettingsScreen(page: SettingsPage) {
                                 (context as? Activity)?.recreate()
                             }
                         }
-                        ChoiceRow("首页推荐", HeroMode.entries, settings.heroMode, { it.label }) { scope.launch { graph.settings.setHeroMode(it) } }
+                        // 用户口径（2026-11-23）：首页推荐按账号独立设置，只影响当前登录的这个账号。
+                        val sessionKey = (graph.sessions.state.collectAsStateWithLifecycle().value as? SessionState.SignedIn)?.session?.key
+                        val heroNow = remember(sessionKey, settings.heroMode) { HeroModePerAccount.read(context, sessionKey, settings.heroMode) }
+                        ChoiceRow("首页推荐", HeroMode.entries, heroNow, { it.label }) {
+                            HeroModePerAccount.write(context, sessionKey, it)
+                            scope.launch { graph.settings.setHeroMode(it) }
+                            (context as? Activity)?.recreate()
+                        }
                         val wide = LocalWindowLayout.current.wide
                         if (wide) {
                             ChoiceRow("导航位置", NavPosition.entries, settings.navPosition, { it.label }) { scope.launch { graph.settings.setNavPosition(it) } }

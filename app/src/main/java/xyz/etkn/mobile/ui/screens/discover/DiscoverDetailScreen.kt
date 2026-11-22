@@ -62,7 +62,6 @@ import xyz.etkn.mobile.ui.components.GlassBackBar
 import xyz.etkn.mobile.ui.components.GlassDialog
 import xyz.etkn.mobile.ui.components.InlineLoading
 import xyz.etkn.mobile.ui.components.SectionHeader
-import xyz.etkn.mobile.ui.components.CardShape
 import xyz.etkn.mobile.ui.components.formatRating
 import xyz.etkn.mobile.ui.components.glassSource
 import xyz.etkn.mobile.ui.components.images

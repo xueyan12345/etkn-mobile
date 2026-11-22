@@ -77,9 +77,14 @@ fun etknTokens(scheme: ColorScheme, dark: Boolean): EtknTokens = EtknTokens(
         0.6f to Color.Transparent,
         1f to Color.Black.copy(alpha = 0.66f),
     ),
+    // 用户口径（2026-11-23）：详情页背景之前发虚、雾蒙蒙像盖了层白罩。
+    // 原因：旧配置在 45% 处就叠了 0.5 不透明度的主题色，整张背景图被糊掉。
+    // 现在：中上部完全透明（背景图原样清晰），只在底部 55% 之后开始过渡到页面底色，
+    // 保证下面的文字/按钮可读。
     detailScrim = Brush.verticalGradient(
         0f to Color.Transparent,
-        0.45f to scheme.surface.copy(alpha = 0.5f),
+        0.55f to Color.Transparent,
+        0.78f to scheme.surface.copy(alpha = 0.72f),
         1f to scheme.surface,
     ),
     skeleton = scheme.surfaceContainerHigh,
