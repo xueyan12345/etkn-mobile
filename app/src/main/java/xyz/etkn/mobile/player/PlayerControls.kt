@@ -130,8 +130,10 @@ internal fun Controls(
             // 用户口径（2026-11-23）：剧名要用服务端挂好的书法艺术字 logo（ImageTags.Logo），
             // 不是普通文字。取不到 logo 才退回文字标题。
             Box(Modifier.weight(1f).padding(horizontal = 6.dp)) {
-                val logoUrl = remember(ui.item?.id) {
-                    ui.item?.let { images().logo(it, 480) }
+                // images() 是 @Composable，必须在 composable 上下文直接调，不能塞进 remember lambda
+                val urls = images()
+                val logoUrl = remember(ui.item?.id, urls) {
+                    ui.item?.let { urls.logo(it, 480) }
                 }
                 if (logoUrl != null) {
                     Artwork(
