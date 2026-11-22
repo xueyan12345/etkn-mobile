@@ -81,6 +81,11 @@ import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.data.cast.CastDevice
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.material.icons.rounded.Cast
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
 
 /** Long-press / overflow menu of the current shell; null outside it (previews, player). */
 val LocalItemMenu = staticCompositionLocalOf<ItemMenu?> { null }
@@ -527,7 +532,7 @@ private fun CastSheet(item: Item, menu: ItemMenu) {
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
                 )
             }
-            androidx.compose.foundation.lazy.LazyColumn(androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) {
+            LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp)) {
                 items(found.size) { index ->
                     val device = found[index]
                     Row(
@@ -536,12 +541,12 @@ private fun CastSheet(item: Item, menu: ItemMenu) {
                                 if (session == null) return@clickable
                                 busy = true
                                 scope.launch {
-                                    val info = runCatching { graph.api.playbackInfo(item.id) }.getOrNull()
-                                    val source = info?.sources?.firstOrNull()
-                                    val url = source?.let {
+                                    val source: xyz.etkn.mobile.data.model.MediaSource? =
+                                        runCatching { graph.api.playbackInfo(item.id).sources.firstOrNull() }.getOrNull()
+                                    val url: String? = source?.let { src ->
                                         runCatching {
                                             xyz.etkn.mobile.player.PlaybackAddress.portable(
-                                                it, session.server, session.token, session.userId,
+                                                src, session.server, session.token, session.userId,
                                             )
                                         }.getOrNull()
                                     }

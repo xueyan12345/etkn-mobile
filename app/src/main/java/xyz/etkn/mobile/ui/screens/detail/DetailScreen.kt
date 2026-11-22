@@ -129,6 +129,7 @@ import xyz.etkn.mobile.ui.components.PillGap
 import xyz.etkn.mobile.ui.components.PillToggle
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.AlertDialog
+import xyz.etkn.mobile.ui.actions.ItemPress
 
 @Composable
 fun DetailScreen(id: String) {
@@ -191,7 +192,7 @@ private fun DetailContent(data: DetailData, vm: DetailViewModel, nav: AppNav) {
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
             LazyColumn(state = list, modifier = Modifier.fillMaxSize().glassSource(haze)) {
                 item(key = "header", contentType = "header") { Swap(data) { DetailHeader(it, centered) } }
-                item(key = "actions", contentType = "actions") { Swap(data) { ActionRow(it, centered, vm, nav) } }
+                item(key = "actions", contentType = "actions") { Swap(data) { ActionRow(it, centered, vm, nav, press) } }
                 if (item.mediaSources.size > 1) {
                     item(key = "versions") { VersionRow(item.mediaSources, data.selectedSource, vm::selectSource) }
                 }
@@ -361,7 +362,13 @@ private fun techLine(item: Item, source: MediaSource?): List<String> {
 }
 
 @Composable
-private fun ActionRow(data: DetailData, centered: Boolean, vm: DetailViewModel, nav: AppNav) {
+private fun ActionRow(
+    data: DetailData,
+    centered: Boolean,
+    vm: DetailViewModel,
+    nav: AppNav,
+    press: ItemPress,
+) {
     val item = data.item
     val target = if (item.isSeries || item.isSeason) data.target else item
     val source = item.mediaSources.getOrNull(data.selectedSource)?.id
