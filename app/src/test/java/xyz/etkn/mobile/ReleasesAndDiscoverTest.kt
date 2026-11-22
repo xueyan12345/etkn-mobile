@@ -57,7 +57,17 @@ class ReleasesAndDiscoverTest {
         assertEquals("v0.2.0", release.tag)
         val asset = release.assetFor(listOf("arm64-v8a"))!!
         assertEquals("https://github.com/xueyan12345/etkn-mobile/releases/download/v0.2.0/ETKN-Mobile-0.2.0-arm64-v8a.apk", asset.url)
-        assertEquals("https://gh-proxy.com/" + asset.url, UpdateSource.Proxy.wrap(asset.url))
+        // 用户口径（2026-11-23）：加速源已弃用 gh-proxy.com（实测 403），
+        // 现在首选 ghfast.top，并带多个镜像回落。
+        assertEquals("https://ghfast.top/" + asset.url, UpdateSource.Proxy.wrap(asset.url))
+        assertEquals(
+            listOf(
+                "https://ghfast.top/" + asset.url,
+                "https://gh-proxy.net/" + asset.url,
+                asset.url,
+            ),
+            UpdateSource.Proxy.candidates(asset.url),
+        )
         assertEquals("b".repeat(64), asset.sha256)
     }
 
