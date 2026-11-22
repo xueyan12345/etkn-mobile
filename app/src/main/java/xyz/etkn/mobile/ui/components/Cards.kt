@@ -47,6 +47,9 @@ import java.util.Locale
 import xyz.etkn.mobile.ui.theme.Corner
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.foundation.Canvas
 
 val CardShape = Corner.card
 
@@ -138,21 +141,54 @@ private fun androidx.compose.foundation.layout.BoxScope.PosterBadges(item: Item)
 }
 
 /**
- * 用户口径（2026-11-23）：未看集数角标按参考图重做 —— 
- * 正圆形、近白底（略带淡紫）、深蓝/藏青数字，贴在封面右上角内侧，四周留白。
- * 上一版做的环形进度圈不是他要的，已替换。
+ * 用户口径（2026-11-23）剧集角标按参考图重做：
+ * 外圈 = 圆形进度环，按该剧已播放百分比**实时**填充；
+ * 内层 = 白色圆底；
+ * 中间 = 深蓝色未看集数。
  */
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item) {
     val unplayed = item.userData.unplayedItemCount ?: 0
+    // 已播放比例：优先 PlayedPercentage（服务端给的已看百分比），没有就用 0
+    val fraction = ((item.userData.playedPercentage ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
+    val ringColor = MaterialTheme.colorScheme.primary
+    val size = 30.dp
     Box(
-        Modifier.align(Alignment.TopEnd).padding(6.dp).size(26.dp)
-            .background(Color(0xFFF3F1F8), CircleShape),
+        Modifier.align(Alignment.TopEnd).padding(6.dp).size(size),
         contentAlignment = Alignment.Center,
     ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = 2.5.dp.toPx()
+            val inset = stroke / 2f
+            val arcSize = androidx.compose.ui.geometry.Size(
+                this.size.width - stroke, this.size.height - stroke,
+            )
+            // 白底圆
+            drawCircle(color = Color(0xFFF3F1F8), radius = this.size.minDimension / 2f)
+            // 进度环：底圈（浅灰）
+            drawArc(
+                color = Color.White.copy(alpha = 0.55f),
+                startAngle = 0f, sweepAngle = 360f, useCenter = false,
+                topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = arcSize,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                ),
+            )
+            // 进度环：已播放（从 12 点顺时针）
+            if (fraction > 0.001f) {
+                drawArc(
+                    color = ringColor,
+                    startAngle = -90f, sweepAngle = 360f * fraction, useCenter = false,
+                    topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = arcSize,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    ),
+                )
+            }
+        }
         Text(
             unplayed.toString(),
-            fontSize = 12.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF23306B),
         )

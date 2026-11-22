@@ -127,6 +127,27 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         current?.addListener(listener)
         onDispose { current?.removeListener(listener) }
     }
+
+    /**
+     * 用户口径（2026-11-23，修「横屏视频点进去默认竖屏」）：
+     * 不靠播放器回调猜方向 —— ETKN 的 MediaStreams 里就有 Width/Height
+     * （实测全库 47855 条，横屏 33158 / 竖屏 14322 / 正方 375，覆盖 100%）。
+     * 进播放器就用服务端已知尺寸直接定方向，首帧前就已经是对的，
+     * 不再出现「先竖屏闪一下再转」。
+     *
+     * 优先级：服务端尺寸 > 播放器 onVideoSizeChanged（服务端没给时才回落）。
+     */
+    LaunchedEffect(ui.item?.id, ui.sourceIndex) {
+        if (manualOrientation) return@LaunchedEffect
+        // MediaSource.video 是现成的扩展（streams 里第一个 Type=Video）
+        val v = ui.sources.getOrNull(ui.sourceIndex)?.video
+        val w = v?.width ?: 0
+        val h = v?.height ?: 0
+        if (w > 0 && h > 0) {
+            val wantPortrait = h > w
+            if (wantPortrait != portrait) applyOrientation(wantPortrait)
+        }
+    }
     // 切集时重置手动覆盖，让新视频自己决定方向
     LaunchedEffect(ui.item?.id) { manualOrientation = false }
     LaunchedEffect(ui.finished) { if (ui.finished) onBack() }

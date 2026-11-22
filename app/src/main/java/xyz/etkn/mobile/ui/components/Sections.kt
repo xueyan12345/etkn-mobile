@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.ui.nav.LocalStartInset
 import xyz.etkn.mobile.ui.theme.Etkn
+import androidx.compose.ui.unit.sp
 
 /**
  * 区块标题。
@@ -50,7 +51,8 @@ fun SectionHeader(
     ) {
         Text(
             title,
-            style = MaterialTheme.typography.titleMedium,
+            // 用户口径（2026-11-23）：字号取中间值 19sp（原来 22sp → 上一版 16sp 降过头）
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp),
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

@@ -43,11 +43,7 @@ import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.VideoSettings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.SliderState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -60,7 +56,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,6 +73,10 @@ import java.text.SimpleDateFormat
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.LaunchedEffect
 import android.content.Context
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.Canvas
 
 /**
  * 播放器控制层。
@@ -182,14 +181,14 @@ internal fun Controls(
         }
 
         // ===== 用户口径（2026-11-23）左侧垂直居中：只放锁（从底栏移过来）=====
-        Box(Modifier.align(Alignment.CenterStart).padding(start = 10.dp)) {
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 22.dp)) {
             PlayerAction(Icons.Rounded.LockOpen, "锁定", onLock)
         }
 
         // ===== 用户口径（2026-11-23）右侧垂直居中：倍速 + / 1.0x / − =====
         SpeedPad(
             speed = ui.speed,
-            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 8.dp),
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 22.dp),
             onChange = onSpeed,
             onPick = { onSheet(Sheet.Speed) },
         )
@@ -239,38 +238,93 @@ internal fun Controls(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 用户口径（2026-11-23）：时间在左、进度条在右同一行；去掉右侧总时长
-                Text(formatClock(if (scrubbing) (scrub * duration).toLong() else position), color = Color.White, style = MaterialTheme.typography.labelMedium)
-                val seek = remember { SliderState() }
-                seek.value = if (scrubbing) scrub else if (duration > 0) position.toFloat() / duration else 0f
-                // 缓冲条：在 Slider 下面叠一条细线显示已缓冲区间
+                // 用户口径（2026-11-23）按参考图重做进度条：
+                // 细轨道 + 纯白已播放 + 半透明白未播放 + 缓冲条（浅白，夹在轨道层）
+                // + 实心白色圆形播放头；时间文字在左侧外侧同一行。
+                Text(
+                    formatClock(if (scrubbing) (scrub * duration).toLong() else position),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                )
                 Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                    val buffered = if (duration > 0) (buffered.toFloat() / duration).coerceIn(0f, 1f) else 0f
-                    if (buffered > 0.002f) {
-                        LinearProgressIndicator(
-                            progress = { buffered },
-                            modifier = Modifier.align(Alignment.Center).fillMaxWidth().height(2.dp),
-                            color = Color.White.copy(alpha = 0.38f),
-                            trackColor = Color.White.copy(alpha = 0.10f),
-                            strokeCap = StrokeCap.Round,
-                            gapSize = 0.dp,
-                            drawStopIndicator = {},
+                    val progress = if (scrubbing) scrub
+                    else if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+                    val bufferedFrac = if (duration > 0) (buffered.toFloat() / duration).coerceIn(0f, 1f) else 0f
+                    // 整条高度 26dp，里面自绘：轨道 3dp、缓冲 3dp、播放头直径 14dp
+                    Canvas(
+                        Modifier.fillMaxWidth().height(26.dp)
+                            .pointerInput(duration) {
+                                detectTapGestures { offset ->
+                                    if (duration > 0) {
+                                        val frac = (offset.x / size.width).coerceIn(0f, 1f)
+                                        onSeek((frac * duration).toLong())
+                                    }
+                                }
+                            }
+                            .pointerInput(duration) {
+                                detectHorizontalDragGestures(
+                                    onDragStart = { offset ->
+                                        if (duration > 0) {
+                                            scrubbing = true
+                                            scrub = (offset.x / size.width).coerceIn(0f, 1f)
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        if (duration > 0) onSeek((scrub * duration).toLong())
+                                        scrubbing = false
+                                    },
+                                    onDragCancel = { scrubbing = false },
+                                ) { change, _ ->
+                                    if (duration > 0) {
+                                        scrub = (change.position.x / size.width).coerceIn(0f, 1f)
+                                        change.consume()
+                                    }
+                                }
+                            },
+                    ) {
+                        val cy = size.height / 2f
+                        val trackH = 3.dp.toPx()
+                        val thumbR = 7.dp.toPx()
+                        val r = androidx.compose.ui.geometry.CornerRadius(trackH / 2f, trackH / 2f)
+                        // 未播放轨道（半透明白）
+                        drawRoundRect(
+                            color = Color.White.copy(alpha = 0.30f),
+                            topLeft = androidx.compose.ui.geometry.Offset(0f, cy - trackH / 2f),
+                            size = androidx.compose.ui.geometry.Size(size.width, trackH),
+                            cornerRadius = r,
+                        )
+                        // 缓冲进度（比轨道稍亮一点，压在轨道上）
+                        if (bufferedFrac > 0.001f) {
+                            drawRoundRect(
+                                color = Color.White.copy(alpha = 0.55f),
+                                topLeft = androidx.compose.ui.geometry.Offset(0f, cy - trackH / 2f),
+                                size = androidx.compose.ui.geometry.Size(size.width * bufferedFrac, trackH),
+                                cornerRadius = r,
+                            )
+                        }
+                        // 已播放（纯白）
+                        drawRoundRect(
+                            color = Color.White,
+                            topLeft = androidx.compose.ui.geometry.Offset(0f, cy - trackH / 2f),
+                            size = androidx.compose.ui.geometry.Size(size.width * progress, trackH),
+                            cornerRadius = r,
+                        )
+                        // 播放头：实心白圆
+                        drawCircle(
+                            color = Color.White,
+                            radius = thumbR,
+                            center = androidx.compose.ui.geometry.Offset(
+                                (size.width * progress).coerceIn(thumbR, size.width - thumbR),
+                                cy,
+                            ),
                         )
                     }
-                    Slider(
-                        state = seek,
-                        onValueChange = { scrubbing = true; scrub = it },
-                        onValueChangeFinished = { onSeek((scrub * duration).toLong()); scrubbing = false },
-                        colors = SliderDefaults.colors(
-                            // 用户口径：白色实心圆滑块 + 纯白已播放 + 半透明白未播放
-                            thumbColor = Color.White,
-                            activeTrackColor = Color.White,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.32f),
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
-                Text(formatClock(duration), color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.labelMedium)
+                Text(
+                    formatClock(duration),
+                    color = Color.White.copy(alpha = 0.75f),
+                    style = MaterialTheme.typography.labelMedium,
+                )
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {

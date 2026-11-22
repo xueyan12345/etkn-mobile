@@ -69,7 +69,9 @@ enum class TopLevel(val route: Any, val label: String, val icon: ImageVector, va
 fun visibleTabs(chosen: Set<String>?, canDiscover: Boolean, side: Boolean): List<TopLevel> {
     // 用户口径（2026-11-23）：底栏不再显示「媒体库」入口（首页里有那一行可点进去）。
     // 注意：只是不放进底栏，LibrariesRoute 页面本身保留，顶部入口仍可导航过去。
-    val all = TopLevel.entries.filter { it != TopLevel.Libraries }
+    // 用户口径（2026-11-23）：底栏再删掉「搜索」（搜索已挪到「我的」页顶部）。
+    // 页面/枚举/SearchRoute 全部保留，只是不进底栏。
+    val all = TopLevel.entries.filter { it != TopLevel.Libraries && it != TopLevel.Search }
     val picked = chosen?.let { names -> all.filter { it == TopLevel.Home || it.name in names } }
         ?: all.filter { tab ->
             when (tab) {

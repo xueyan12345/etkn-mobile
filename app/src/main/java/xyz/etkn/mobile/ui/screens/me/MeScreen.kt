@@ -77,6 +77,10 @@ import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.ui.actions.rememberPopupAnchor
 import xyz.etkn.mobile.ui.actions.PopupChoice
+import xyz.etkn.mobile.ui.screens.search.SearchScreen
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.foundation.clickable
 
 @Composable
 fun MeScreen() {
@@ -91,10 +95,18 @@ fun MeScreen() {
     // Tablets: a readable centred column instead of edge-to-edge rows.
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
     LazyColumn(Modifier.widthIn(max = 720.dp).fillMaxSize(), contentPadding = PaddingValues(bottom = LocalBottomInset.current)) {
-        // 用户口径（2026-11-22）：顶部那个大字「我的」删掉，账号卡片直接起头（补一点状态栏留白）。
         item {
             Spacer(
                 Modifier.windowInsetsPadding(WindowInsets.statusBars).height(12.dp),
+            )
+        }
+        // 用户口径（2026-11-23）：搜索挪到「我的」页最上面。
+        // 平时只是一条长搜索框，点一下才覆盖一层完整搜索界面（复刻原搜索页），
+        // 底栏「搜索」标签已删。
+        item {
+            SearchEntry(
+                Modifier.padding(horizontal = Etkn.space.screen, vertical = 12.dp),
+                onClick = { showSearch = true },
             )
         }
         // 用户口径（2026-11-23）：顶部那块账号信息卡（头像 + 用户名 + 服务器地址）整块删掉，
@@ -134,6 +146,32 @@ fun MeScreen() {
     }
 
     if (exportingLog) LogExportSheet(onDismiss = { exportingLog = false })
+
+    // 用户口径（2026-11-23）：点击搜索框后覆盖一层完整搜索界面（复刻原搜索页）
+    if (showSearch) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showSearch = false },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            androidx.compose.material3.Surface(Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize()) {
+                    SearchScreen()
+                    IconButton(
+                        onClick = { showSearch = false },
+                        modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars).padding(8.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.ArrowBack, "返回",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     if (confirmLogout) {
         GlassDialog(
@@ -239,5 +277,36 @@ fun AccountsScreen() {
         Spacer(Modifier.height(LocalBottomInset.current))
     }
     GlassBackBar("切换账号", collapsed = true, haze = haze, onBack = nav::back)
+    }
+}
+
+
+/**
+ * 用户口径（2026-11-23）：我的页顶部那条长搜索框。
+ * 只是个入口 —— 点一下才弹出完整搜索界面（SearchScreen），平时不占功能。
+ */
+@Composable
+private fun SearchEntry(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(
+        shape = Corner.panel,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Rounded.Search, "搜索",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "搜索电影、剧集、音乐",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

@@ -158,7 +158,7 @@ private fun TabPicker(settings: Settings, side: Boolean, onChange: (Set<String>)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(PillGap), verticalArrangement = Arrangement.spacedBy(PillGap)) {
             // 用户口径（2026-11-23）：底栏已经删掉「媒体库」，这里预览也要一起消失，
             // 否则设置页还显示一个实际没有的图标。
-            TopLevel.entries.filter { it != TopLevel.Libraries && (it != TopLevel.Discover || canDiscover) }.forEach { tab ->
+            TopLevel.entries.filter { it != TopLevel.Libraries && it != TopLevel.Search && (it != TopLevel.Discover || canDiscover) }.forEach { tab ->
                 val on = tab in shown
                 // 首页 is always there: shown on, but nothing to toggle.
                 val fixed = tab == TopLevel.Home

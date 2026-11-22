@@ -142,21 +142,15 @@ private fun MoreSheet(
     portrait: Boolean,
 ) {
     val context = LocalContext.current
-    // 用户口径（2026-11-22）：横竖屏切换放在「三点」菜单最上方（原来在底部控制栏，
-    // 变竖屏后底部按钮被折叠看不到，所以挪进来）。
+    // 用户口径（2026-11-23）：旋转屏幕从三点菜单删掉（右上角已有旋转图标，重复）。
     val options = listOf(
-        (if (portrait) "切换到横屏" else "切换到竖屏") to false,
         "定时关闭" + (ui.sleep?.let { " · ${it.label}" } ?: "") to (ui.sleep != null),
         "用其他播放器打开" to false,
     )
     OptionList("更多", options) { index ->
         when (index) {
-            0 -> {
-                onDismiss()
-                onRotate()
-            }
-            1 -> onSheet(Sheet.Sleep)
-            2 -> {
+            0 -> onSheet(Sheet.Sleep)
+            1 -> {
                 onDismiss()
                 session.portableStream()?.let { (url, title) ->
                     val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(url), "video/*")
