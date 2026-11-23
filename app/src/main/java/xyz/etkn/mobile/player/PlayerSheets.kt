@@ -233,15 +233,16 @@ private fun MoreMenuItem(
     trailing: String? = null,
     onClick: () -> Unit,
 ) {
-    // 用户口径（2026-11-23）：照参考图 —— 行高约 60dp、图标 24dp、文字 18sp、
-    // 左右内边距 18dp、行尾值淡色右对齐。行与行之间不画分隔线（参考图没有）。
+    // 用户口径（2026-11-23）：照参考图实测比例
+    //   行高 = 面板宽 24.5%（约 60dp）· 图标 = 面板宽 8.6%（约 24dp）
+    //   左内边距 = 面板宽 3.9%（约 16dp）· 行尾值右内边距约 8dp · 无分隔线
     Row(
         Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(onClick = onClick)
-            .padding(horizontal = 18.dp),
+            .padding(start = 16.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, null, tint = Color.White, modifier = Modifier.size(24.dp))
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(18.dp))
         Text(
             label,
             color = Color.White,

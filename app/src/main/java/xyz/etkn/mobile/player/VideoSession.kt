@@ -109,6 +109,8 @@ data class VideoUi(
     val bufferedPosition: Long = 0L,
     /** 用户口径（2026-11-23）：下一集已经预加载到本地（控制「下一集」按钮上的闪电小圆）。 */
     val nextPreloaded: Boolean = false,
+    /** 用户口径（2026-11-23）：磁盘缓存已覆盖到的位置（毫秒），驱动进度条上的缓冲段。 */
+    val cachedPosition: Long = 0L,
 )
 
 private const val TAG = "ETKN-Play"
@@ -412,7 +414,19 @@ class VideoSession(
         currentLength = chosen.size ?: -1L
         nextUrl = null
         PlaybackCache.clearReady()
-        val cachedLocal = if (!disc) PlaybackCache.localFile(context, url) else null
+        /**
+         * 用户口径（2026-11-23）：**部分缓存也要立刻用上，别再请求服务器**。
+         *
+         * 之前只认「整集下完」的正式文件，看一半退出时是 .part → 判定为没缓存 →
+         * 重新请求服务器、流量哗哗跑（用户明确抱怨的就是这个）。
+         *
+         * 现在：.part 只要 ≥1MB 就用它 ——
+         *  · 整集已下完 → 直接 file:// 整段本地播，零网络
+         *  · 只有部分   → 也用本地文件起步（秒出画面、不耗流量），
+         *                 播到本地末尾后由播放器自己继续走网络
+         */
+        val cachedLocal = if (!disc) PlaybackCache.partialFile(context, url) else null
+        val cacheComplete = cachedLocal != null && PlaybackCache.localFile(context, url) != null
         val subtitles = chosen.subtitles.filter { it.isExternal && it.deliveryUrl != null && !offline }.mapNotNull { stream ->
             val address = PlaybackAddress.subtitle(stream.deliveryUrl!!, session.server, session.token) ?: return@mapNotNull null
             val mime = subtitleMime(stream.codec) ?: return@mapNotNull null
@@ -440,6 +454,11 @@ class VideoSession(
         player.setMediaItem(media, startMs.coerceAtLeast(0))
         player.prepare()
         player.playWhenReady = true
+        android.util.Log.i(
+            TAG,
+            "cache hit=${cachedLocal != null} complete=$cacheComplete " +
+                "bytes=${cachedLocal?.length() ?: 0} url=${Uri.parse(url).host}",
+        )
         /**
          * 用户口径（2026-11-23）：边播边缓存。
          *
@@ -522,7 +541,15 @@ class VideoSession(
                 currentLength = length,
                 next = nextUrl?.let { (id, url) -> id to url },
             )
-            _ui.update { it.copy(nextPreloaded = PlaybackCache.isNextReady()) }
+            // 用户口径（2026-11-23）：缓冲条要反映「按设置真正缓存到哪」，
+            // 不是播放器内核那一小截前向缓冲。
+            val covered = PlaybackCache.cachedPositionMs(graph.app, cur, durationMs, length)
+            _ui.update {
+                it.copy(
+                    nextPreloaded = PlaybackCache.isNextReady(),
+                    cachedPosition = covered,
+                )
+            }
         }
     }
 

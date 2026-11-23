@@ -302,7 +302,11 @@ internal fun Controls(
                 Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                     val progress = if (scrubbing) scrub
                     else if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
-                    val bufferedFrac = if (duration > 0) (buffered.toFloat() / duration).coerceIn(0f, 1f) else 0f
+                    // 用户口径（2026-11-23）：缓冲段 = 按设置真正落盘的进度（ui.cachedPosition），
+    // 不再用 player.bufferedPosition（那只是内核几秒的前向缓冲，和缓存设置无关，
+    // 会让用户以为「设了 10GB 缓存怎么只有一小条」）。
+    val shownBuffered = if (ui.cachedPosition > 0) maxOf(ui.cachedPosition, buffered) else buffered
+    val bufferedFrac = if (duration > 0) (shownBuffered.toFloat() / duration).coerceIn(0f, 1f) else 0f
                     // 整条高度 26dp，里面自绘：轨道 3dp、缓冲 3dp、播放头直径 14dp
                     Canvas(
                         Modifier.fillMaxWidth().height(26.dp)

@@ -139,6 +139,72 @@ object PlaybackCache {
      *  · 否则从「已缓存的末尾」继续往后拉，直到任一阈值达到
      *  · 缓存的已覆盖区间记在 [coverage]，按集记录，用来做增量续拉
      */
+    /**
+     * 用户口径（2026-11-23）核心：把「从 0 到 播放位置+窗口」这一段落到本地。
+     *
+     * 之前这段写得太绕（算 bufferAhead、算 wantedBytes 一堆分支），
+     * 实际结果是窗口不推进、缓冲条只有一小节。现在只用一句话说清：
+     *
+     *     目标字节 = min(总长, (播放位置 + 窗口时长) 对应的字节)
+     *     已有字节 = .part 的长度
+     *     目标字节 > 已有字节 → 从「已有字节」处 Range 续拉
+     *     拉到的字节 ≥ 总长 → 改名成正式缓存文件（整集完成）
+     *
+     * 两个阈值（最大缓存大小 / 最大缓存时长）取小者：
+     *     byTime  = (position + 时长阈值) 换算成字节
+     *     bySize  = position 换算成字节 + 大小阈值
+     *     target  = min(byTime, bySize, 总长)
+     */
+    private suspend fun pullWindow(
+        context: Context,
+        settings: Settings,
+        url: String,
+        positionMs: Long,
+        durationMs: Long,
+        knownLength: Long,
+    ): Boolean {
+        windowLock.withLock {
+            val target = fileFor(context, url)
+            // 整集已完成
+            if (target.isFile && target.length() > 0) return true
+            val part = File(target.parentFile, target.name + ".part")
+
+            val windowMs = maxWindowMs(settings)
+            val windowBytes = maxWindowBytes(settings)
+            val bytesPerMs = if (durationMs > 0 && knownLength > 0) knownLength.toDouble() / durationMs else 0.0
+
+            val posBytes = if (bytesPerMs > 0) (positionMs * bytesPerMs).toLong() else 0L
+            val byTime = if (bytesPerMs > 0) posBytes + (windowMs * bytesPerMs).toLong() else Long.MAX_VALUE
+            val bySize = posBytes + windowBytes
+            var wantBytes = minOf(byTime, bySize)
+            // 没总长信息时，至少拉满一个「大小窗口」
+            if (knownLength > 0) wantBytes = wantBytes.coerceAtMost(knownLength)
+            else if (wantBytes == Long.MAX_VALUE) wantBytes = windowBytes
+
+            var have = if (part.isFile) part.length() else 0L
+            // 已经够就不动
+            if (have >= wantBytes && !(knownLength > 0 && have >= knownLength)) return false
+
+            // 分段续拉：一次最多拉 32MB，避免单个协程长时间占住下不完
+            val chunk = 32L * 1024 * 1024
+            while (have < wantBytes) {
+                val until = minOf(wantBytes, have + chunk)
+                downloadInto(context, url, part, from = have, until = until)
+                val after = if (part.isFile) part.length() else 0L
+                if (after <= have) break   // 没进展，避免死循环
+                have = after
+            }
+
+            // 拉满整集 → 转正
+            if (knownLength > 0 && have >= knownLength) {
+                runCatching { part.renameTo(target) }
+                return true
+            }
+            return false
+        }
+    }
+
+    /** 兼容旧入口：按窗口拉一次。 */
     fun ensureWindow(
         context: Context,
         settings: Settings,
@@ -148,52 +214,9 @@ object PlaybackCache {
         knownLength: Long,
         onComplete: (Boolean) -> Unit = {},
     ) {
-        val key = stableKey(url)
         pipelineJob = workScope.launch {
-            windowLock.withLock {
-                val target = fileFor(context, url)
-                val part = File(target.parentFile, target.name + ".part")
-
-                // 已经整集缓存完 → 直接算完成
-                if (target.isFile && target.length() > 0 && target.length() == knownLength && knownLength > 0) {
-                    onComplete(true)
-                    return@withLock
-                }
-
-                // 计算这次要拉到哪
-                val windowMs = maxWindowMs(settings)
-                val windowBytes = maxWindowBytes(settings)
-
-                // 没拿到总长时，用「剩余时长比例 × 文件大小」估一个字节目标
-                val bytesPerMs = if (durationMs > 0 && knownLength > 0) {
-                    knownLength.toDouble() / durationMs
-                } else 0.0
-
-                val wantedMs = (positionMs + windowMs).coerceAtMost(if (durationMs > 0) durationMs else Long.MAX_VALUE)
-                val wantedBytes = if (bytesPerMs > 0) {
-                    val byTime = (wantedMs * bytesPerMs).toLong()
-                    val cap = (positionMs * bytesPerMs).toLong() + windowBytes
-                    byTime.coerceAtMost(cap)
-                } else windowBytes
-
-                // 已拉到的位置
-                val have = if (part.isFile) part.length() else 0L
-                val wantFromHere = if (bytesPerMs > 0) {
-                    // 从当前位置开始算的字节偏移
-                    (positionMs * bytesPerMs).toLong()
-                } else 0L
-                val bufferAhead = have - wantFromHere
-                if (bufferAhead >= windowBytes) {
-                    onComplete(coveredToEnd(have, knownLength, durationMs, positionMs, windowMs))
-                    return@withLock
-                }
-
-                // 从 have 往后拉，最多拉到 wantedBytes
-                downloadInto(context, url, part, from = have, until = wantedBytes)
-                val done = coveredToEnd(part.length(), knownLength, durationMs, positionMs, windowMs)
-                if (done && knownLength > 0) runCatching { part.renameTo(target) }
-                onComplete(done)
-            }
+            val done = pullWindow(context, settings, url, positionMs, durationMs, knownLength)
+            onComplete(done)
         }
     }
 
@@ -254,55 +277,34 @@ object PlaybackCache {
         next: Pair<String, String>?,   // (episodeId, url)
     ) {
         val key = stableKey(currentUrl)
-        // 当前集任务已在跑就不重复起
         if (writing.containsKey(key)) return
 
         writing[key] = workScope.launch {
             try {
-                // 第一环：当前集
-                ensureWindowSync(context, settings, currentUrl, currentPositionMs, currentDurationMs, currentLength)
-                currentComplete = true
+                // 第一环：当前集 —— 把「位置 + 窗口」这段拉到本地
+                val currentDone = pullWindow(
+                    context, settings, currentUrl,
+                    currentPositionMs, currentDurationMs, currentLength,
+                )
+                // 只有当前集整集缓存完成，才算「这一环跑完」
+                currentComplete = currentDone
+                if (!currentDone) return@launch
 
                 if (!settings.preloadNext || next == null) return@launch
 
-                // 第二环：当前集完成才动下一集
+                // 第二环：当前集完成 → 才去拉下一集
                 val (nextId, nextUrl) = next
                 nextEpisodeId = nextId
                 nextComplete = false
-                // 下一集先探长度（Range: bytes=0-0），再跑窗口
                 val nextLength = probeLength(nextUrl)
-                ensureWindowSync(context, settings, nextUrl, 0L, 0L, nextLength)
-                nextComplete = true
+                val nextDone = pullWindow(context, settings, nextUrl, 0L, 0L, nextLength)
+                nextComplete = nextDone
             } finally {
                 writing.remove(key)
             }
         }
     }
 
-    private suspend fun ensureWindowSync(
-        context: Context,
-        settings: Settings,
-        url: String,
-        positionMs: Long,
-        durationMs: Long,
-        knownLength: Long,
-    ) {
-        windowLock.withLock {
-            val target = fileFor(context, url)
-            if (target.isFile && target.length() > 0) return@withLock
-            val part = File(target.parentFile, target.name + ".part")
-            val have = if (part.isFile) part.length() else 0L
-            val windowBytes = maxWindowBytes(settings)
-            // 目标：至少拉满一个窗口；能拉到片尾就直接拉完
-            val until = if (knownLength > 0) knownLength else have + windowBytes
-            if (knownLength > 0 && have >= knownLength) {
-                runCatching { part.renameTo(target) }
-                return@withLock
-            }
-            downloadInto(context, url, part, from = have, until = until)
-            if (knownLength > 0 && part.length() >= knownLength) runCatching { part.renameTo(target) }
-        }
-    }
 
     /**
      * 探资源总字节数：用 HTTP HEAD 读 Content-Length。
@@ -325,7 +327,7 @@ object PlaybackCache {
         if (writing.containsKey(key)) return
         writing[key] = workScope.launch {
             try {
-                ensureWindowSync(context, settings, url, 0L, 0L, probeLength(url))
+                pullWindow(context, settings, url, 0L, 0L, probeLength(url))
                 nextEpisodeId = episodeId
                 nextComplete = true
                 trim(context, settings)
