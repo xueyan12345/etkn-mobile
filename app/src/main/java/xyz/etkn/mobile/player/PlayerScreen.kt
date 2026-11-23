@@ -69,6 +69,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.requiredSize
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
