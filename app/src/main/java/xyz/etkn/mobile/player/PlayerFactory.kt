@@ -57,8 +57,14 @@ object PlayerFactory {
                     .build(),
             )
         }
+        /**
+         * 用户口径（2026-11-23）修「起播变慢」：
+         * 原来是 (min=20s, max=90s, forPlayback=800ms, afterRebuffer=2500ms)。
+         * 起播要等 800ms 缓冲才出首帧，网络一般时体感明显延迟。
+         * 降到 400ms（够避免立刻卡顿，又明显更快出画面），rebuffer 保持 2500ms 保住稳定性。
+         */
         val load = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(20_000, 90_000, 800, 2_500)
+            .setBufferDurationsMs(15_000, 90_000, 400, 2_500)
             .setPrioritizeTimeOverSizeThresholds(false)
             .build()
         return ExoPlayer.Builder(context, renderers)

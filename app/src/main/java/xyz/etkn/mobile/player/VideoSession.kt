@@ -530,6 +530,18 @@ class VideoSession(
         if (!settings.preloadNext) return
         val cur = currentUrl ?: return
         val currentItem = item ?: return
+        /**
+         * 用户口径（2026-11-23）修「起播变慢」：
+         * 之前起播第 5 秒就开始全速把整集往下拉缓存，和视频播放抢同一条 115 直链带宽，
+         * 导致起播/前几秒明显卡慢。
+         *
+         * 现在加两个前置条件：
+         *  ① 已播过 15 秒（起播缓冲已经过去，播放稳定了）
+         *  ② 播放器前向缓冲已 ≥ 30 秒（内核自己先攒够，再去抢带宽不会卡画面）
+         */
+        if (positionMs < 15_000) return
+        val bufferedAhead = (player?.bufferedPosition ?: 0L) - positionMs
+        if (bufferedAhead < 30_000) return
         // 当前集已整集落盘就不用再跑
         if (PlaybackCache.localFile(graph.app, cur) != null) {
             // 当前集完成 → 尝试推进到下一集

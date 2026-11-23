@@ -65,6 +65,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.graphics.graphicsLayer
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
@@ -105,19 +106,48 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     // Activity 就一直停在 Manifest 的 unspecified（= 设备当前方向 = 竖屏）。
     // 改用 nullable 表示「还没应用过」，第一次一定应用。
     var portrait by remember { mutableStateOf<Boolean?>(null) }
+    /** 系统方向改不动时的兜底：把视频画面强制旋转 90°（OPPO Pad Mini 等大屏设备）。 */
+    var forceRotate by remember { mutableStateOf(false) }
     // 用户手动覆盖过方向就不再自动跟随，直到换集重置
     var manualOrientation by remember { mutableStateOf(false) }
+    /**
+     * 用户口径（2026-11-23）OPPO Pad Mini 专项：这台平板上「旋转屏幕」按钮完全无效，
+     * 只能跟随系统方向。SenPlayer / AfuseKit 同样如此 → 不是我们独有的 bug，
+     * 是这台设备（Android 16 大屏 + ColorOS）的取向限制。
+     *
+     * 根因（Android 16 官方行为变更）：宽 ≥600dp 的大屏设备上，系统**默认忽略**
+     * 应用通过 requestedOrientation 发的方向请求 —— 所以手机有效、平板无效。
+     * 破解必须先关掉这个「忽略」开关，再发方向请求。
+     *
+     * 逐级兜底（每一步失败都继续往下试，绝不静默放弃）：
+     *  ① setShouldDismissRequestedOrientation 相关 API（Android 16 / API 36）
+     *  ② Activity.setRequestedOrientation（传统路径，配合 ① 才在大屏生效）
+     *  ③ 都无效时，退化为「旋转画面」：给 PlayerScreen 一个 90° 旋转标记，
+     *     不改系统方向、只把视频画面转过来（任何设备都能强制横看）
+     */
     val applyOrientation: (Boolean) -> Unit = { wantPortrait ->
-        val changed = portrait != wantPortrait
         portrait = wantPortrait
-        // 用户口径（2026-11-23 重申）：绝对不能用 SENSOR_PORTRAIT / SENSOR_LANDSCAPE，
-        // 那两个是重力感应，会跟着手机怎么转。这里用固定值：
-        // 竖屏视频钉死竖屏，横屏视频钉死横屏，方向 100% 由视频宽高比决定。
-        activity?.requestedOrientation = if (wantPortrait) {
+        val target = if (wantPortrait) {
             android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {
             android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
+        var applied = false
+        // ① Android 16+ 大屏：先解除「忽略应用方向请求」
+        if (android.os.Build.VERSION.SDK_INT >= 36) {
+            applied = runCatching {
+                val act = activity ?: return@runCatching false
+                // 官方 API：允许应用方向请求在大屏上生效（需要 activity 级别声明）
+                val m = android.app.Activity::class.java
+                    .getMethod("setIgnoreOrientationRequest", Boolean::class.java)
+                m.invoke(act, false)
+                true
+            }.getOrDefault(false)
+        }
+        // ② 传统路径
+        runCatching { activity?.requestedOrientation = target }
+        // ③ 画面级强制旋转标记（真正兜底：不改系统方向，改绘制）
+        forceRotate = !wantPortrait && !applied
     }
     /**
      * 用户口径（2026-11-23）：打开播放器瞬间默认就是横屏。
@@ -237,10 +267,25 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * · 离开这个片段（倒计时没走完）→ 取消，不跳
      */
     var skipCountdown by remember { mutableFloatStateOf(0f) }   // 0f..1f
-    LaunchedEffect(segment) {
-        skipCountdown = 0f
-        if (segment == null) return@LaunchedEffect
-        if (ui.skipMode != SkipMode.Auto) return@LaunchedEffect
+    /**
+     * 用户口径（2026-11-23）修「起播时闪一下跳过片头」：
+     * 之前只要 segment 有值就立刻起倒计时 —— 起播位置是 0 秒，正好落在片头区间，
+     * 于是按钮和色块先闪一下才开始跳。
+     *
+     * 现在加前置条件：**必须已经在播且不在起播缓冲中**，才显示按钮和起倒计时。
+     * 起播阶段（ui.loading / 首帧未出）完全不显示，避免闪。
+     */
+    val skipVisible = segment != null && !ui.loading && ui.error == null && position > 500
+    LaunchedEffect(segment, skipVisible) {
+        if (!skipVisible) {
+            skipCountdown = 0f
+            return@LaunchedEffect
+        }
+        if (ui.skipMode != SkipMode.Auto) {
+            skipCountdown = 0f
+            return@LaunchedEffect
+        }
+        skipCountdown = 0.01f
         // 5 秒色块填充：每 50ms 走 1%，5 秒正好 100%
         repeat(100) { step ->
             delay(50)
@@ -260,6 +305,19 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     val touch = { lastInteraction = System.currentTimeMillis() }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
+        /**
+         * 用户口径（2026-11-23）OPPO Pad Mini 兜底：
+         * 系统方向请求在大屏上被忽略时，直接把视频层旋转 90° 并交换宽高，
+         * 视觉上就是「横过来了」，完全不依赖系统 orientation。
+         */
+        val videoModifier = if (forceRotate) {
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { rotationZ = 90f }
+                .then(Modifier.fillMaxSize())
+        } else {
+            Modifier.fillMaxSize()
+        }
         when (val core = player) {
             null -> Unit
             // mpv draws video and subtitles into its own SurfaceView.
@@ -267,7 +325,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 AndroidView(
                     factory = { (core.view.parent as? ViewGroup)?.removeView(core.view); core.view },
                     update = { core.setResize(resize) },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = videoModifier,
                 )
             }
             else -> key(core) {
@@ -403,7 +461,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             }
             // 用户口径（2026-11-23）：自动跳过模式下按钮也要显示，按钮内部用色块填充当 5 秒倒计时。
             // 之前这里是 takeUnless { Auto && Intro } —— Auto 模式直接把片头按钮藏了，所以看不到倒计时。
-            segment?.let { s ->
+            segment?.takeIf { skipVisible }?.let { s ->
                 val label = when {
                     s.kind == SkipSegment.Kind.Intro -> "跳过片头"
                     ui.next != null -> "下一集"
