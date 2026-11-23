@@ -80,7 +80,12 @@ internal fun EpisodeShelf(
 ) {
     val row = rememberLazyListState()
     val chips = rememberLazyListState()
-    val cardWidth = if (LocalWindowLayout.current.wide) 260.dp else 210.dp
+    /**
+     * 用户口径（2026-11-23）：分集卡尺寸**和下面的章节卡保持一致**（ChapterCard 是 180dp）。
+     * 之前手机 210dp / 平板 260dp，比章节卡明显大一圈，两排摆在一起不协调。
+     * 统一成 180dp：一行能放更多张，和章节区视觉对齐。
+     */
+    val cardWidth = 180.dp
     // Position to scroll to once it is loaded (range chips, jump to last).
     var pending by remember { mutableIntStateOf(-1) }
     val ranges = if (state.total > RANGE + RANGE / 2) (state.total + RANGE - 1) / RANGE else 0
@@ -93,6 +98,31 @@ internal fun EpisodeShelf(
 
     LaunchedEffect(state.seasonId, state.anchorIndex >= 0) {
         if (state.anchorIndex >= 0) row.scrollToItem(state.anchorIndex)
+    }
+    /**
+     * 用户口径（2026-11-23，照抄参考视频）**切集时选集要自动跟随**。
+     *
+     * 参考应用的行为（逐集从 1 点到 25 实测）：
+     *  · 目标集在当前可见的一屏内 → 列表横向位置**不动**，只移高亮；
+     *  · 目标集跨出可见范围 → 自动横向滚动，把目标集带到可点位置；
+     *  · 而且保证**下一集也在手边**，可以连续点下去不停。
+     *
+     * 之前完全没有这个逻辑：切到后面的集，当前集早就滚出屏幕，用户得自己找。
+     */
+    LaunchedEffect(currentId, state.items.size) {
+        val index = state.items.indexOfFirst { it.id == currentId }
+        if (index < 0) return@LaunchedEffect
+        val info = row.layoutInfo
+        val first = info.visibleItemsInfo.firstOrNull()?.index ?: return@LaunchedEffect
+        val last = info.visibleItemsInfo.lastOrNull()?.index ?: return@LaunchedEffect
+        when {
+            // 已经在视野里，而且下一集也露得出来 → 一律不动（参考应用就是这个手感）
+            index in first..(last - 1) -> Unit
+            // 在视野里但正好是最后一格 → 往后挪一格，让下一集露出来
+            index == last -> row.animateScrollToItem(index)
+            // 完全在视野外 → 滚到它刚好出现在起始位置
+            else -> row.animateScrollToItem(index)
+        }
     }
     LaunchedEffect(pending, state.items.size) {
         if (pending in state.items.indices) {

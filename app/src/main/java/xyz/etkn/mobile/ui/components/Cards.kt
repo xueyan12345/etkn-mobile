@@ -194,11 +194,22 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
          */
         val text = unplayed.toString()
         val digits = text.length
+        /**
+         * 用户口径（2026-11-23 二次调整）：**上一版太保守了，数字偏小**。
+         *
+         * 按 24dp 圆反推可用内径（安全内径约 18.7dp，四周留呼吸空间），
+         * 粗体数字宽度 ≈ 0.556 × 字号、高度 ≈ 0.72 × 字号：
+         *   1 位 → 宽限 33.6 / 高限 18.8  → 15sp（最饱满，1-9 集最常见）
+         *   2 位 → 宽限 16.8 / 高限 18.8  → 12.5sp
+         *   3 位 → 宽限 11.2 / 高限 18.8  → 9.5sp
+         *   4 位以上 → 宽限 8.4          → 7.5sp（极端情况）
+         * 每档都比上一版放大 2-3sp，数字在圆里更匀称。
+         */
         val size = when {
-            digits <= 1 -> 11.5f
-            digits == 2 -> 9.5f
-            digits == 3 -> 7.5f
-            else -> 6.5f
+            digits <= 1 -> 15f
+            digits == 2 -> 12.5f
+            digits == 3 -> 9.5f
+            else -> 7.5f
         }
         Text(
             text,
@@ -207,8 +218,8 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
             color = Color(0xFF23306B),
             letterSpacing = when {
                 digits <= 1 -> 0.sp
-                digits == 2 -> (-0.3).sp
-                else -> (-0.4).sp
+                digits == 2 -> (-0.2).sp
+                else -> (-0.3).sp
             },
             maxLines = 1,
             softWrap = false,
@@ -396,8 +407,17 @@ fun PersonCard(person: PersonRef, onClick: () -> Unit, modifier: Modifier = Modi
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         )
         if (person.role.isNotEmpty()) {
+            /**
+             * 用户口径（2026-11-23）：**「饰」字重复已确诊**。
+             *
+             * 服务端 Role 字段本身就带「饰 」前缀（实测 ETKN 返回
+             * Role="饰 吴秀雅"），这里再拼一次就变成「饰 饰 吴秀雅」。
+             * 所以直接用角色原文，只在它明显没有前缀时才补一个。
+             */
+            val roleText = if (person.role.trimStart().startsWith("饰")) person.role.trim()
+                           else "饰 ${person.role.trim()}"
             Text(
-                "饰 ${person.role}",
+                roleText,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

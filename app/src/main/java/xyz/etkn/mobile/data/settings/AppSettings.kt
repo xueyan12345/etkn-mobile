@@ -193,6 +193,49 @@ object HiddenLibrariesPerAccount {
     }
 }
 
+/**
+ * 用户口径（2026-11-23）**轮播图按「上次生成满 12 小时」才换一批**。
+ *
+ * 之前用「日历 0 点 / 12 点桶号」当种子，问题有两个：
+ *  ① 用户上午看到一批好片，下午再打开就被换掉了，找不回来；
+ *  ② 两天没打开，一进来桶早变了好几轮 —— 这倒是对的，但和 ① 是同一个毛病：
+ *     刷新时机跟着日历走，不跟用户行为走。
+ *
+ * 现在按账号存「上次生成时间 + 那 8 个 id」：
+ *  · 距上次不足 12 小时 → 直接沿用（一天开十次都是同一批）
+ *  · 超过 12 小时 → 重抽（两天没开，一进来就是新的）
+ *  · 剔除已看完/已删除的，不够就当场补
+ */
+object HeroSnapshot {
+    private const val FILE = "etkn_hero_snapshot"
+    private const val KEY_IDS = "ids"
+    private const val KEY_AT = "at"
+
+    data class Shown(val ids: List<String>, val at: Long)
+
+    private fun prefs(context: Context, accountKey: String) =
+        context.getSharedPreferences("${FILE}_$accountKey", Context.MODE_PRIVATE)
+
+    fun read(context: Context, accountKey: String?): Shown? {
+        if (accountKey.isNullOrBlank()) return null
+        val p = prefs(context, accountKey)
+        val ids = p.getString(KEY_IDS, null) ?: return null
+        val at = p.getLong(KEY_AT, 0L)
+        if (at <= 0L) return null
+        val list = ids.split('\u0001').filter { it.isNotBlank() }
+        if (list.isEmpty()) return null
+        return Shown(list, at)
+    }
+
+    fun write(context: Context, accountKey: String?, ids: List<String>) {
+        if (accountKey.isNullOrBlank()) return
+        prefs(context, accountKey).edit(commit = true) {
+            putString(KEY_IDS, ids.joinToString("\u0001"))
+            putLong(KEY_AT, System.currentTimeMillis())
+        }
+    }
+}
+
 class AppSettings(private val context: Context) {
     private object Keys {
         val theme = stringPreferencesKey("theme_mode")

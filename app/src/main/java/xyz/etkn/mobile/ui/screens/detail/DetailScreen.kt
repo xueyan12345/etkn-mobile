@@ -505,13 +505,15 @@ private fun DetailHeader(data: DetailData, centered: Boolean) {
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = Etkn.space.screen).padding(bottom = 4.dp),
                 horizontalAlignment = align,
             ) {
-                if (item.isEpisode || item.isSeason) {
-                    // 单集/季：底部保留剧名小字，和参考图「Logo 下方再一行常规剧名」一致
-                    item.seriesName?.let {
-                        Text(it, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, maxLines = 1)
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
+                /**
+                 * 用户口径（2026-11-23）**这里原来有一行青绿色小字剧名，已删除**。
+                 *
+                 * 原因：同一屏剧名出现了三次 ——
+                 *  ① 海报上的白色艺术字（服务器 TMDB 图，保留）
+                 *  ② 上面 InfoColumn 里的纯黑粗体剧名（保留，参考图要求的那一行）
+                 *  ③ 这个青绿色小字（多余，删掉）
+                 * 参考图里图下只有一行剧名，所以这里直接进入元数据行。
+                 */
                 MetaLines(item, techSource(data), align)
             }
         }

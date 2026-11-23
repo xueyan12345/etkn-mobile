@@ -62,7 +62,8 @@ import xyz.etkn.mobile.ui.theme.LocalSettings
 
 @Composable
 fun HomeScreen() {
-    val vm = graphViewModel { HomeViewModel(it) }
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val vm = graphViewModel { HomeViewModel(it, appContext) }
     val state by vm.state.collectAsStateWithLifecycle()
     val refreshing by vm.refreshing.collectAsStateWithLifecycle()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.onResume() }

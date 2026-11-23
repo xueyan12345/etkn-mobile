@@ -23,6 +23,7 @@ import xyz.etkn.mobile.launcher.LauncherEntries
 import xyz.etkn.mobile.ui.common.Load
 import xyz.etkn.mobile.ui.common.userMessage
 import kotlin.random.Random
+import xyz.etkn.mobile.data.settings.HeroSnapshot
 
 @Immutable
 data class LatestShelf(val library: Item, val items: List<Item>)
@@ -37,7 +38,11 @@ data class HomeData(
     val counts: LibraryCounts? = null,
 )
 
-class HomeViewModel(private val graph: AppGraph) : ViewModel() {
+class HomeViewModel(
+    private val graph: AppGraph,
+    /** 用户口径（2026-11-23）：轮播快照要按账号存本地，需 Application Context。 */
+    private val context: android.content.Context,
+) : ViewModel() {
     private val api = graph.api
     private val _state = MutableStateFlow<Load<HomeData>>(Load.Loading)
     val state: StateFlow<Load<HomeData>> = _state.asStateFlow()
@@ -146,16 +151,39 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
     }
 
     /**
-     * 用户口径（2026-11-23）轮播图改成本地随机：
+     * 用户口径（2026-11-23）轮播图：
      * · 不读服务端 `PersonalRecommendations`（服务端 media.item_vectors 是空表，
      *   personal_vector 推荐实测一直返回 0 条，还会因为缺 ShuffleSeed 报 400）
-     * · 改成：从本账号所有影视库各自取一批，合并去重后随机抽 8 部
-     * · 12 小时固定不动：0 点、12 点各换一批（用时段桶当随机种子，同桶结果恒定）
+     * · 从本账号所有影视库各自取一批，合并去重后**整体打乱**随机抽 8 部
+     * · 按账号独立，**「上次生成满 12 小时」才换一批**（不是按日历 0 点/12 点换）
+     *
+     * 为什么不用日历桶：用户两天没打开 App，一打开日历桶早变了好几轮，
+     * 但更关键的是「上午看到一批好片、下午再打开就换掉了，找不回来」。
+     * 现在改成记 lastShownAt：不足 12 小时就用上次那 8 个 id，
+     * 超过 12 小时才重抽。这样「一天开十次」看到的都是同一批，
+     * 「两天没开」一进来就是新的一批。
      */
     private fun loadHero(data: HomeData, quiet: Boolean = false) {
         heroJob?.cancel()
         heroJob = viewModelScope.launch {
-            val bucket = heroBucket()   // 0 点 / 12 点两档，桶内不变
+            val accountKey = sessionKey()
+            val shown = HeroSnapshot.read(context, accountKey)
+            if (shown != null && System.currentTimeMillis() - shown.at < HERO_TTL_MS) {
+                /**
+                 * 未过期：沿用上次那 8 个 id。
+                 * 但要先剔除「已看完 / 已删除」的 —— 用户明确要求轮播只推没看完的。
+                 * 剔除后不足 8 个就当场补新的（不用等到过期）。
+                 */
+                val pool = heroPool(data)
+                val byId = pool.associateBy { it.id }
+                val kept = shown.ids.mapNotNull { byId[it] }.filter { !isFinished(it) }
+                if (kept.size >= HERO_SIZE) {
+                    publishHero(kept.take(HERO_SIZE))
+                    return@launch
+                }
+                // 掉的太多（看完了/删了）→ 重抽并刷新时间戳
+            }
+            val seed = System.currentTimeMillis()
             /**
              * 用户口径（2026-11-23）：轮播图 = 把所有媒体库的片子全部汇总 → 整体打乱 → 随机取 8 个。
              *
@@ -181,25 +209,45 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
                 .distinctBy { it.id }
                 .toList()
             if (candidates.isNotEmpty()) {
-                publishHero(candidates.shuffled(Random(bucket)).take(HERO_SIZE))
+                val picked = candidates.shuffled(Random(seed)).take(HERO_SIZE)
+                publishHero(picked)
+                // 记下这一批 + 时间戳，12 小时内不再换
+                HeroSnapshot.write(context, accountKey, picked.map { it.id })
                 return@launch
             }
             // 连库列表都还没到（首屏缓存路径）时退回旧的兜底，别让轮播空着
             if (!quiet) {
                 val fallback = fallbackHero(data)
                 if (fallback.isNotEmpty()) {
-                    publishHero(fallback.shuffled(Random(bucket)).take(HERO_SIZE))
+                    val picked = fallback.shuffled(Random(seed)).take(HERO_SIZE)
+                    publishHero(picked)
+                    HeroSnapshot.write(context, accountKey, picked.map { it.id })
                 }
             }
         }
     }
 
-    /** 12 小时一档的桶号：0~12 点、12~24 点各一个，用来做随机种子。 */
-    private fun heroBucket(): Long {
-        val now = java.util.Calendar.getInstance()
-        val day = now.get(java.util.Calendar.DAY_OF_YEAR).toLong()
-        val half = now.get(java.util.Calendar.HOUR_OF_DAY) / 12
-        return day * 2 + half
+    /** 账号 key（serverId|userId），轮播按账号独立。 */
+    private fun sessionKey(): String? =
+        (graph.sessions.state.value as? xyz.etkn.mobile.data.session.SessionState.SignedIn)?.session?.key
+
+    /** 轮播候选池：本账号所有影视库各取一批，合并去重。 */
+    private suspend fun heroPool(data: HomeData): List<Item> = coroutineScope {
+        data.latest.map { shelfData ->
+            async {
+                val types = when (shelfData.library.collectionType) {
+                    "movies" -> "Movie"
+                    "tvshows" -> "Series"
+                    else -> null
+                }
+                runCatching { api.latest(shelfData.library.id, types, HERO_POOL_PER_LIBRARY) }
+                    .getOrDefault(emptyList())
+            }
+        }.awaitAll().flatten()
+            .asSequence()
+            .filter(::hasBackdrop)
+            .distinctBy { it.id }
+            .toList()
     }
 
     private fun publishHero(items: List<Item>) {

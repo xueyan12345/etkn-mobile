@@ -52,6 +52,8 @@ import xyz.etkn.mobile.ui.screens.music.NowPlayingScreen
 import xyz.etkn.mobile.ui.screens.person.PersonScreen
 import xyz.etkn.mobile.ui.screens.search.SearchScreen
 import xyz.etkn.mobile.ui.theme.Motion
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 
 /**
  * False while a tab sits in the pager without being the page shown: the neighbours are composed
@@ -123,8 +125,41 @@ private fun TabPager(tabs: List<TopLevel>, pager: PagerState, vertical: Boolean)
     if (vertical) {
         VerticalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, userScrollEnabled = false, key = key, pageContent = content)
     } else {
-        // 用户口径（2026-11-23）：禁止在页面上左右滑动切换标签，只能点底栏图标切换。
-        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, userScrollEnabled = false, key = key, pageContent = content)
+        /**
+         * 用户口径（2026-11-23）**彻底禁止在页面上左右滑动切换标签**。
+         *
+         * 只写 userScrollEnabled = false 不够 —— 实测还能滑，而且松手会卡在
+         * 两页中间（左露媒体库网格、右露音乐页），能来回拖。
+         * 这可能来自内层 LazyRow 的手势竞争：横滑先被 Pager 认领、又被内层抢回去，
+         * 两边都不 settle。
+         *
+         * 现在的双保险：
+         *  ① userScrollEnabled = false（禁 Pager 自己的拖拽）
+         *  ② 外层把横向拖拽事件消费掉，不让它传到 Pager
+         *     只吃横向（|dx| > |dy|），纵向和点击照常透传，
+         *     所以页面上下滚动、点卡片都不受影响。
+         */
+        val blockHorizontalSwipe = Modifier.pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    // 在 Initial 阶段先看事件：累计位移里横向占优就吃掉，
+                    // 纵向占优（页面滚动）放行。点击（位移≈0）也放行。
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull() ?: continue
+                    val dx = kotlin.math.abs(change.position.x - change.previousPosition.x)
+                    val dy = kotlin.math.abs(change.position.y - change.previousPosition.y)
+                    if (dx > dy && dx > 0f) change.consume()
+                }
+            }
+        }
+        HorizontalPager(
+            pager,
+            Modifier.fillMaxSize().then(blockHorizontalSwipe),
+            beyondViewportPageCount = 1,
+            userScrollEnabled = false,
+            key = key,
+            pageContent = content,
+        )
     }
 }
 

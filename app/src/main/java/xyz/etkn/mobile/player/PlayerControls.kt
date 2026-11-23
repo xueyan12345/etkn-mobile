@@ -609,7 +609,9 @@ private fun EpisodeInfoSheet(ui: VideoUi, onDismiss: () -> Unit) {
                             // 角色名：演员「饰 XXX」，导演「导演」
                             val subtitle = when {
                                 person.type.equals("Director", true) -> "导演"
-                                person.role.isNotBlank() && !person.role.equals(person.name, true) -> "饰 ${person.role}"
+                                // 服务端 Role 已自带「饰 」前缀，直接用原文（否则「饰 饰 XXX」）
+                                person.role.isNotBlank() && !person.role.equals(person.name, true) ->
+                                    person.role.trim().let { if (it.startsWith("饰")) it else "饰 $it" }
                                 else -> ""
                             }
                             if (subtitle.isNotEmpty()) {

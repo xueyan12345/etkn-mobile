@@ -299,7 +299,8 @@ private fun CastAvatar(name: String, role: String, profilePath: String, onClick:
         )
         if (role.isNotEmpty()) {
             Text(
-                "饰 ${role}",
+                // 服务端 Role 已自带「饰 」前缀，直接用原文（否则「饰 饰 XXX」）
+                role.trim().let { if (it.startsWith("饰")) it else "饰 $it" },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
