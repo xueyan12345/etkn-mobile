@@ -67,6 +67,8 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.foundation.layout.asPaddingValues
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
@@ -447,20 +449,37 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      *
      * 仅当系统确实不转（forceRotate=true）时启用；正常设备仍是普通全屏。
      */
-    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+    BoxWithConstraints(
+        Modifier.fillMaxSize().background(Color.Black),
+        // 用户口径（2026-11-23）关键：旋转画布必须**居中**。
+        // 之前是左上角摆放 + 手动平移，那个平移量是按「画布已居中」推的，
+        // 实际画布在左上角 → 结果整体偏左、上方被截（用户截图证实）。
+        // 用 contentAlignment=Center 让画布天然居中，绕自身中心转 90° 后
+        // 正好铺满整屏，一个平移都不需要。
+        contentAlignment = Alignment.Center,
+    ) {
         val rotated = forceRotate
-        val canvasW = if (rotated) maxHeight else maxWidth
-        val canvasH = if (rotated) maxWidth else maxHeight
+        /**
+         * 用户口径（2026-11-23）平板尺寸专门适配。
+         *
+         * 设备实测：竖屏 1680×2520（比例 3:2），横屏 2520×1680。
+         * 横屏画布的宽 = 屏幕的高（maxHeight），高 = 屏幕的宽（maxWidth），
+         * 但必须**扣掉安全区**（状态栏 / 挖孔 / 导航栏），否则内容会顶到屏幕边缘
+         * 或被系统栏压住 —— 之前画面上下被截就是这个原因之一。
+         */
+        val insets = WindowInsets.safeDrawing.asPaddingValues()
+        val safeW = (maxWidth - insets.calculateLeftPadding(LocalLayoutDirection.current)
+            - insets.calculateRightPadding(LocalLayoutDirection.current)).coerceAtLeast(1.dp)
+        val safeH = (maxHeight - insets.calculateTopPadding() - insets.calculateBottomPadding())
+            .coerceAtLeast(1.dp)
+        val canvasW = if (rotated) safeH else safeW
+        val canvasH = if (rotated) safeW else safeH
         Box(
             Modifier.then(
                 if (rotated) {
                     Modifier
                         .size(canvasW, canvasH)
-                        .graphicsLayer {
-                            rotationZ = 90f
-                            translationX = (canvasH - canvasW).toPx() / 2f
-                            translationY = (canvasW - canvasH).toPx() / 2f
-                        }
+                        .graphicsLayer { rotationZ = 90f }
                 } else {
                     Modifier.fillMaxSize()
                 },
@@ -552,7 +571,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             // 长按调速（Speed）也算 notice：放顶部，且 5 秒后自动消失，不长期挡画面。
             val isNotice = feedback is GestureFeedback.Text || feedback is GestureFeedback.Speed
             val place = if (isNotice) {
-                Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.statusBars).padding(top = 48.dp)
+                Modifier.align(Alignment.TopCenter)./* 旋转画布已扣除安全区，这里不再重复补偿（否则双重偏移） */ .padding(top = 28.dp)
             } else Modifier.align(Alignment.Center)
             GestureBadge(feedback, place)
         }
@@ -573,7 +592,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 message,
                 color = Color.White,
                 style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing)
+                modifier = Modifier.align(Alignment.TopCenter)
                     .padding(top = 64.dp).background(Color.Black.copy(alpha = 0.55f), Corner.pill)
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             )
@@ -607,7 +626,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             if (locked) {
                 FilledIconButton(
                     onClick = { locked = false; controls = true },
-                    modifier = Modifier.align(Alignment.CenterStart).windowInsetsPadding(WindowInsets.safeDrawing).padding(16.dp),
+                    modifier = Modifier.align(Alignment.CenterStart).padding(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White),
                 ) { Icon(Icons.Rounded.Lock, "解锁") }
             }
@@ -625,7 +644,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 // 所以出现了「整个屏幕在倒计时」。现在直接在胶囊自己的 drawBehind 里画，
                 // 尺寸天然就是按钮宽×按钮高。
                 Row(
-                    Modifier.align(Alignment.BottomEnd).windowInsetsPadding(WindowInsets.safeDrawing)
+                    Modifier.align(Alignment.BottomEnd)
                         .padding(end = 24.dp, bottom = if (controls) 120.dp else 32.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
