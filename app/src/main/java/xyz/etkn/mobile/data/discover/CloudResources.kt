@@ -313,13 +313,14 @@ object CloudResources {
 class SharedMusicItem(val raw: JsonObject) {
     val packageId: String = raw.str("package_id")
     val kind: String = raw.str("kind")
-    private val meta: JsonObject? = raw["metadata"]
+    private val meta: JsonObject? = (raw["metadata"] as? JsonObject)
     val title: String = meta?.str("title").orEmpty().ifEmpty { meta?.str("album").orEmpty() }
     val album: String = meta?.str("album").orEmpty()
     val artists: String = runCatching {
-        meta?.get("artists")?.let { arr ->
-            arr.jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull }.joinToString(" / ")
-        }.orEmpty()
+        (meta?.get("artists") as? kotlinx.serialization.json.JsonArray)
+            ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
+            ?.joinToString(" / ")
+            .orEmpty()
     }.getOrDefault("")
     val year: Int = runCatching { meta?.int("year") ?: 0 }.getOrDefault(0)
     val artwork: String = raw.str("artwork")

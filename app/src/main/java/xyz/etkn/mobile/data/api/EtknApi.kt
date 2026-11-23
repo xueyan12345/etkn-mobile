@@ -50,6 +50,7 @@ import xyz.etkn.mobile.data.net.strOrNull
 import xyz.etkn.mobile.data.session.ActiveSession
 import xyz.etkn.mobile.player.danmaku.DanmakuPage
 import xyz.etkn.mobile.player.danmaku.DanmakuTimeline
+import xyz.etkn.mobile.data.discover.SharedMusicItem
 
 /** Sort keys exposed by the TV poster wall; ratings are separate server fields. */
 enum class SortKey(val wire: String, val label: String) {

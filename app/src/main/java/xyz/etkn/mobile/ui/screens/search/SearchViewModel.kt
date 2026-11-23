@@ -111,8 +111,8 @@ class SearchViewModel(private val graph: AppGraph) : PagedViewModel() {
             if (musicAllowed == null) musicAllowed = runCatching { api.canSharedMusic() }.getOrDefault(false)
             if (musicAllowed != true) { _sharedMusic.value = null; return@launch }
             val kind = if (target == SearchScope.MusicVideo) "music_video" else "music"
-            val result = runCatching {
-                api.sharedPoolMusic(kind, query).orEmpty()
+            val result: Load<List<SharedMusicItem>> = runCatching {
+                api.sharedPoolMusic(kind, query) ?: emptyList()
             }.fold({ Load.Ready(it) }, { Load.Failed(it.userMessage()) })
             _sharedMusic.value = result
         }
