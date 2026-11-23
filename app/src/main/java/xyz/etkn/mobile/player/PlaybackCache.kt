@@ -131,7 +131,9 @@ object PlaybackCache {
                 temp.outputStream().use { out ->
                     val buffer = ByteArray(256 * 1024)
                     var total = 0L
-                    val length = source.contentLength
+                    // DefaultHttpDataSource 不是 DataSource 的 contentLength()；
+                    // open() 之后可以从 DataSpec 的长度或响应头拿，取不到就用 -1 表示未知。
+                    val length = -1L
                     while (true) {
                         val read = source.read(buffer, 0, buffer.size)
                         if (read < 0) break
