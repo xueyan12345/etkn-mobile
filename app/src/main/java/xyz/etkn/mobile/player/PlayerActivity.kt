@@ -178,6 +178,7 @@ class PlayerActivity : ComponentActivity() {
      * 全部失败也不崩：最终仍靠 requestedOrientation 走传统路径（小屏设备本来就好使）。
      */
     private fun allowOrientationOverride() {
+        // Activity 里读 resources 是当前实时值（非 Compose 组合缓存），这里没问题
         val smallest = resources.configuration.smallestScreenWidthDp
         android.util.Log.i(
             "ETKN-Rotate",

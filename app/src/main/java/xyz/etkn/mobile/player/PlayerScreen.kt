@@ -102,6 +102,12 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 改成沿 ContextWrapper 链一路往上找真正的 Activity。
      */
     val activity = remember(context) { context.findActivity() }
+    /**
+     * 用户口径（2026-11-23）：Compose 里读设备方向必须用 LocalConfiguration，
+     * 直接读 context.resources.configuration 会拿到过期值（lint 也报了这条）。
+     * 旋转判据依赖「当前真实方向」，读到旧值就永远判错。
+     */
+    val localConfig = androidx.compose.ui.platform.LocalConfiguration.current
     // true = 竖屏（portrait），false = 横屏（landscape）
     // 用户口径（2026-11-23 修「横屏视频点进去还是竖屏」）：
     // 这里原来是 false。而下面所有调用点都写成 `if (wantPortrait != portrait) applyOrientation(...)`，
@@ -184,7 +190,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         // 300ms 后校验真实方向，没成再强推一次（最多三次）
         fun verify(round: Int) {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                val real = act?.resources?.configuration?.orientation
+                val real = localConfig.orientation
                 val ok = real == want
                 android.util.Log.i(
                     "ETKN-Rotate",
@@ -214,7 +220,8 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
          * 一次性暴露出来，下一次日志就能定位到底断在哪一层。
          */
         val act = activity
-        val realNow = act?.resources?.configuration?.orientation
+        // 用 Compose 的 LocalConfiguration（配置感知），不读 context.resources（可能过期）
+        val realNow = localConfig.orientation
         val realText = when (realNow) {
             android.content.res.Configuration.ORIENTATION_PORTRAIT -> "P"
             android.content.res.Configuration.ORIENTATION_LANDSCAPE -> "L"
@@ -223,7 +230,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         android.util.Log.i(
             "ETKN-Rotate",
             "enter auto: manual=$manualOrientation activity=${act != null} real=$realText " +
-                "smallestDp=${context.resources.configuration.smallestScreenWidthDp}",
+                "smallestDp=${localConfig.smallestScreenWidthDp}",
         )
         if (!manualOrientation) applyOrientation(false)
     }
