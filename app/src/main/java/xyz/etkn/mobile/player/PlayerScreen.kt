@@ -59,12 +59,11 @@ import xyz.etkn.mobile.ui.theme.Corner
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.layout.matchParentSize
-import androidx.compose.ui.draw.clipRect
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.draw.drawBehind
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
@@ -408,20 +407,19 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 ) {
                     // 倒计时填充：从左往右一块色块，5 秒铺满
                     if (countingDown) {
-                        // 倒计时色块：从左往右铺开，宽度 = 进度 × 按钮宽
+                        // 倒计时色块：从左往右铺开，宽度 = 进度 × 按钮宽。
+                        // 直接用 drawBehind 画一个圆角矩形，比 clipRect+drawContent 更直接、不会有隐式接收者冲突。
                         Box(
-                            Modifier.fillMaxSize()
-                                .background(
-                                    Color.White.copy(alpha = 0.28f),
-                                    Corner.pill,
-                                )
-                                .then(
-                                    Modifier.drawWithContent {
-                                        clipRect(right = size.width * skipCountdown.coerceIn(0f, 1f)) {
-                                            drawContent()
-                                        }
-                                    },
-                                ),
+                            Modifier.fillMaxSize().drawBehind {
+                                val w = size.width * skipCountdown.coerceIn(0f, 1f)
+                                if (w > 0f) {
+                                    drawRoundRect(
+                                        color = Color.White.copy(alpha = 0.28f),
+                                        size = androidx.compose.ui.geometry.Size(w, size.height),
+                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f),
+                                    )
+                                }
+                            },
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
