@@ -86,12 +86,15 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.foundation.layout.aspectRatio
 
 @Composable
 fun SearchScreen() {
     val vm = graphViewModel { SearchViewModel(it) }
     val paged by vm.paged.collectAsStateWithLifecycle()
     val discover by vm.discover.collectAsStateWithLifecycle()
+    val sharedMusic by vm.sharedMusic.collectAsStateWithLifecycle()
     val scope by vm.scope.collectAsStateWithLifecycle()
     val nav = LocalNav.current
     val text = rememberTextFieldState()
@@ -144,17 +147,57 @@ fun SearchScreen() {
                     },
                 )
                 else -> {
-                    // 音乐 / MV 仍按原来的网格展示（探索只对影视开）
-                    when (scope) {
-                        SearchScope.Music -> PosterGrid(
-                            paged, grid, vm::loadMore, vm::retry, top = top, cell = 140.dp,
-                            card = { SquareCard(it, onClick = { open(it) }, width = null) }, onOpen = open,
-                        )
-                        SearchScope.MusicVideo -> PosterGrid(
-                            paged, grid, vm::loadMore, vm::retry, top = top, cell = 200.dp,
-                            card = { LibraryTile(it, onClick = { open(it) }) }, onOpen = open,
-                        )
-                        else -> Unit
+                    // 用户口径（2026-11-23）：音乐 / MV 除了库内结果，也要接在线共享池
+                    // （/api/shared-pool/music）。没管理员权限时 sharedMusic 为 null，只显示库内。
+                    Column(Modifier.fillMaxSize()) {
+                        Box(Modifier.weight(1f)) {
+                            when (scope) {
+                                SearchScope.Music -> PosterGrid(
+                                    paged, grid, vm::loadMore, vm::retry, top = top, cell = 140.dp,
+                                    card = { SquareCard(it, onClick = { open(it) }, width = null) }, onOpen = open,
+                                )
+                                SearchScope.MusicVideo -> PosterGrid(
+                                    paged, grid, vm::loadMore, vm::retry, top = top, cell = 200.dp,
+                                    card = { LibraryTile(it, onClick = { open(it) }) }, onOpen = open,
+                                )
+                                else -> Unit
+                            }
+                        }
+                        val online = sharedMusic
+                        if (online != null) {
+                            when (online) {
+                                Load.Loading -> Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 10.dp),
+                                ) { LoadingIndicator() }
+                                is Load.Failed -> Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        "在线 · " + if (scope == SearchScope.MusicVideo) "MV" else "音乐",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    TextButton(onClick = vm::retryDiscover) { Text("重试") }
+                                }
+                                is Load.Ready -> if (online.value.isEmpty()) {
+                                    Unit
+                                } else {
+                                    LazyRow(
+                                        contentPadding = PaddingValues(
+                                            start = Etkn.space.screen,
+                                            end = Etkn.space.screen,
+                                            bottom = LocalBottomInset.current + 12.dp,
+                                        ),
+                                        horizontalArrangement = Arrangement.spacedBy(Etkn.space.item),
+                                    ) {
+                                        items(online.value, key = { "shared-" + it.packageId }) { entry ->
+                                            SharedMusicCard(entry)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -300,6 +343,55 @@ private fun SearchResults(
                 }
                 is Load.Ready -> items(load.value, key = { "on-${kind.wire}-" + it.id }) { item ->
                     DiscoverCard(item, onClick = { onOpenOnline(item) }, width = null)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：共享池音乐卡片（在线）。方形封面 + 标题 + 艺人。
+ * 没有封面时就只显示文字块，不占空位。
+ */
+@Composable
+private fun SharedMusicCard(item: xyz.etkn.mobile.data.discover.SharedMusicItem) {
+    Surface(
+        shape = Corner.card,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.width(132.dp),
+    ) {
+        Column {
+            Box(
+                Modifier.fillMaxWidth().aspectRatio(1f)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Rounded.MusicNote,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                Text(
+                    item.title.ifEmpty { "未命名" },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val sub = listOfNotNull(
+                    item.artists.takeIf { it.isNotEmpty() },
+                    item.year.takeIf { it > 0 }?.toString(),
+                ).joinToString(" · ")
+                if (sub.isNotEmpty()) {
+                    Text(
+                        sub,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

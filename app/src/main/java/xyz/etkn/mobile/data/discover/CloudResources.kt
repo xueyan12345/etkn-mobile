@@ -13,6 +13,8 @@ import xyz.etkn.mobile.data.net.obj
 import xyz.etkn.mobile.data.net.rows
 import xyz.etkn.mobile.data.net.str
 import java.util.Locale
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 
 /**
  * Cloud resource providers searched in parallel for one title.
@@ -299,5 +301,31 @@ object CloudResources {
             }
         }
         return list
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：共享池音乐 / MV 的一条。
+ * 服务端结构：{package_id, kind, artwork, metadata{title, album, artists[], year, genre}, file_count, is_mine}
+ * 注意标题在 metadata 里，不在顶层 —— 之前按顶层 title 取，结果整条都是空的。
+ */
+@Immutable
+class SharedMusicItem(val raw: JsonObject) {
+    val packageId: String = raw.str("package_id")
+    val kind: String = raw.str("kind")
+    private val meta: JsonObject? = raw["metadata"]
+    val title: String = meta?.str("title").orEmpty().ifEmpty { meta?.str("album").orEmpty() }
+    val album: String = meta?.str("album").orEmpty()
+    val artists: String = runCatching {
+        meta?.get("artists")?.let { arr ->
+            arr.jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull }.joinToString(" / ")
+        }.orEmpty()
+    }.getOrDefault("")
+    val year: Int = runCatching { meta?.int("year") ?: 0 }.getOrDefault(0)
+    val artwork: String = raw.str("artwork")
+    val fileCount: Int = raw.int("file_count")
+
+    companion object {
+        fun from(o: JsonObject) = SharedMusicItem(o)
     }
 }

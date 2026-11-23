@@ -603,7 +603,7 @@ class EtknApi(
      * ⚠️ 这个接口要管理员权限（普通账号 403「需要管理员权限」）。
      * 所以先探一次权限，没有就返回 null，界面上不显示音乐/MV 标签页。
      */
-    suspend fun sharedPoolMusic(kind: String, term: String, start: Int = 0, limit: Int = 60): DiscoverPage? {
+    suspend fun sharedPoolMusic(kind: String, term: String, start: Int = 0, limit: Int = 60): List<SharedMusicItem>? {
         val path = query(
             "/api/shared-pool/music",
             "kind" to kind,
@@ -612,8 +612,7 @@ class EtknApi(
             "offset" to start,
         )
         return runCatching {
-            val result = get(path)
-            DiscoverPage(result.rows().map { DiscoverItem(it, DiscoverKind.Movie) }, 1)
+            get(path).rows().map(SharedMusicItem::from)
         }.getOrNull()
     }
 

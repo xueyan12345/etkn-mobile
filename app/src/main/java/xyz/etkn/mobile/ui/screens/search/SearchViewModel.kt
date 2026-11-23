@@ -20,6 +20,7 @@ import xyz.etkn.mobile.ui.common.Load
 import xyz.etkn.mobile.ui.common.Paged
 import xyz.etkn.mobile.ui.common.userMessage
 import xyz.etkn.mobile.ui.screens.library.PagedViewModel
+import xyz.etkn.mobile.data.discover.SharedMusicItem
 
 /** What a search looks through; 影视 by default. */
 enum class SearchScope(val label: String, val hint: String, val none: String) {
@@ -43,8 +44,8 @@ class SearchViewModel(private val graph: AppGraph) : PagedViewModel() {
      * 用户口径（2026-11-23）：音乐 / MV 标签页的在线结果（走 /api/shared-pool/music）。
      * null = 这个账号没权限（非管理员），界面就不显示在线区块。
      */
-    private val _sharedMusic = MutableStateFlow<Load<List<DiscoverItem>>?>(null)
-    val sharedMusic: StateFlow<Load<List<DiscoverItem>>?> = _sharedMusic.asStateFlow()
+    private val _sharedMusic = MutableStateFlow<Load<List<SharedMusicItem>>?>(null)
+    val sharedMusic: StateFlow<Load<List<SharedMusicItem>>?> = _sharedMusic.asStateFlow()
     private var musicAllowed: Boolean? = null
     private var musicJob: Job? = null
     private val _discover = MutableStateFlow<Map<DiscoverKind, Load<List<DiscoverItem>>>?>(null)
@@ -111,7 +112,7 @@ class SearchViewModel(private val graph: AppGraph) : PagedViewModel() {
             if (musicAllowed != true) { _sharedMusic.value = null; return@launch }
             val kind = if (target == SearchScope.MusicVideo) "music_video" else "music"
             val result = runCatching {
-                api.sharedPoolMusic(kind, query)?.items.orEmpty()
+                api.sharedPoolMusic(kind, query).orEmpty()
             }.fold({ Load.Ready(it) }, { Load.Failed(it.userMessage()) })
             _sharedMusic.value = result
         }
