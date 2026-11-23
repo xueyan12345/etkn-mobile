@@ -62,7 +62,6 @@
             android:alwaysRetainTaskState="true"
             android:screenOrientation="unspecified"
             android:supportsPictureInPicture="true"
-            android:propagateOrientationRequest="true"
             android:excludeFromRecents="true"
             android:theme="@style/Theme.Etkn.Player" />
 

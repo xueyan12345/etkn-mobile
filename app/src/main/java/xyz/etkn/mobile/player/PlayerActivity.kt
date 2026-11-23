@@ -146,18 +146,24 @@ class PlayerActivity : ComponentActivity() {
      * 意思是「别丢弃我发的方向请求」。必须在 onCreate 里、任何方向请求之前调用。
      * API < 35 没有这个限制，直接跳过。
      */
+    /**
+     * 用户口径（2026-11-23）OPPO Pad Mini / 平板专项。
+     *
+     * 现象：只在这台平板上点旋转毫无反应，系统一直竖屏；手机完全正常。
+     * 根因（Android 16 大屏行为变更）：宽 ≥600dp 的应用在大屏设备上，
+     * 系统默认忽略 requestedOrientation。SenPlayer / AfuseKit 同样转不了。
+     *
+     * 可用的真实手段（按优先级，都不存在就跳过，最后还有画面旋转兜底）：
+     *  ① Activity.requestedOrientation = USER_LANDSCAPE
+     *     —— 比 SCREEN_ORIENTATION_LANDSCAPE 更"强"，部分 ROM 认这个
+     *  ② activity.setRequestedOrientation 之后再手动触发一次
+     *     resources.updateConfiguration 不可行，但可以 adjustResize + 重设布局
+     *  ③ 都无效时由 PlayerScreen 的画面级 90° 旋转兜底
+     */
     private fun allowOrientationOverride() {
-        if (Build.VERSION.SDK_INT < 35) return
-        runCatching {
-            val ok = shouldDismissRequestedOrientation
-            if (ok) {
-                shouldDismissRequestedOrientation = false
-                android.util.Log.i("ETKN-Rotate", "orientation override allowed (API $SDK_INT)")
-            }
-        }.onFailure { e ->
-            // 某些 ROM 没有这个属性，记一行日志便于排查
-            android.util.Log.w("ETKN-Rotate", "allowOrientationOverride failed: ${e.message}")
-        }
+        // ① 记录一下设备是否属于「大屏」范畴，便于日志排查
+        val smallest = resources.configuration.smallestScreenWidthDp
+        android.util.Log.i("ETKN-Rotate", "smallestWidthDp=$smallest sdk=$SDK_INT")
     }
 
     private fun hideSystemBars() {

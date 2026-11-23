@@ -157,14 +157,32 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         } else {
             android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
-        runCatching { activity?.requestedOrientation = target }
+        /**
+         * 用户口径（2026-11-23）：点旋转按钮要「立刻」看到效果，不能等系统。
+         * 所以先把画面旋转兜底翻过来（如果当前是画面旋转态），
+         * 再发系统方向请求；350ms 后按真实方向校正一次。
+         * 这样在系统永远不认的大屏设备上，点一下也是马上生效。
+         */
         val act = activity
+        val realNow = act?.resources?.configuration?.orientation
+        val wantNow = if (wantPortrait) android.content.res.Configuration.ORIENTATION_PORTRAIT
+        else android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        if (realNow != wantNow) {
+            // 系统转不过去 → 立刻用画面旋转做出效果（再取反，避免和旧状态同向）
+            forceRotate = !wantPortrait
+        }
+        runCatching { activity?.requestedOrientation = target }
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             // 真实屏幕方向（不受我们请求值的干扰）
             val real = act?.resources?.configuration?.orientation
             val want = if (wantPortrait) android.content.res.Configuration.ORIENTATION_PORTRAIT
             else android.content.res.Configuration.ORIENTATION_LANDSCAPE
             val ok = real == want
+            /**
+             * 用户口径（2026-11-23）：横屏要「一定成功」。
+             * 系统认了 → 交还系统方向；系统不认（OPPO Pad Mini 这类大屏）→
+             * 立刻启用画面 90° 旋转，用户看到的就是横的，不等第二次重试。
+             */
             forceRotate = !ok
             android.util.Log.i(
                 "ETKN-Rotate",
