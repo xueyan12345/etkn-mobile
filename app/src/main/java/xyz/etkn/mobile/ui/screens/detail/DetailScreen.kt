@@ -94,7 +94,6 @@ import xyz.etkn.mobile.ui.common.Load
 import xyz.etkn.mobile.ui.common.LocalWindowLayout
 import xyz.etkn.mobile.ui.common.WhileStarted
 import xyz.etkn.mobile.ui.common.graphViewModel
-import xyz.etkn.mobile.ui.common.rememberArtworkSeed
 import xyz.etkn.mobile.ui.common.userMessage
 import xyz.etkn.mobile.ui.components.Artwork
 import xyz.etkn.mobile.ui.components.ArtworkBackButton
@@ -120,7 +119,6 @@ import xyz.etkn.mobile.ui.nav.LocalBottomInset
 import xyz.etkn.mobile.ui.nav.LocalNav
 import xyz.etkn.mobile.ui.nav.PersonRoute
 import xyz.etkn.mobile.ui.nav.TopLevel
-import xyz.etkn.mobile.ui.theme.ArtworkTheme
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Motion
 import xyz.etkn.mobile.ui.theme.HeroTitleStyle
@@ -208,9 +206,17 @@ private fun DetailContent(
     hoistedList: androidx.compose.foundation.lazy.LazyListState,
 ) {
     val item = data.item
-    val backdrop = images().backdrop(item, 64) ?: images().poster(item, 64)
-    val seed = rememberArtworkSeed(backdrop)
-    ArtworkTheme(seed) {
+    /**
+     * 用户口径（2026-11-24）**详情页不再按剧集画面动态取色**（方案A）。
+     *
+     * 之前：backdrop 变 → rememberArtworkSeed 重新取色 → ArtworkTheme 重建整套
+     * Material3 配色（seedColorScheme + tintedSurfaces + etknTokens）
+     * → 整棵子树重组重绘。切一集就重算一遍，又慢又生硬。
+     *
+     * 现在：直接用 App 主题色（设置里的服务器主题色），主题在切集时完全不变，
+     * 只有真正变化的内容（主图/标题/简介/选中态）重组 → 这才是丝滑的关键。
+     */
+    run {
         val episodes by vm.episodes.state.collectAsStateWithLifecycle()
         /**
          * 用户口径（2026-11-23）**滑动位置要跨切集保持**。
@@ -368,7 +374,7 @@ private fun ChapterCard(chapter: Chapter, item: Item, onPlay: () -> Unit) {
     }
     Column(
         Modifier
-            .width(180.dp)
+            .width(160.dp)   // 用户口径（2026-11-24）：和分集卡一起缩到 160dp
             .clip(Corner.card)
             .clickable(onClick = onPlay),
         horizontalAlignment = Alignment.CenterHorizontally,

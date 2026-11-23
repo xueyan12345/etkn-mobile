@@ -286,7 +286,24 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             "enter auto: manual=$manualOrientation activity=${act != null} real=$realText " +
                 "smallestDp=${localConfig.smallestScreenWidthDp}",
         )
-        if (!manualOrientation) applyOrientation(false)
+        /**
+         * 用户口径（2026-11-24）**修「OPPO 平板不再自动分辨视频方向」**。
+         *
+         * 这里原来无条件调 applyOrientation(false)，即「永远先横屏」。
+         * 它的副作用不只是发方向请求 —— 还会把 portrait 状态写成 false。
+         *
+         * 而「服务端尺寸预判」那个 LaunchedEffect 也在写 portrait。
+         * 两者存在时序竞争：
+         *  · Unit 这个后跑 → portrait 被覆盖成 false（横屏）
+         *  · 竖屏视频永远翻不回来 → 用户看到的就是「不自动判断方向了」
+         *
+         * 现在拆开职责：
+         *  · 这里只负责「画布先按横屏布局」这个视觉兜底（只动 forceRotate）
+         *  · 真实方向一律由「服务端尺寸预判」和 onVideoSizeChanged 决定
+         *    （它们会正确设置 portrait 并调 applyOrientation）
+         *  · 不再在没有真实尺寸的时候覆盖 portrait
+         */
+        if (!manualOrientation && needsCanvasRotation) forceRotate = true
     }
 
     /**
@@ -329,7 +346,12 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 val h = videoSize.height
                 if (w <= 0 || h <= 0) return
                 val wantPortrait = h > w
-                if (portrait == null || wantPortrait != portrait) applyOrientation(wantPortrait)
+                android.util.Log.i(
+                    "ETKN-Rotate",
+                    "video-size: ${w}x$h portrait=$wantPortrait currentPortrait=$portrait",
+                )
+                // 用户口径（2026-11-24）：播放器给的是最权威的尺寸，无条件应用
+                applyOrientation(wantPortrait)
             }
         }
         current?.addListener(listener)
@@ -351,9 +373,23 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         val v = ui.sources.getOrNull(ui.sourceIndex)?.video
         val w = v?.width ?: 0
         val h = v?.height ?: 0
+        android.util.Log.i(
+            "ETKN-Rotate",
+            "server-size: ${w}x$h portrait=${h > w} currentPortrait=$portrait",
+        )
         if (w > 0 && h > 0) {
             val wantPortrait = h > w
-            if (portrait == null || wantPortrait != portrait) applyOrientation(wantPortrait)
+            /**
+             * 用户口径（2026-11-24）：这里必须**无条件应用**，不能只在「变了」的时候应用。
+             *
+             * 之前写的是 `if (portrait == null || wantPortrait != portrait)`。
+             * 如果 portrait 已被别处错误写成 false（比如那个无条件横屏），
+             * 而真实也是横屏，这个条件就不成立 → 一次都不调用 applyOrientation，
+             * 于是 forceRotate 也不会被正确更新（竖屏视频翻不回来）。
+             *
+             * 现在改成：只要服务端给了真实尺寸，就应用一次，让它成为最终依据。
+             */
+            applyOrientation(wantPortrait)
         }
     }
     // 切集时重置手动覆盖，让新视频自己决定方向
@@ -633,13 +669,13 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         }
 
         if (ui.loading && ui.error == null) {
-            LoadingIndicator(Modifier.align(Alignment.Center).size(108.dp), color = Color.White)
+            LoadingIndicator(Modifier.align(Alignment.Center).size(72.dp), color = Color.White)
         }
         ui.error?.let { message ->
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(message, color = Color.White, style = MaterialTheme.typography.titleMedium, fontSize = 24.sp)
-                Spacer(Modifier.height(24.dp))
-                FilledTonalButton(onClick = onBack) { Text("返回", fontSize = 21.sp) }
+                Text(message, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(16.dp))
+                FilledTonalButton(onClick = onBack) { Text("返回") }
             }
         }
         gesture?.let { feedback ->
@@ -648,7 +684,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             val isNotice = feedback is GestureFeedback.Text || feedback is GestureFeedback.Speed
             val place = if (isNotice) {
                 // 旋转画布已扣除安全区，这里不再重复补偿（否则双重偏移）
-                Modifier.align(Alignment.TopCenter).padding(top = 42.dp)
+                Modifier.align(Alignment.TopCenter).padding(top = 28.dp)
             } else Modifier.align(Alignment.Center)
             GestureBadge(feedback, place)
         }
@@ -669,10 +705,9 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 message,
                 color = Color.White,
                 style = MaterialTheme.typography.labelLarge,
-                fontSize = 21.sp,
                 modifier = Modifier.align(Alignment.TopCenter)
-                    .padding(top = 96.dp).background(Color.Black.copy(alpha = 0.55f), Corner.pill)
-                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                    .padding(top = 64.dp).background(Color.Black.copy(alpha = 0.55f), Corner.pill)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
             )
         }
 
@@ -707,9 +742,9 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             if (locked) {
                 FilledIconButton(
                     onClick = { locked = false; controls = true },
-                    modifier = Modifier.align(Alignment.CenterStart).padding(24.dp).size(72.dp),
+                    modifier = Modifier.align(Alignment.CenterStart).padding(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White),
-                ) { Icon(Icons.Rounded.Lock, "解锁", modifier = Modifier.size(42.dp)) }
+                ) { Icon(Icons.Rounded.Lock, "解锁") }
             }
             // 用户口径（2026-11-23）：自动跳过模式下按钮也要显示，按钮内部用色块填充当 5 秒倒计时。
             // 之前这里是 takeUnless { Auto && Intro } —— Auto 模式直接把片头按钮藏了，所以看不到倒计时。

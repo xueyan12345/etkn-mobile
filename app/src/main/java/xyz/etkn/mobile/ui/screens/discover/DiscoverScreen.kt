@@ -90,6 +90,7 @@ import xyz.etkn.mobile.ui.nav.LocalBottomInset
 import xyz.etkn.mobile.ui.nav.LocalNav
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.runtime.saveable.rememberSaveable
 
 @Composable
 fun DiscoverScreen() {
@@ -100,7 +101,19 @@ fun DiscoverScreen() {
     val options by vm.options.collectAsStateWithLifecycle()
     val nav = LocalNav.current
     val haze = rememberHazeState()
-    val grid = rememberLazyGridState()
+    /**
+     * 用户口径（2026-11-24）**修「探索页点进详情再返回，滚动位置回到顶部」**。
+     *
+     * 原来用 rememberLazyGridState()：状态只活在当前组合里，
+     * 导航去详情页再返回时页面被重新组合 → 状态重建 → 位置归零。
+     *
+     * 改成 rememberSaveable + LazyGridState.Saver：
+     * 首项 index 和偏移量会被存进 SavedStateRegistry，
+     * 返回时原样恢复，停在你刚才翻到的位置。
+     */
+    val grid = rememberSaveable(saver = androidx.compose.foundation.lazy.grid.rememberLazyGridStateSaver()) {
+        rememberLazyGridState()
+    }
     val density = LocalDensity.current
     // Measured with the status bar and its padding: the grid starts right below the bar.
     val status = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()

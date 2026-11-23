@@ -207,7 +207,6 @@ internal fun GestureBadge(feedback: GestureFeedback, modifier: Modifier) {
         Text(
             feedback.text, modifier = modifier, color = Color.White, fontWeight = FontWeight.SemiBold,
             style = MaterialTheme.typography.titleMedium.copy(shadow = Shadow(Color.Black.copy(alpha = 0.7f), blurRadius = 10f)),
-            fontSize = 24.sp,
         )
         return
     }
@@ -215,25 +214,25 @@ internal fun GestureBadge(feedback: GestureFeedback, modifier: Modifier) {
     if (feedback is GestureFeedback.Speed) {
         Text(
             "%.1f×".format(feedback.speed), modifier = modifier, color = Color.White, fontWeight = FontWeight.SemiBold,
+            // 用户口径：长按屏幕显示的倍速文字，恢复原始尺寸（1 倍）
             style = MaterialTheme.typography.titleMedium.copy(shadow = Shadow(Color.Black.copy(alpha = 0.7f), blurRadius = 10f)),
-            fontSize = 36.sp,
         )
         return
     }
     Box(
-        modifier.clip(Corner.card).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 30.dp, vertical = 21.dp),
+        modifier.clip(Corner.card).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 20.dp, vertical = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
         when (feedback) {
             is GestureFeedback.Seek -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(formatClock(feedback.targetMs), color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, fontSize = 36.sp)
+                Text(formatClock(feedback.targetMs), color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 val sign = if (feedback.deltaMs >= 0) "+" else "-"
-                Text("$sign${formatClock(abs(feedback.deltaMs))}", color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.labelLarge, fontSize = 21.sp)
+                Text("$sign${formatClock(abs(feedback.deltaMs))}", color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.labelLarge)
             }
             is GestureFeedback.Level -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(feedback.icon, null, tint = Color.White, modifier = Modifier.size(36.dp))
-                Spacer(Modifier.width(18.dp))
-                LinearProgressIndicator(progress = { feedback.fraction }, modifier = Modifier.width(210.dp).height(9.dp), drawStopIndicator = {})
+                Icon(feedback.icon, null, tint = Color.White)
+                Spacer(Modifier.width(12.dp))
+                LinearProgressIndicator(progress = { feedback.fraction }, modifier = Modifier.width(140.dp).height(6.dp), drawStopIndicator = {})
             }
             is GestureFeedback.Text -> Unit
             is GestureFeedback.Speed -> Unit

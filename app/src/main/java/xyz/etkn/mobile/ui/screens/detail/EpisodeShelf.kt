@@ -81,11 +81,10 @@ internal fun EpisodeShelf(
     val row = rememberLazyListState()
     val chips = rememberLazyListState()
     /**
-     * 用户口径（2026-11-23）：分集卡尺寸**和下面的章节卡保持一致**（ChapterCard 是 180dp）。
-     * 之前手机 210dp / 平板 260dp，比章节卡明显大一圈，两排摆在一起不协调。
-     * 统一成 180dp：一行能放更多张，和章节区视觉对齐。
+     * 用户口径（2026-11-23）：分集卡尺寸**和下面的章节卡保持一致**。
+     * 用户口径（2026-11-24）：两者一起从 180dp 缩到 160dp。
      */
-    val cardWidth = 180.dp
+    val cardWidth = 160.dp
     // Position to scroll to once it is loaded (range chips, jump to last).
     var pending by remember { mutableIntStateOf(-1) }
     val ranges = if (state.total > RANGE + RANGE / 2) (state.total + RANGE - 1) / RANGE else 0

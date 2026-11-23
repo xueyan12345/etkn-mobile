@@ -139,15 +139,30 @@ private fun TabPager(tabs: List<TopLevel>, pager: PagerState, vertical: Boolean)
          *     只吃横向（|dx| > |dy|），纵向和点击照常透传，
          *     所以页面上下滚动、点卡片都不受影响。
          */
+        /**
+         * 用户口径（2026-11-24）**修「轮播图不能手动滑动」**。
+         *
+         * 上一版在 PointerEventPass.Initial 阶段就 consume 横向事件 ——
+         * 那是最早的一轮，内层（轮播图 HorizontalPager、各 LazyRow）
+         * 根本还没机会拿到手势，所以轮播图滑不动。
+         *
+         * 现在改到 Final 阶段（最后一轮）：
+         *  · 内层已经消费了（change.isConsumed == true）→ 放行，不动
+         *    这样轮播图、横向列表照常滑动
+         *  · 内层没消费（普通页面区域横滑）→ 在这里吃掉
+         *    外层 TabPager 收不到，标签页就不会被拖成两页并排
+         *  · 纵向 / 点击 → 直接放行（不影响页面滚动和点按）
+         */
         val blockHorizontalSwipe = Modifier.pointerInput(Unit) {
             awaitPointerEventScope {
                 while (true) {
-                    // 在 Initial 阶段先看事件：累计位移里横向占优就吃掉，
-                    // 纵向占优（页面滚动）放行。点击（位移≈0）也放行。
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val event = awaitPointerEvent(PointerEventPass.Final)
                     val change = event.changes.firstOrNull() ?: continue
+                    // 内层已经处理过（轮播图 / LazyRow）→ 不碰
+                    if (change.isConsumed) continue
                     val dx = kotlin.math.abs(change.position.x - change.previousPosition.x)
                     val dy = kotlin.math.abs(change.position.y - change.previousPosition.y)
+                    // 只吃「明确的横向拖拽」残余
                     if (dx > dy && dx > 0f) change.consume()
                 }
             }

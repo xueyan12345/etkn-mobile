@@ -162,19 +162,19 @@ internal fun Controls(
         Text(
             status.time,
             color = Color.White,
-            fontSize = 19.5.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.align(Alignment.TopCenter)
                 .then(insetMod)
-                .padding(top = 12.dp),
+                .padding(top = 8.dp),
         )
         // 右上角：网速 + 电量百分比 + 电池图标（同一行，紧贴右边）。
         Row(
             Modifier.align(Alignment.TopEnd)
                 .then(insetMod)
-                .padding(end = 24.dp, top = 12.dp),
+                .padding(end = 16.dp, top = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(9.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             // 用户口径（2026-11-23）：网速要一直显示，不能时有时无。
             // 之前是 if (status.speed.isNotEmpty()) 才画 —— 取不到采样就整块消失。
@@ -182,9 +182,9 @@ internal fun Controls(
             Text(
                 status.speed.ifEmpty { "0 B/s" },
                 color = Color.White.copy(alpha = 0.85f),
-                fontSize = 18.sp,
+                fontSize = 12.sp,
             )
-            Text("${status.battery}%", color = Color.White, fontSize = 18.sp)
+            Text("${status.battery}%", color = Color.White, fontSize = 12.sp)
             // 电池图标：随电量变长度（像素风）
             BatteryGlyph(status.battery)
         }
@@ -193,11 +193,11 @@ internal fun Controls(
         // 用户口径（2026-11-23）：功能图标整体下移，明显低于「时间」那一行（照参考图）。
         Row(
             Modifier.fillMaxWidth().then(insetMod)
-                .padding(horizontal = 12.dp).padding(top = 45.dp),
+                .padding(horizontal = 10.dp).padding(top = 38.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack, modifier = Modifier.size(60.dp)) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = Color.White, modifier = Modifier.size(36.dp))
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = Color.White, modifier = Modifier.size(30.dp))
             }
             // 用户口径（2026-11-23）：剧名要用服务端挂好的书法艺术字 logo（ImageTags.Logo），
             // 不是普通文字。取不到 logo 才退回文字标题。
@@ -210,6 +210,7 @@ internal fun Controls(
                 if (logoUrl != null) {
                     Artwork(
                         logoUrl,
+                        // 用户口径：剧名艺术字保持 1.5 倍不变
                         Modifier.height(48.dp).width(240.dp),
                         contentDescription = ui.title,
                         contentScale = ContentScale.Fit,
@@ -221,7 +222,7 @@ internal fun Controls(
                         ui.title,
                         color = Color.White,
                         style = MaterialTheme.typography.titleMedium,
-                        fontSize = 24.sp,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -239,14 +240,14 @@ internal fun Controls(
         }
 
         // ===== 用户口径（2026-11-23）左侧垂直居中：只放锁（从底栏移过来）=====
-        Box(Modifier.align(Alignment.CenterStart).padding(start = 33.dp)) {
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 28.dp)) {
             PlayerAction(Icons.Rounded.LockOpen, "锁定", onLock)
         }
 
         // ===== 用户口径（2026-11-23）右侧垂直居中：倍速 + / 1.0x / − =====
         SpeedPad(
             speed = ui.speed,
-            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 33.dp),
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 28.dp),
             onChange = onSpeed,
             onPick = { onSheet(Sheet.Speed) },
         )
@@ -254,28 +255,28 @@ internal fun Controls(
         // ===== 中央播放控制（保持原样，不缩不放）=====
         Row(
             Modifier.align(Alignment.Center),
-            horizontalArrangement = Arrangement.spacedBy(54.dp),
+            horizontalArrangement = Arrangement.spacedBy(45.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = { onSeekBy(-10_000) }, modifier = Modifier.size(84.dp)) {
-                Icon(Icons.Rounded.Replay10, "后退 10 秒", tint = Color.White, modifier = Modifier.size(54.dp))
+            IconButton(onClick = { onSeekBy(-10_000) }, modifier = Modifier.size(70.dp)) {
+                Icon(Icons.Rounded.Replay10, "后退 10 秒", tint = Color.White, modifier = Modifier.size(45.dp))
             }
-            IconButton(onClick = onPlayPause, modifier = Modifier.size(114.dp)) {
+            IconButton(onClick = onPlayPause, modifier = Modifier.size(95.dp)) {
                 Icon(
                     if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     if (playing) "暂停" else "播放",
-                    tint = Color.White, modifier = Modifier.size(90.dp),
+                    tint = Color.White, modifier = Modifier.size(75.dp),
                 )
             }
-            IconButton(onClick = { onSeekBy(10_000) }, modifier = Modifier.size(84.dp)) {
-                Icon(Icons.Rounded.Forward10, "快进 10 秒", tint = Color.White, modifier = Modifier.size(54.dp))
+            IconButton(onClick = { onSeekBy(10_000) }, modifier = Modifier.size(70.dp)) {
+                Icon(Icons.Rounded.Forward10, "快进 10 秒", tint = Color.White, modifier = Modifier.size(45.dp))
             }
         }
 
         // ===== 底栏：剧名+集号 / 进度条 / 功能图标 =====
         Column(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().then(insetMod)
-                .padding(horizontal = 24.dp, vertical = 6.dp),
+                .padding(horizontal = 20.dp, vertical = 5.dp),
         ) {
             val previews = ui.previews
             if (scrubbing && previews != null && duration > 0) SeekThumbnail(previews, scrub, duration)
@@ -299,7 +300,7 @@ internal fun Controls(
                     line,
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
-                    fontSize = 24.sp,
+                    fontSize = 20.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -322,7 +323,7 @@ internal fun Controls(
                     },
                     color = Color.White,
                     style = MaterialTheme.typography.labelMedium,
-                    fontSize = 18.sp,
+                    fontSize = 15.sp,
                 )
                 Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                     val progress = if (scrubbing) scrub
@@ -365,8 +366,8 @@ internal fun Controls(
                             },
                     ) {
                         val cy = size.height / 2f
-                        val trackH = 4.5.dp.toPx()
-                        val thumbR = 10.5.dp.toPx()
+                        val trackH = 3.75.dp.toPx()
+                        val thumbR = 8.75.dp.toPx()
                         val r = androidx.compose.ui.geometry.CornerRadius(trackH / 2f, trackH / 2f)
                         // 未播放轨道（半透明白）
                         drawRoundRect(
@@ -698,10 +699,10 @@ private fun rememberPlayerStatus(): PlayerStatus {
 private fun BatteryGlyph(percent: Int) {
     val level = percent.coerceIn(0, 100)
     val filled = (level / 20f).let { if (level > 0) it.coerceAtLeast(0.6f) else 0f }
-    Canvas(Modifier.size(width = 36.dp, height = 18.dp)) {
-        val bodyW = size.width - 4.5.dp.toPx()
-        val stroke = 2.25.dp.toPx()
-        val r = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx(), 3.dp.toPx())
+    Canvas(Modifier.size(width = 24.dp, height = 12.dp)) {
+        val bodyW = size.width - 3.dp.toPx()
+        val stroke = 1.5.dp.toPx()
+        val r = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
         // 外壳
         drawRoundRect(
             color = Color.White,
@@ -713,12 +714,12 @@ private fun BatteryGlyph(percent: Int) {
         drawRoundRect(
             color = Color.White,
             topLeft = androidx.compose.ui.geometry.Offset(bodyW, size.height * 0.30f),
-            size = androidx.compose.ui.geometry.Size(3.75.dp.toPx(), size.height * 0.40f),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.2.dp.toPx(), 1.2.dp.toPx()),
+            size = androidx.compose.ui.geometry.Size(2.5.dp.toPx(), size.height * 0.40f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(0.8.dp.toPx(), 0.8.dp.toPx()),
         )
         // 内部填充
         if (filled > 0f) {
-            val inset = stroke + 1.5.dp.toPx()
+            val inset = stroke + 1.dp.toPx()
             val innerW = (bodyW - inset * 2) * (filled / 5f)
             drawRoundRect(
                 color = Color.White,
@@ -737,7 +738,7 @@ private fun PlayerAction(icon: ImageVector, label: String, onClick: () -> Unit) 
      * 默认 Icon 是 24dp、IconButton 是 48dp 触控区，这里按 1.5 倍给足尺寸。
      */
     IconButton(onClick = onClick, modifier = Modifier.size(60.dp)) {
-        Icon(icon, label, tint = Color.White, modifier = Modifier.size(36.dp))
+        Icon(icon, label, tint = Color.White, modifier = Modifier.size(30.dp))
     }
 }
 
@@ -752,13 +753,13 @@ private fun PlayerAction(icon: ImageVector, label: String, onClick: () -> Unit) 
 private fun DanmakuAction(kind: Int, label: String, active: Boolean, onClick: () -> Unit) {
     IconButton(onClick = onClick, modifier = Modifier.size(60.dp)) {
         // 用户口径（2026-11-23）：播放界面元素放大 1.5 倍（24dp → 36dp，线宽同步）
-        Canvas(Modifier.size(36.dp)) {
+        Canvas(Modifier.size(30.dp)) {
             val tint = if (active) Color.White else Color.White.copy(alpha = 0.55f)
             val w = size.width
             val h = size.height
-            val stroke = 2.55.dp.toPx()
+            val stroke = 2.1.dp.toPx()
             val pad = w * 0.10f
-            val r = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx(), 6.dp.toPx())
+            val r = androidx.compose.ui.geometry.CornerRadius(5.dp.toPx(), 5.dp.toPx())
             // 外框：圆角矩形线框
             drawRoundRect(
                 color = tint,
@@ -793,30 +794,30 @@ private fun DanmakuAction(kind: Int, label: String, active: Boolean, onClick: ()
 private fun SpeedPad(speed: Float, modifier: Modifier, onChange: (Float) -> Unit, onPick: () -> Unit) {
     Column(
         modifier
-            .clip(RoundedCornerShape(30.dp))
+            .clip(RoundedCornerShape(25.dp))
             .background(Color.Black.copy(alpha = 0.36f))
-            .padding(horizontal = 3.dp, vertical = 9.dp),
+            .padding(horizontal = 3.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
-            Modifier.size(48.dp).clip(RoundedCornerShape(24.dp)).clickable {
+            Modifier.size(40.dp).clip(RoundedCornerShape(20.dp)).clickable {
                 onChange((((speed * 10).toInt() + 1) / 10f).coerceIn(0.3f, 4f))
             },
             contentAlignment = Alignment.Center,
-        ) { Text("+", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Medium) }
+        ) { Text("+", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Medium) }
 
         Box(
-            Modifier.clip(RoundedCornerShape(9.dp)).clickable(onClick = onPick).padding(horizontal = 9.dp, vertical = 6.dp),
+            Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onPick).padding(horizontal = 8.dp, vertical = 5.dp),
         ) {
-            Text(String.format(Locale.ROOT, "%.1fx", speed), color = Color.White, fontSize = 19.5.sp, fontWeight = FontWeight.SemiBold)
+            Text(String.format(Locale.ROOT, "%.1fx", speed), color = Color.White, fontSize = 16.25.sp, fontWeight = FontWeight.SemiBold)
         }
 
         Box(
-            Modifier.size(48.dp).clip(RoundedCornerShape(24.dp)).clickable {
+            Modifier.size(40.dp).clip(RoundedCornerShape(20.dp)).clickable {
                 onChange((((speed * 10).toInt() - 1) / 10f).coerceIn(0.3f, 4f))
             },
             contentAlignment = Alignment.Center,
-        ) { Text("−", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Medium) }
+        ) { Text("−", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Medium) }
     }
 }
 
@@ -824,7 +825,7 @@ private fun SpeedPad(speed: Float, modifier: Modifier, onChange: (Float) -> Unit
 @Composable
 private fun SeekThumbnail(previews: SeekPreviews, fraction: Float, duration: Long) {
     BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-        val width = 264.dp
+        val width = 176.dp
         val height = width / previews.aspectRatio
         val x = ((maxWidth - width) * fraction.coerceIn(0f, 1f))
         Artwork(
@@ -847,7 +848,7 @@ private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
         PlayerAction(Icons.Rounded.SkipNext, "下一集", onClick)
         if (warmed) {
             Box(
-                Modifier.size(21.dp)
+                Modifier.size(17.5.dp)
                     .background(Color.White, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
@@ -855,7 +856,7 @@ private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
                     Icons.Rounded.Bolt,
                     contentDescription = "下一集已预加载",
                     tint = Color.Black,
-                    modifier = Modifier.size(13.5.dp),
+                    modifier = Modifier.size(11.dp),
                 )
             }
         }

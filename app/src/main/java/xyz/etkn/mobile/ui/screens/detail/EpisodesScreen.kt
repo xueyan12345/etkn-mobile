@@ -46,7 +46,6 @@ import xyz.etkn.mobile.ui.components.glassSource
 import xyz.etkn.mobile.ui.nav.EpisodesRoute
 import xyz.etkn.mobile.ui.nav.LocalBottomInset
 import xyz.etkn.mobile.ui.nav.LocalNav
-import xyz.etkn.mobile.ui.theme.ArtworkTheme
 import xyz.etkn.mobile.ui.theme.Etkn
 
 class EpisodesViewModel(graph: AppGraph, private val seriesId: String, seasonId: String?) : ViewModel() {
@@ -66,7 +65,11 @@ class EpisodesViewModel(graph: AppGraph, private val seriesId: String, seasonId:
 
 /** Every episode of a season as a grid (the detail page's 全部) in the series' artwork colours, seasons switchable on top. */
 @Composable
-fun EpisodesScreen(route: EpisodesRoute) = ArtworkTheme(route.seed) { EpisodesContent(route) }
+/**
+ * 用户口径（2026-11-24）：剧集全列表页同样不做动态取色（与详情页一致，方案A）。
+ * 固定 App 主题色，避免整页重组。
+ */
+fun EpisodesScreen(route: EpisodesRoute) = EpisodesContent(route)
 
 @Composable
 private fun EpisodesContent(route: EpisodesRoute) {
