@@ -55,6 +55,7 @@ class PlayerActivity : ComponentActivity() {
             window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
         hideSystemBars()
+        allowOrientationOverride()
 
         val active = graph.sessions.current
         if (active == null || !open(intent)) {
@@ -129,6 +130,34 @@ class PlayerActivity : ComponentActivity() {
         // 之前 PlaybackCache 用的是 object 级常驻协程，退出后下载还在跑，
         // 用户能看到「退出播放了网速还在持续跑」。
         PlaybackCache.stopAll()
+    }
+
+    /**
+     * 用户口径（2026-11-23）OPPO Pad Mini / 平板专项 —— 这是让旋转真正生效的关键。
+     *
+     * 现象：只在这台平板上点旋转毫无反应，系统一直是竖屏；手机完全正常。
+     * 根因（Android 16 官方行为变更）：宽 ≥600dp 的大屏设备上，
+     * 系统**默认忽略**应用发来的 requestedOrientation 请求。
+     * 所以 SenPlayer / AfuseKit 这些播放器在它上面同样转不了 —— 不是我们的锅，
+     * 但我们可以主动申请「允许覆盖」。
+     *
+     * 官方 API（API 35+）：
+     *   Activity.setShouldDismissRequestedOrientation(false)
+     * 意思是「别丢弃我发的方向请求」。必须在 onCreate 里、任何方向请求之前调用。
+     * API < 35 没有这个限制，直接跳过。
+     */
+    private fun allowOrientationOverride() {
+        if (Build.VERSION.SDK_INT < 35) return
+        runCatching {
+            val ok = shouldDismissRequestedOrientation
+            if (ok) {
+                shouldDismissRequestedOrientation = false
+                android.util.Log.i("ETKN-Rotate", "orientation override allowed (API $SDK_INT)")
+            }
+        }.onFailure { e ->
+            // 某些 ROM 没有这个属性，记一行日志便于排查
+            android.util.Log.w("ETKN-Rotate", "allowOrientationOverride failed: ${e.message}")
+        }
     }
 
     private fun hideSystemBars() {
