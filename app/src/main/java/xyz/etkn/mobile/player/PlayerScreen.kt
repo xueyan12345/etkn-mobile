@@ -119,7 +119,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 如果系统其实认了横屏请求（手机上就是这样），读回校验后把兜底关掉，
      * 交还给系统方向 —— 两边都不冲突。
      */
-    var forceRotate by remember { mutableStateOf(true) }
+    var forceRotate by remember { mutableStateOf(false) }
     // 用户手动覆盖过方向就不再自动跟随，直到换集重置
     var manualOrientation by remember { mutableStateOf(false) }
     /**
@@ -137,6 +137,19 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      *  ③ 都无效时，退化为「旋转画面」：给 PlayerScreen 一个 90° 旋转标记，
      *     不改系统方向、只把视频画面转过来（任何设备都能强制横看）
      */
+    /**
+     * 用户口径（2026-11-23）旋转按钮/自动横屏 —— **第三轮，这次找到真错了**。
+     *
+     * 前几轮一直不生效，因为判据用了 `activity.requestedOrientation` 读回值来判断
+     * 「系统是否接受了我的方向请求」。但那个 getter **永远返回我自己刚设置的值**，
+     * 跟系统到底有没有真的转过去完全无关 → `accepted` 恒为 true →
+     * 画面旋转兜底永远关着 → 平板上系统不认方向时就彻底没反应。
+     *
+     * 正确判据：读 `resources.configuration.orientation`，那是**屏幕当前真实方向**。
+     *   发请求 → 等 350ms（系统转屏是异步的）→ 看真实方向对不对
+     *   对上了 → 系统认了，交还给系统方向
+     *   没对上 → 系统忽略（大屏设备）→ 打开画面级 90° 旋转兜底
+     */
     val applyOrientation: (Boolean) -> Unit = { wantPortrait ->
         portrait = wantPortrait
         val target = if (wantPortrait) {
@@ -144,35 +157,25 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         } else {
             android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
-        /**
-         * 用户口径（2026-11-23，OPPO Pad Mini 专项·第二轮）：
-         *
-         * 上一版这里写错了：用反射在 android.app.Activity 上找
-         * setIgnoreOrientationRequest —— 那个方法根本不存在（它在
-         * androidx.window 的 WindowManager / ActivityInfo 层面），
-         * 必然抛 NoSuchMethodException，applied 永远是 false。
-         *
-         * 现在的做法：
-         *  ① 照常发 requestedOrientation（手机、以及系统没限制的平板都有效）
-         *  ② 立刻读回 activity.requestedOrientation 验证系统是否真的接受了
-         *     —— 大屏被忽略时，读回值仍是 SCREEN_ORIENTATION_UNSPECIFIED(-1)
-         *  ③ 读回没变 → 判定系统忽略了这个请求 → 打开画面级强制旋转兜底
-         */
         runCatching { activity?.requestedOrientation = target }
-        // 稍等一帧再读回（系统处理是异步的）
-        val requested = target
+        val act = activity
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            val actual = runCatching { activity?.requestedOrientation }.getOrNull()
-            // 系统接受了：方向已经是我们要求的值（可能是 LANDSCAPE 或 SENSOR_LANDSCAPE 变体）
-            val accepted = actual != null && actual != android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            // 系统接受了横屏请求 → 交给系统方向（关掉画面强制旋转）；
-            // 系统不认（大屏设备）→ 保持画面强制旋转，视觉上照样是横的。
-            forceRotate = if (accepted) false else !wantPortrait
-            if (!accepted && !wantPortrait) {
-                android.util.Log.i("ETKN-Rotate", "system ignored orientation; using canvas rotation")
-            }
-        }, 120L)
+            // 真实屏幕方向（不受我们请求值的干扰）
+            val real = act?.resources?.configuration?.orientation
+            val want = if (wantPortrait) android.content.res.Configuration.ORIENTATION_PORTRAIT
+            else android.content.res.Configuration.ORIENTATION_LANDSCAPE
+            val ok = real == want
+            forceRotate = !ok
+            android.util.Log.i(
+                "ETKN-Rotate",
+                "request=${if (wantPortrait) "portrait" else "landscape"} " +
+                    "real=${if (real == want) "ok" else "mismatch"} canvasRotation=$forceRotate",
+            )
+            // 再补一次：有些设备第一次转屏会被忽略，隔 250ms 重发一次
+            if (!ok) runCatching { activity?.requestedOrientation = target }
+        }, 350L)
     }
+
     /**
      * 用户口径（2026-11-23）：打开播放器瞬间默认就是横屏。
      * 绝大多数片源是横屏，先按横屏起，等服务端/播放器给出真实尺寸后
