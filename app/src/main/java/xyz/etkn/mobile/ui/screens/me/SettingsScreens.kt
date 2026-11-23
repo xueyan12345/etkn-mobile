@@ -77,6 +77,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
 import xyz.etkn.mobile.data.settings.HiddenLibrariesPerAccount
+import kotlinx.coroutines.withContext
 
 enum class SettingsPage(val title: String) { Appearance("外观"), Playback("播放"), Danmaku("弹幕"), Update("检查更新") }
 
@@ -314,7 +315,17 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
     val scope = rememberCoroutineScope()
     val graph = context.graph
     var usage by remember { mutableLongStateOf(0L) }
+    /**
+     * 用户口径（2026-11-23）：**改完上限立刻收敛一次，并回读真实占用**。
+     *
+     * 之前这里只读了 usage 显示数字，改动「最大磁盘缓存大小」后
+     * 不会触发任何清理 —— 用户把 5GB 改了，实际占用还是 12.7GB，
+     * 看上去就是「设置没生效」。现在改完当场 trim + 重新统计。
+     */
     LaunchedEffect(settings.cacheDiskGb) {
+        withContext(kotlinx.coroutines.Dispatchers.IO) {
+            xyz.etkn.mobile.player.PlaybackCache.trim(context, settings)
+        }
         usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage(context)
     }
     SwitchRow("预加载", settings.preloadNext) { scope.launch { graph.settings.setPreloadNext(it) } }

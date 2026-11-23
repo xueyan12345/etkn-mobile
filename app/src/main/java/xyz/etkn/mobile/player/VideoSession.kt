@@ -457,6 +457,7 @@ class VideoSession(
         started = false
         stopped = false
         completedBySkip = false
+        trimmedThisItem = false
         // 用户口径（2026-11-23）：原来是 startMs > 0 就标记「已跳过」，
         // 结果续播点落在片头内部时永远不跳。改成「续播点已越过片头结束点」才算跳过。
         // 注意此时 segments 还没算出来，先置 false，等 segments 生成后再判断。
@@ -609,8 +610,31 @@ class VideoSession(
      *
      * 只在「预加载」开着时做；关着就什么也不做。
      */
+    /** 只在本集第一次 tick 时做一次磁盘收敛，避免每 5 秒扫全目录。 */
+    private var trimmedThisItem = false
+
     fun tickCache(positionMs: Long, durationMs: Long) {
-        if (!settings.preloadNext) return
+        /**
+         * 用户口径（2026-11-23）**这里原来写成 `if (!settings.preloadNext) return`，是错的**。
+         *
+         * 「预加载下一集」和「当前集缓存窗口（最大缓存大小/时长）」是两件独立的事：
+         *  · 预加载关掉，只代表不去预先下载下一集；
+         *  · 当前集该缓存多少，由 cacheMemoryMb / cacheMemorySeconds 决定。
+         * 原来把两件事绑在一起 → 只要关掉预加载，
+         * 设置里那两个缓存大小/时长就完全不生效（用户看到的「就是一个面板」）。
+         *
+         * 现在只有「连当前集都不需要缓存」时才提前退出（两个阈值都是 0 视为关闭）。
+         */
+        /**
+         * 用户口径（2026-11-23）：进播放器第一次 tick 时**先收敛一次磁盘**。
+         * 老版本没有上限检查，已经堆积了 12GB+，不主动收一次不会自己变小。
+         */
+        if (!trimmedThisItem) {
+            trimmedThisItem = true
+            PlaybackCache.trimNow(graph.app, settings)
+        }
+        val cacheWindowOn = settings.cacheMemoryMb > 0 || settings.cacheMemorySeconds > 0
+        if (!cacheWindowOn) return
         val cur = currentUrl ?: return
         val currentItem = item ?: return
         // 用户口径（2026-11-23）：这一集已经有完整本地文件 → 不重复下载，直接推进下一集。
@@ -706,6 +730,8 @@ class VideoSession(
 
     /** 当前集缓存完成后，取下一集直链并交给流水线。 */
     private fun startNextIfIdle(current: Item) {
+        // 「预加载下一集」开关：只管下一集，和当前集的缓存窗口无关
+        if (!settings.preloadNext) return
         val nextItem = _ui.value.next ?: return
         if (nextUrl?.first == nextItem.id) return
         scope.launch {
@@ -785,6 +811,16 @@ class VideoSession(
 
     private fun onEnded() {
         completedBySkip = true
+        /**
+         * 用户口径（2026-11-23）：**「播完清掉该集缓存」之前是摆设**。
+         *
+         * PlaybackCache.afterEpisodeFinished() 全工程零调用，
+         * 所以设置里的开关打开也不会删任何文件。
+         * 现在在看完整集（或自动跳下一集）时真正调一次。
+         */
+        runCatching {
+            cache.afterEpisodeFinished(context, settings, _ui.value.item?.id)
+        }
         val sleeping = _ui.value.sleep == SleepTimer.EndOfItem
         if (sleeping) setSleepTimer(null)
         if (!sleeping && settings.autoPlayNext && _ui.value.next != null) playNext(completed = true)

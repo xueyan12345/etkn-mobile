@@ -267,8 +267,12 @@ object PlaybackCache {
             // 拉满整集 → 转正
             if (knownLength > 0 && have >= knownLength) {
                 runCatching { part.renameTo(target) }
+                // 用户口径（2026-11-23）：写完立刻检查磁盘上限（之前这里没有，缓存会无限涨）
+                runCatching { trim(context, settings, protect = target) }
                 return true
             }
+            // 窗口式（非整集）写入也要检查
+            runCatching { trim(context, settings, protect = part) }
             return false
         }
     }
@@ -424,16 +428,40 @@ object PlaybackCache {
         }
     }
 
-    /** 超过磁盘上限就按最后修改时间删最旧的。 */
-    private fun trim(context: Context, settings: Settings) {
+    /**
+     * 用户口径（2026-11-23）**磁盘上限之前根本没生效**，这里是根因修复。
+     *
+     * 实测症状：设置里写 5GB，实际占用 12.7GB。
+     * 原因：trim() 只在 preload() 里被调用，而 preload() 是**死代码**
+     * （全工程 grep 零调用）。主流程 pipeline() / pullWindow() 完全不检查上限，
+     * 所以缓存只增不减，settings.cacheDiskGb 形同摆设。
+     *
+     * 现在的做法：
+     *  · 每次 pullWindow 成功写盘之后都调 trim()
+     *  · trim 内部先算总量，超上限就按 lastModified 从旧到新删
+     *  · 保护正在写的文件（.part）和本次刚写的文件，不删自己
+     */
+    fun trim(context: Context, settings: Settings, protect: File? = null) {
         val limit = maxDiskBytes(settings)
+        if (limit <= 0) return
         val files = dir(context).listFiles()?.filter { it.isFile }?.sortedBy { it.lastModified() } ?: return
         var total = files.sumOf { it.length() }
+        if (total <= limit) return
         for (file in files) {
             if (total <= limit) break
+            // 不删正在写的、不删本次刚写的
+            if (protect != null && file.absolutePath == protect.absolutePath) continue
             val size = file.length()
             if (file.delete()) total -= size
         }
+    }
+
+    /**
+     * 用户口径（2026-11-23）：开机/进播放器时也主动清一次。
+     * 老版本积累的超额缓存（12GB+）不会自己消失，得先收一次口。
+     */
+    fun trimNow(context: Context, settings: Settings) {
+        workScope.launch { runCatching { trim(context, settings) } }
     }
 
     /** 退出播放 / 切集：停掉所有缓存下载（已写好的部分保留，下次续拉）。 */
