@@ -93,6 +93,14 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
     val heroMode = remember(accountKey, settingsHero) {
         xyz.etkn.mobile.data.settings.HeroModePerAccount.read(context, accountKey, settingsHero)
     }
+    /**
+     * 用户口径（2026-11-23）：外观页「隐藏媒体库」开关（按账号独立）。
+     * 打开 → 首页最上面那一行「媒体库」整块不渲染，
+     * 继续观看 / 最新媒体库 / 其他区块照常。
+     */
+    val hideLibraries = remember(accountKey) {
+        xyz.etkn.mobile.data.settings.HiddenLibrariesPerAccount.read(context, accountKey)
+    }
     // 用户口径（2026-11-23）：媒体库长按菜单只给有管理权限的账号（与「媒体库」页同一套接口）。
     val session = (context.graph.sessions.state.collectAsStateWithLifecycle().value as? xyz.etkn.mobile.data.session.SessionState.SignedIn)?.session
     val canManage = session?.isAdmin == true
@@ -131,6 +139,7 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
             // 用户口径（2026-11-23 后续）：最上面这个「媒体库」标题去掉 > 并且整行不可点
             // （下面的「国产剧集」「华语电影」等分区标题保持可点带 >，不动）。
             // 长按封面 → 弹服务端功能菜单（生成封面/提取缩略图/扫描/刷新），非管理员自动不出菜单项。
+            if (!hideLibraries) {
             shelf("libraries", "媒体库", data.libraries, onMore = null, showChevron = false) { library ->
                 val anchor = xyz.etkn.mobile.ui.actions.rememberPopupAnchor()
                 val actions = buildList {
@@ -163,6 +172,7 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                     onLongClick = if (actions.isNotEmpty()) { { anchor.open(actions) } } else null,
                 )
             }
+            }  // end if (!hideLibraries)
             shelf("resume", "继续观看", data.resume) { item ->
                 // 用户口径（2026-11-23）：继续观看里点「四周」直接进这一集的单集详情页（第二层），
                 // 不再走 openTitle（那样会先落到剧集详情页 = 第一层）。中间播放按钮仍然直接播。

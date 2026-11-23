@@ -95,8 +95,14 @@ class AppNav(
         }
     }
 
-    fun play(item: Item, resume: Boolean = true, sourceId: String? = null) {
-        PlayerLauncher.play(context, item, resume, sourceId)
+    /** [startMs] 非空时从该毫秒起播（章节点击用），优先级高于续播进度。 */
+    fun play(
+        item: Item,
+        resume: Boolean = true,
+        sourceId: String? = null,
+        startMs: Long? = null,
+    ) {
+        PlayerLauncher.play(context, item, resume, sourceId, startMs)
     }
 
     private fun musicParent(): String = context.graph.music.libraryId.value ?: ""

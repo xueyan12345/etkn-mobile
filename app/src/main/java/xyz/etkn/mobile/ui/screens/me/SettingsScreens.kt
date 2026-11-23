@@ -76,6 +76,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
+import xyz.etkn.mobile.data.settings.HiddenLibrariesPerAccount
 
 enum class SettingsPage(val title: String) { Appearance("外观"), Playback("播放"), Danmaku("弹幕"), Update("检查更新") }
 
@@ -124,6 +125,25 @@ fun SettingsScreen(page: SettingsPage) {
                             // 原来这里同时 setHeroMode(it) 会把全局值也改掉，
                             // 于是没单独设置过的账号跟着一起变 —— 按账号独立就失效了。
                             HeroModePerAccount.write(context, sessionKey, it)
+                            (context as? Activity)?.recreate()
+                        }
+                        /**
+                         * 用户口径（2026-11-23）**「隐藏媒体库」开关**（外观页）。
+                         *
+                         * 打开 = 首页最上面那一行「媒体库」模块整块不显示，
+                         * 继续播放 / 最新媒体库 / 其他区块照常。
+                         * 按账号独立（同「首页推荐」），不写全局默认值。
+                         */
+                        val hiddenLibs = remember(sessionKey) {
+                            HiddenLibrariesPerAccount.read(context, sessionKey)
+                        }
+                        var hiddenLibsNow by remember(sessionKey) { mutableStateOf(hiddenLibs) }
+                        SwitchRow(
+                            "隐藏媒体库",
+                            hiddenLibsNow,
+                        ) {
+                            hiddenLibsNow = it
+                            HiddenLibrariesPerAccount.write(context, sessionKey, it)
                             (context as? Activity)?.recreate()
                         }
                         val wide = LocalWindowLayout.current.wide

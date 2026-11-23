@@ -168,6 +168,31 @@ object HeroModePerAccount {
     }
 }
 
+/**
+ * 用户口径（2026-11-23）**「隐藏媒体库」也按账号独立**（和轮播图一样）。
+ *
+ * 作用：外观页打开这个开关后，首页最上面那一行「媒体库」模块整块不显示。
+ * 继续播放、最新媒体库、以及其余所有区块照常显示。
+ *
+ * 实现方式和 [HeroModePerAccount] 一致：每个账号一份，
+ * key 用 session.key（serverId|userId），绝不写全局默认值
+ * （那会把别的账号也一起改掉 —— c12 踩过的坑）。
+ */
+object HiddenLibrariesPerAccount {
+    private const val FILE = "etkn_hidden_libraries"
+    private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+
+    fun read(context: Context, accountKey: String?): Boolean {
+        if (accountKey.isNullOrBlank()) return false
+        return prefs(context).getBoolean(accountKey, false)
+    }
+
+    fun write(context: Context, accountKey: String?, hidden: Boolean) {
+        if (accountKey.isNullOrBlank()) return
+        prefs(context).edit(commit = true) { putBoolean(accountKey, hidden) }
+    }
+}
+
 class AppSettings(private val context: Context) {
     private object Keys {
         val theme = stringPreferencesKey("theme_mode")
