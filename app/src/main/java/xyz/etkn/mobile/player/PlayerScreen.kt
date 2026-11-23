@@ -63,6 +63,8 @@ import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.ui.draw.clipRect
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.graphics.drawscope.clipRect
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
@@ -406,9 +408,13 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 ) {
                     // 倒计时填充：从左往右一块色块，5 秒铺满
                     if (countingDown) {
+                        // 倒计时色块：从左往右铺开，宽度 = 进度 × 按钮宽
                         Box(
-                            Modifier.matchParentSize()
-                                .background(Color.White.copy(alpha = 0.28f), Corner.pill)
+                            Modifier.fillMaxSize()
+                                .background(
+                                    Color.White.copy(alpha = 0.28f),
+                                    Corner.pill,
+                                )
                                 .then(
                                     Modifier.drawWithContent {
                                         clipRect(right = size.width * skipCountdown.coerceIn(0f, 1f)) {

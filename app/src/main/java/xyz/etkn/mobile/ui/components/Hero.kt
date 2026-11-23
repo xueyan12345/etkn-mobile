@@ -53,6 +53,12 @@ import xyz.etkn.mobile.ui.nav.LocalStartInset
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.HeroTitleStyle
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 
 /**
  * Home hero: one focal point per screen. Full-bleed backdrop that fades into the page, centred
@@ -90,25 +96,22 @@ fun HeroCarousel(
         // 才被这层拦下来吃掉，不漏到外层。
         HorizontalPager(
             state = pager,
-            modifier = Modifier.fillMaxSize()
-                .pointerInput(Unit) {
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (event.type == androidx.compose.ui.input.pointer.PointerEventType.Move) {
-                                event.changes.forEach { change ->
-                                    // 只吃水平位移，不改位置（翻页由内层 Pager 自己做）；
-                                    // 消费掉是为了不让它继续冒泡到外层 Pager。
-                                    if (kotlin.math.abs(change.positionChange().x) >
-                                        kotlin.math.abs(change.positionChange().y)
-                                    ) {
-                                        change.consume()
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
+            // 用户口径（2026-11-23）：恢复轮播图左右滑动（v1.1.9 我为了堵手势泄漏把它关了，滑不动）。
+            //
+            // 之前「整个首页被拖成两页并排」的真正原因不是这里，而是外层 TabPager 也在响应横滑；
+            // 这里用 nestedScroll 声明「本区域的横向滚动由我处理完就不再往上抛」，
+            // 既保留轮播可滑，又不会把残余位移漏给 TabPager。
+            modifier = Modifier.fillMaxSize().nestedScroll(object : NestedScrollConnection {
+                override fun onPostScroll(
+                    consumed: androidx.compose.ui.geometry.Offset,
+                    available: androidx.compose.ui.geometry.Offset,
+                    source: NestedScrollSource,
+                ): androidx.compose.ui.geometry.Offset {
+                    // 把水平方向的剩余量全部吃掉，只让垂直方向继续传（首页竖向滚动不受影响）
+                    return if (available.x != 0f) androidx.compose.ui.geometry.Offset(available.x, 0f)
+                    else androidx.compose.ui.geometry.Offset.Zero
+                }
+            }),
             key = { items[it].id },
         ) { page ->
             HeroPage(items[page], widthPx, scrollOffsetPx, onPlay, onOpen)
