@@ -819,7 +819,8 @@ class VideoSession(
          * 现在在看完整集（或自动跳下一集）时真正调一次。
          */
         runCatching {
-            cache.afterEpisodeFinished(context, settings, _ui.value.item?.id)
+            // PlaybackCache 是 object（单例），这里直接走静态调用
+            PlaybackCache.afterEpisodeFinished(context, settings, _ui.value.item?.id)
         }
         val sleeping = _ui.value.sleep == SleepTimer.EndOfItem
         if (sleeping) setSleepTimer(null)
