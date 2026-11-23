@@ -207,6 +207,24 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 这个 LaunchedEffect 必须声明在「服务端尺寸判断」之前，保证先执行。
      */
     LaunchedEffect(Unit) {
+        /**
+         * 用户口径（2026-11-23）诊断：v1.2.5 实机日志里 ETKN-Rotate 出现 0 次，
+         * 说明这条自动方向逻辑要么没跑、要么跑到了却没进 verify() 打日志的分支。
+         * 这里在入口无条件打一行，把「有没有被调用 / activity 是否为 null / 当前真实方向」
+         * 一次性暴露出来，下一次日志就能定位到底断在哪一层。
+         */
+        val act = activity
+        val realNow = act?.resources?.configuration?.orientation
+        val realText = when (realNow) {
+            android.content.res.Configuration.ORIENTATION_PORTRAIT -> "P"
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE -> "L"
+            else -> "?"
+        }
+        android.util.Log.i(
+            "ETKN-Rotate",
+            "enter auto: manual=$manualOrientation activity=${act != null} real=$realText " +
+                "smallestDp=${context.resources.configuration.smallestScreenWidthDp}",
+        )
         if (!manualOrientation) applyOrientation(false)
     }
 
