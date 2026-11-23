@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    用户口径（2026-11-23）平板旋转专项。
+
+    surface_type="texture_view" 是关键：
+    Media3 的 PlayerView 默认用 surface_view 输出画面。
+    SurfaceView 是独立硬件合成层，不在 View 树内绘制，
+    所以父容器做 rotationZ 变换时画面不跟着转 ——
+    这正是之前「整层转 90° 后画面变成竖排文字」的原因
+    （弹幕/字幕这些普通 View 转了，视频画面没转）。
+
+    TextureView 把画面当普通纹理画在 View 树里，
+    父容器的旋转变换能真正生效。代价是多一步 GPU 合成，
+    但对「系统永远不认方向」的大屏设备是唯一可行方案。
+-->
+<androidx.media3.ui.PlayerView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:surface_type="texture_view"
+    app:use_controller="false"
+    app:show_buffering="never"
+    app:resize_mode="fit" />

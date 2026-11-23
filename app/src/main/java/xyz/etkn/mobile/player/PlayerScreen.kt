@@ -440,7 +440,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      *  · 改用系统 requestedOrientation → Android 16 大屏直接忽略这个请求。
      *
      * 这次两条一起做（缺一不可）：
-     *  ① Exo 的 PlayerView 已切 setUseTextureView(true)
+     *  ① Exo 的 PlayerView 用 XML 声明 surface_type=texture_view（见 view_texture_player.xml）
      *     → 画面变成普通纹理，绘制在 View 树内，可以被变换
      *  ② 整层（视频+控制条+弹幕）按「宽高互换画布」+ rotationZ=90° 绘制
      *     → 竖屏窗口里看到完整横屏画面，控件位置也正确
@@ -479,21 +479,11 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             else -> key(core) {
                 AndroidView(
                     factory = { ctx ->
-                        PlayerView(ctx).apply {
+                        // 用户口径（2026-11-23）：用 XML 版 PlayerView，surface_type=texture_view
+                        // （SurfaceView 转不动，TextureView 才能被 Compose 旋转）
+                        (android.view.LayoutInflater.from(ctx)
+                            .inflate(xyz.etkn.mobile.R.layout.view_texture_player, null) as PlayerView).apply {
                             useController = false
-                            /**
-                             * 用户口径（2026-11-23）**平板旋转的关键**。
-                             *
-                             * 之前旋转整层失败，画面变成「竖排文字」，根因是：
-                             * PlayerView 默认用 SurfaceView 输出画面，SurfaceView 是独立的
-                             * 硬件合成层（不在 View 层级树里绘制），Compose 的
-                             * graphicsLayer/graphicsLayer 旋转只能转 View 树，转不动它。
-                             *
-                             * 换成 TextureView：画面作为普通纹理绘制在 View 树内，
-                             * 父容器做 90° 旋转变换就能真正生效。代价是略多一点 GPU 合成开销，
-                             * 但换来「系统不认方向时也能强制横屏」这个必须有的能力。
-                             */
-                            setUseTextureView(true)
                             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                             setShutterBackgroundColor(android.graphics.Color.BLACK)
                             setKeepContentOnPlayerReset(true)
