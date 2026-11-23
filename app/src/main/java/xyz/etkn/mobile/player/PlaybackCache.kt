@@ -14,6 +14,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import xyz.etkn.mobile.data.settings.Settings
 import java.io.File
+import okhttp3.HttpUrl
 
 /**
  * 用户口径（2026-11-23）磁盘缓存 / 预加载。**两个内核共用同一份整文件缓存。**
@@ -77,8 +78,7 @@ object PlaybackCache {
      * ETKN 的 X-Emby-Token / UserId 都在查询串里，丢掉它们 key 才不变。
      */
     private fun stableKey(url: String): String {
-        val parsed = runCatching { okhttp3.HttpUrl.Companion.toHttpUrlOrNull(url) }.getOrNull()
-            ?: return url
+        val parsed = runCatching { okhttp3.HttpUrl.parse(url) }.getOrNull() ?: return url
         return parsed.newBuilder().query(null).fragment(null).build().toString()
     }
 
