@@ -571,7 +571,8 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             // 长按调速（Speed）也算 notice：放顶部，且 5 秒后自动消失，不长期挡画面。
             val isNotice = feedback is GestureFeedback.Text || feedback is GestureFeedback.Speed
             val place = if (isNotice) {
-                Modifier.align(Alignment.TopCenter)./* 旋转画布已扣除安全区，这里不再重复补偿（否则双重偏移） */ .padding(top = 28.dp)
+                // 旋转画布已扣除安全区，这里不再重复补偿（否则双重偏移）
+                Modifier.align(Alignment.TopCenter).padding(top = 28.dp)
             } else Modifier.align(Alignment.Center)
             GestureBadge(feedback, place)
         }
