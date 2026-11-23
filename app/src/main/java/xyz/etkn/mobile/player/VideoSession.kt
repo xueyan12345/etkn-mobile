@@ -141,7 +141,22 @@ class VideoSession(
     val players: StateFlow<Player?> = _player.asStateFlow()
     val player: Player? get() = _player.value
     private var engine: Engine? = null
+    /**
+     * 用户口径（2026-11-23）修「设置里的播放内核/解码不生效」：
+     *
+     * 之前这里是 `private val settings: Settings`，在 init 里
+     * `runBlocking { graph.settings.flow.first() }` 读一次就定死 ——
+     * 相当于播放器一创建就把当时的设置拍了个快照。
+     * 于是「在设置里换内核/换解码」对正在播的这一集完全无效，
+     * 甚至换集也不会重读，用户看到的永远是进播放器那一刻的旧值。
+     *
+     * 现在改成每次用时现读（DataStore 的 flow 里取当前值），
+     * 设置一改立刻生效，不用退出播放器。
+     */
     private val settings: Settings
+        get() = kotlinx.coroutines.runBlocking {
+            runCatching { graph.settings.flow.first() }.getOrDefault(Settings())
+        }
     private val session: ActiveSession = graph.sessions.require()
 
     private val _ui = MutableStateFlow(VideoUi())
@@ -189,7 +204,6 @@ class VideoSession(
     private var danmakuFeed: DanmakuFeed? = null
 
     init {
-        settings = kotlinx.coroutines.runBlocking { graph.settings.flow.first() }
         _danmakuStyle.value = settings.danmaku
         _ui.update { it.copy(speed = settings.defaultSpeed, skipMode = settings.skipMode) }
     }
@@ -425,16 +439,23 @@ class VideoSession(
         /**
          * 用户口径（2026-11-23）：**部分缓存也要立刻用上，别再请求服务器**。
          *
-         * 之前只认「整集下完」的正式文件，看一半退出时是 .part → 判定为没缓存 →
-         * 重新请求服务器、流量哗哗跑（用户明确抱怨的就是这个）。
+         * ⚠️ 用户口径（2026-11-23）修正 —— 上一版这里是个严重 bug：
+         *  我把 .part（半截文件）也交给播放器当 file:// 播，结果 ExoPlayer 报
+         *  「Caused by: Malformed URL / ERROR_CODE_FAILED_RUNTIME_CHECK」每次都崩，
+         *  然后被自动换核到 mpv（日志里 mpv 的 host= 还是空的），用户看到的现象就是
+         *  「谷雨每集都切 mpv」「起播极慢」。
          *
-         * 现在：.part 只要 ≥1MB 就用它 ——
-         *  · 整集已下完 → 直接 file:// 整段本地播，零网络
-         *  · 只有部分   → 也用本地文件起步（秒出画面、不耗流量），
-         *                 播到本地末尾后由播放器自己继续走网络
+         *  根因：MKV/MP4 的索引在文件末尾，半截文件根本不是一个合法可播文件，
+         *  拿它当播放源必然解析失败。
+         *
+         *  正确规则（现在这样）：
+         *   · 整集已缓存完成 → 用 file:// 播，零网络（这才是真秒播）
+         *   · 只是部分缓存     → **不用它当播放源**，照常走网络 URL；
+         *                        .part 继续作为续传底子，攒满后自动转正，
+         *                        下次进来才是真命中
          */
-        val cachedLocal = if (!disc) PlaybackCache.partialFile(context, url) else null
-        val cacheComplete = cachedLocal != null && PlaybackCache.localFile(context, url) != null
+        val cachedLocal = if (!disc) PlaybackCache.localFile(context, url) else null
+        val cacheComplete = cachedLocal != null
         val subtitles = chosen.subtitles.filter { it.isExternal && it.deliveryUrl != null && !offline }.mapNotNull { stream ->
             val address = PlaybackAddress.subtitle(stream.deliveryUrl!!, session.server, session.token) ?: return@mapNotNull null
             val mime = subtitleMime(stream.codec) ?: return@mapNotNull null

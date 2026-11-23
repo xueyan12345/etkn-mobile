@@ -171,9 +171,10 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
                 }
                 jobs.awaitAll().flatten()
             }
-            // 只有带背景图的才能上轮播
+            // 只有带背景图的才能上轮播；并且排除「已经看完」的
             val candidates = pool.asSequence()
                 .filter(::hasBackdrop)
+                .filter { !isFinished(it) }
                 .distinctBy { it.id }
                 .toList()
             if (candidates.isNotEmpty()) {
@@ -205,6 +206,28 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
 
     private fun fallbackHero(data: HomeData) =
         data.latest.flatMap { it.items }.filter(::hasBackdrop).distinctBy { it.id }.take(HERO_SIZE)
+
+    /**
+     * 用户口径（2026-11-23）：轮播图只推荐「没看完的 + 完全没看的」，
+     * 已经看完的不再推（用户口径：完全看完的不推，更适合追剧）。
+     *
+     * 判据（关键：Series 自己的 played / playbackPositionTicks 恒为 0，
+     * 播放进度记在 Episode 上，所以剧集必须看 unplayedItemCount）：
+     *  · 电影：userData.played == true → 已看完
+     *  · 剧集：unplayedItemCount == 0 且 recursiveItemCount > 0 → 全集看完
+     *  · 字段拿不到 → 当作没看完（保守保留，别让轮播空掉）
+     */
+    private fun isFinished(item: Item): Boolean {
+        val data = item.userData
+        // 电影/单集：played 直接可用
+        if (!item.isSeries) return data.played
+        // 剧集：有任何一集未看就说明没追完
+        val unplayed = data.unplayedItemCount
+        val total = item.recursiveItemCount
+        if (unplayed != null && total != null && total > 0) return unplayed <= 0
+        // 拿不到计数时退回 played（对剧集通常为 false，等于保留）
+        return data.played
+    }
 
     private fun hasBackdrop(item: Item) = item.backdropTags.isNotEmpty() || item.parentBackdropTags.isNotEmpty()
 

@@ -238,11 +238,42 @@ class UpdateManager(
     }
 
     /** Streams to [target] while hashing; publishes progress and speed about four times a second. */
+    /**
+     * 用户口径（2026-11-23）修「代理加速下载失效」：
+     *
+     * 之前的回退链是「代理 → GitHub 直连」。问题在于**手机端解析不了 github.com**
+     * （用户实测：换台设备就好了），所以代理一失败，回退直连也必然失败 → 整体失败。
+     *
+     * 现在改成四条依次尝试，每条都是独立可用的通道：
+     *   ① 公网代理直连 GitHub 原始地址（最快，实测 3+ MB/s）
+     *   ② ghproxy.net 镜像（第三方，不依赖代理）
+     *   ③ ghfast.top 镜像
+     *   ④ GitHub 直连（最后兜底，能解析域名时可用）
+     *
+     * 哪条先成功就用哪条，不再出现「代理挂了整体就废」。
+     */
     private suspend fun transfer(url: String, target: Target, asset: ReleaseAsset, source: UpdateSource): String {
-        // 用户口径（2026-11-23）：优先走公网代理；代理失败再直连试一次。
-        return runCatching { transferOnce(url, target, asset, source, proxyClient) }
-            .getOrElse { transferOnce(url, target, asset, source, client) }
+        val attempts: List<Pair<String, () -> suspend () -> String>> = listOf(
+            // 代理 + 原始地址
+            "proxy" to { { transferOnce(url, target, asset, source, proxyClient) } },
+            // 第三方镜像（不走代理，绕开代理故障）
+            "ghproxy" to { { transferOnce(mirror("https://ghproxy.net/", url), target, asset, source, client) } },
+            "ghfast" to { { transferOnce(mirror("https://ghfast.top/", url), target, asset, source, client) } },
+            // 直连
+            "direct" to { { transferOnce(url, target, asset, source, client) } },
+        )
+        var last: Throwable? = null
+        for ((name, run) in attempts) {
+            val result = runCatching { run()() }
+            result.getOrNull()?.let { return it }
+            last = result.exceptionOrNull()
+            android.util.Log.w("ETKN-Update", "download via $name failed: ${last?.message}")
+        }
+        throw (last ?: IOException("下载失败"))
     }
+
+    /** 把 GitHub 原始地址套到镜像前缀上（ghproxy 系会把路径原样转发）。 */
+    private fun mirror(prefix: String, url: String): String = prefix + url
 
     private suspend fun transferOnce(
         url: String, target: Target, asset: ReleaseAsset, source: UpdateSource, http: OkHttpClient,

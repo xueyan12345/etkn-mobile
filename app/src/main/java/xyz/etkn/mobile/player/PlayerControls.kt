@@ -88,6 +88,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.layout.aspectRatio
 
 /**
  * 播放器控制层。
@@ -409,103 +410,215 @@ internal fun Controls(
 }
 
 /**
- * 用户口径（2026-11-23）：剧集信息浮层，完全照参考图。
- * 结构：剧名 / 集号+标题 / 评分·日期·类型 / 简介 / 演职人员（一排头像）。
- * 半透明黑底浮层，点外部关闭。
+ * 用户口径（2026-11-23）：剧集信息浮层 —— **完全照参考图重做**。
+ *
+ * 参考图结构（逐项对照，之前几版都做错了）：
+ *   ① 顶部：左侧 16:9 剧照 + 右侧文字区
+ *   ② 剧名（最大字号、粗体）
+ *   ③ S1:E34 - 集标题（第二层，两行分开，不是挤在一行）
+ *   ④ ★ + 评分 + 日期（红色五角星，小字号）
+ *   ⑤ 剧情/喜剧（纯文字斜杠分隔，不用胶囊标签）
+ *   ⑥ 简介正文（完整显示不截断）
+ *   ⑦ 「演职人员」分区标题（中大型、左对齐、无图标）
+ *   ⑧ 竖版圆角矩形人像卡（约 3:4），下方 姓名 + 角色名（饰 XXX / 导演）
+ *
+ * 面板：深色半透明、大圆角、点外部关闭。
  */
 @Composable
 private fun EpisodeInfoSheet(ui: VideoUi, onDismiss: () -> Unit) {
     val item = ui.item ?: return
+    val images = xyz.etkn.mobile.ui.components.images()
     Box(
         Modifier.fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.55f))
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismiss() },
+            .background(Color.Black.copy(alpha = 0.62f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { onDismiss() },
         contentAlignment = Alignment.Center,
     ) {
         Column(
             Modifier
-                .fillMaxWidth(0.86f)
-                .heightIn(max = 420.dp)
-                .clip(Corner.panel)
-                .background(MaterialTheme.colorScheme.surface)
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }
+                .fillMaxWidth(0.94f)
+                .heightIn(max = 560.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color(0xFF141414).copy(alpha = 0.96f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { }
                 .verticalScroll(rememberScrollState())
-                .padding(18.dp),
+                .padding(horizontal = 20.dp, vertical = 18.dp),
         ) {
-            // 剧名
-            Text(
-                item.seriesName ?: item.name,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
-            // 集号 + 标题
-            val code = buildString {
-                val s = item.parentIndexNumber
-                val e = item.indexNumber
-                if (s != null && e != null) append("S${s}:E$e")
-                val sub = ui.subtitle
-                val title = if (sub.startsWith("S")) sub.substringAfter(":", "").substringAfter(":", "") else sub
-                if (title.isNotEmpty()) { if (isNotEmpty()) append("「"); append(title); append("」") }
-            }
-            if (code.isNotEmpty()) {
-                Text(
-                    code,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            // 评分 / 日期 / 类型
-            val rating = item.communityRating ?: item.tmdbRating ?: item.doubanRating
-            val meta = listOfNotNull(
-                "评分 " + String.format(Locale.ROOT, "%.1f", rating ?: 0.0),
-                item.premiereDate?.take(10)?.replace("-", "/"),
-                item.genres.takeIf { it.isNotEmpty() }?.joinToString("/"),
-            ).joinToString(" · ")
-            Text(
-                meta,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-            // 简介
-            item.overview?.takeIf { it.isNotBlank() }?.let { text ->
-                Text(
-                    text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 12.dp),
-                )
-            }
-            // 演职人员
-            if (item.people.isNotEmpty()) {
-                Text(
-                    "演职人员",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(item.people.take(20), key = { it.id + it.role }) { person ->
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
-                            Box(
-                                Modifier.size(52.dp).clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Rounded.Person,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(24.dp),
+            // ① 顶部：剧照 + 文字
+            Row(verticalAlignment = Alignment.Top) {
+                // 剧照（用本集缩略图；没有就退到系列图）
+                val shotUrl = remember(item.id) {
+                    runCatching { images.primary(item, 640) }.getOrNull()
+                }
+                Box(
+                    Modifier
+                        .width(200.dp)
+                        .aspectRatio(16f / 9f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF222222)),
+                ) {
+                    if (shotUrl != null) {
+                        xyz.etkn.mobile.ui.components.Artwork(
+                            shotUrl,
+                            Modifier.fillMaxSize(),
+                            item.name,
+                            background = Color(0xFF222222),
+                        )
+                    }
+                }
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    // ② 剧名（最大字号）
+                    Text(
+                        item.seriesName ?: item.name,
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    // ③ 集号 - 集标题（第二层，独立一行）
+                    val code = buildString {
+                        val season = item.parentIndexNumber
+                        val ep = item.indexNumber
+                        if (season != null && ep != null) append("S$season:E$ep")
+                    }
+                    val epTitle = item.name.takeIf { it.isNotBlank() && it != item.seriesName }
+                    if (code.isNotEmpty() || epTitle != null) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            listOfNotNull(code.takeIf { it.isNotEmpty() }, epTitle).joinToString(" - "),
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontSize = 15.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // ④ ★ + 评分 + 日期
+                    val rating = item.communityRating ?: item.tmdbRating ?: item.doubanRating
+                    val date = item.premiereDate?.take(10)?.replace("-", "/")
+                    if ((rating != null && rating > 0) || date != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (rating != null && rating > 0) {
+                                Text("★", color = Color(0xFFE53935), fontSize = 13.sp)
+                                Spacer(Modifier.width(3.dp))
+                                Text(
+                                    String.format(Locale.ROOT, "%.1f", rating),
+                                    color = Color.White.copy(alpha = 0.9f),
+                                    fontSize = 13.sp,
+                                )
+                                if (date != null) Spacer(Modifier.width(10.dp))
+                            }
+                            if (date != null) {
+                                Text(
+                                    date,
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    fontSize = 13.sp,
                                 )
                             }
+                        }
+                    }
+                    // ⑤ 类型（纯文字斜杠分隔）
+                    if (item.genres.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            item.genres.joinToString("/"),
+                            color = Color.White.copy(alpha = 0.65f),
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+
+            // ⑥ 简介（完整显示）
+            item.overview?.takeIf { it.isNotBlank() }?.let { text ->
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text,
+                    color = Color.White.copy(alpha = 0.82f),
+                    fontSize = 14.sp,
+                    lineHeight = 21.sp,
+                )
+            }
+
+            // ⑦⑧ 演职人员
+            if (item.people.isNotEmpty()) {
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    "演职人员",
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(10.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(item.people.take(20), key = { it.id + it.role + it.type }) { person ->
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.width(72.dp),
+                        ) {
+                            // 竖版圆角矩形人像卡（3:4）
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(3f / 4f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF2A2A2A)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                val personUrl = remember(person.id, person.imageTag) {
+                                    runCatching { images.person(person, 200) }.getOrNull()
+                                }
+                                if (personUrl != null) {
+                                    xyz.etkn.mobile.ui.components.Artwork(
+                                        personUrl,
+                                        Modifier.fillMaxSize(),
+                                        person.name,
+                                        background = Color(0xFF2A2A2A),
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Rounded.Person,
+                                        contentDescription = null,
+                                        tint = Color.White.copy(alpha = 0.35f),
+                                        modifier = Modifier.size(28.dp),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
                             Text(
                                 person.name,
-                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                fontSize = 12.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 textAlign = TextAlign.Center,
                             )
+                            // 角色名：演员「饰 XXX」，导演「导演」
+                            val subtitle = when {
+                                person.type.equals("Director", true) -> "导演"
+                                person.role.isNotBlank() && !person.role.equals(person.name, true) -> "饰 ${person.role}"
+                                else -> ""
+                            }
+                            if (subtitle.isNotEmpty()) {
+                                Text(
+                                    subtitle,
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
                         }
                     }
                 }
