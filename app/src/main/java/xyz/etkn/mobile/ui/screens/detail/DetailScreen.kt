@@ -148,15 +148,31 @@ fun DetailScreen(id: String) {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { if (resumed) vm.load() else resumed = true }
     WhileStarted(vm) { vm.followServer() }
 
+    /**
+     * 用户口径（2026-11-23）**页面级滚动状态**：放在 AnimatedContent 之外，
+     * 这样切集（data 变了、内容重组）时它不会被重建，滚动位置得以保持。
+     */
+    val pageList = rememberLazyListState()
+
     // The page fades in when its data arrives rather than replacing a spinner.
-    AnimatedContent(state, contentKey = { it::class }, transitionSpec = { contentSwap() }, label = "detail") { s ->
+    /**
+     * contentKey 用「ready / not-ready」而不是具体类：
+     * 切集时 state 始终是 Load.Ready（ViewModel 的 load() 已保证不进 Loading），
+     * key 不变 → AnimatedContent 不会换页 → 子树不重建 → 滚动位置保持、无硬切。
+     */
+    AnimatedContent(
+        state,
+        contentKey = { it is Load.Ready },
+        transitionSpec = { contentSwap() },
+        label = "detail",
+    ) { s ->
         when (s) {
             Load.Loading -> LoadingState()
             is Load.Failed -> Box(Modifier.fillMaxSize()) {
                 ErrorState(s.message, vm::load)
                 ArtworkBackButton(nav::back, Modifier.windowInsetsPadding(WindowInsets.statusBars).padding(8.dp))
             }
-            is Load.Ready -> DetailContent(s.value, vm, nav)
+            is Load.Ready -> DetailContent(s.value, vm, nav, pageList)
         }
     }
 }
@@ -184,13 +200,28 @@ private fun Swap(data: DetailData, content: @Composable (DetailData) -> Unit) {
  * and actions are centred under the logo, on wide windows they stay left-aligned.
  */
 @Composable
-private fun DetailContent(data: DetailData, vm: DetailViewModel, nav: AppNav) {
+private fun DetailContent(
+    data: DetailData,
+    vm: DetailViewModel,
+    nav: AppNav,
+    /** 页面级滚动状态：切集不重建，保证滚动位置保持（用户口径 2026-11-23）。 */
+    hoistedList: androidx.compose.foundation.lazy.LazyListState,
+) {
     val item = data.item
     val backdrop = images().backdrop(item, 64) ?: images().poster(item, 64)
     val seed = rememberArtworkSeed(backdrop)
     ArtworkTheme(seed) {
         val episodes by vm.episodes.state.collectAsStateWithLifecycle()
-        val list = rememberLazyListState()
+        /**
+         * 用户口径（2026-11-23）**滑动位置要跨切集保持**。
+         *
+         * 原来这里是 rememberLazyListState()，作用域在 DetailContent 内。
+         * 每次切集 data 变化 → ArtworkTheme(seed) 的 seed 变化 → 整棵子树重组
+         * → LazyListState 被重新创建 → 滚动位置丢失（表现为「突然跳回顶部」）。
+         *
+         * 现在用 hoistedList 从外层传进来，生命周期跟着页面、不跟着 data。
+         */
+        val list = hoistedList
         val collapsed by remember { derivedStateOf { list.firstVisibleItemIndex > 0 } }
         val haze = rememberHazeState()
         /**
@@ -317,8 +348,24 @@ private fun androidx.compose.foundation.lazy.LazyListScope.ChaptersSection(
  */
 @Composable
 private fun ChapterCard(chapter: Chapter, item: Item, onPlay: () -> Unit) {
-    // images() 是 @Composable，不能在 runCatching 里调；直接算（内部已做容错）
-    val thumb = images().chapter(item, chapter, 480)
+    /**
+     * 用户口径（2026-11-23）**章节缩略图不能是纯黑**。
+     *
+     * 现状：images().chapter() 永远返回一个 URL（String 而非 String?），
+     * 服务器没生成该章节图时那个地址 404 → 渲染成纯黑方块，很难看。
+     * 而且因为永远非空，「没图就显示占位图标」的分支根本走不到。
+     *
+     * 现在的三级回退：
+     *  ① 章节自己真的有图（imagePath 或 imageTag 非空）→ 用章节图
+     *  ② 没有 → 回落到这部剧的横版图（landscape → backdrop → poster）
+     *  ③ 连横版图都没有 → 占位图标（浅色底 + 书本），绝不出现纯黑
+     */
+    val urls = images()
+    val hasOwnImage = !chapter.imagePath.isNullOrBlank() || !chapter.imageTag.isNullOrBlank()
+    val thumb: String? = when {
+        hasOwnImage -> urls.chapter(item, chapter, 480)
+        else -> urls.landscape(item, 480) ?: urls.backdrop(item, 480) ?: urls.poster(item, 480)
+    }
     Column(
         Modifier
             .width(180.dp)
@@ -382,64 +429,78 @@ private fun DetailHeader(data: DetailData, centered: Boolean) {
             )
             Box(Modifier.fillMaxWidth().height(140.dp).background(Etkn.tokens.heroTopScrim))
             Box(Modifier.fillMaxSize().background(Etkn.tokens.detailScrim))
-            /**
-             * 用户口径（2026-11-23）**剧名大字叠在海报左上**，按参考图样式：
-             *  · 距左边缘约 5% 屏宽，中文主体顶部约在屏高 13-14% 位置
-             *  · 中文：白色书法/粗体大字，约 40% 屏宽
-             *  · 上方：红色小号英文副标（服务端若有英文名/logo 就用，没有就跳过）
-             *  · 无底板、无色块，直接压在照片上（靠 detailScrim 保证可读）
+                        /**
+             * 用户口径（2026-11-23）**头部按参考图重做（第一层 + 第二层共用）**。
              *
-             * 原来的做法是剧名放在海报**底部**、和元数据一起（BottomCenter），
-             * 参考图是在左上、独立成视觉主标题，所以这次挪上去。
+             * 参考图结构（从上到下）：
+             *  ① 海报上叠「服务器自带的 TMDB 艺术字图」（白色带字横版图）
+             *     —— 距左约 5% 屏宽、距顶约 12-15% 屏高（之前太靠上、和顶部图标挤在一起）
+             *  ② 海报下方信息区：**纯黑粗体剧名**（不是白字压图）
+             *  ③ 集/季信息（单集页才有）：「S1:E34 - 集标题」
+             *  ④ 评分 / 年份 / 时长 / 类型
+             *
+             * 我上一版改坏的地方（已纠正）：
+             *  · 剧名出现两次、位置混乱
+             *  · 集标题被放大到比剧名还大
+             *  · 文字直接压在人物上、断行难看
              */
+            val heroLogo = urls.logo(item, 720)
             Column(
                 Modifier
                     .align(Alignment.TopStart)
-                    .fillMaxWidth(0.86f)
+                    .fillMaxWidth(0.78f)
+                    // 参考图实测：距左约 5% 屏宽、中文主体距顶约 13% 屏高
                     .padding(start = Etkn.space.screen)
-                    .padding(top = height * 0.20f),
-                horizontalAlignment = Alignment.Start,
+                    .padding(top = height * 0.12f),
             ) {
-                // 剧名上面一行：红色小号英文/副标（单集页显示剧名，系列页也用它当副标）
-                val subTitle = item.seriesName?.takeIf { item.isEpisode || item.isSeason }
-                if (subTitle != null) {
-                    Text(
-                        subTitle,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                val logo = if (item.isEpisode) null else urls.logo(item, 720)
-                if (logo != null) {
-                    // 服务端有剧名 Logo 图：优先用图（最贴参考图的书法艺术字效果）
+                if (heroLogo != null) {
+                    // 服务器有 TMDB 艺术字图 → 直接用它（含白字 + 英文，最贴参考图）
                     Artwork(
-                        logo,
-                        Modifier.fillMaxWidth(0.72f).heightIn(max = 108.dp).height(96.dp),
+                        heroLogo,
+                        Modifier.fillMaxWidth().heightIn(max = 120.dp).height(104.dp),
                         item.name,
                         contentScale = ContentScale.Fit,
                         background = Color.Transparent,
                         alignment = Alignment.CenterStart,
                     )
-                } else {
-                    // 没有 Logo 图：用大号粗体白字 + 投影，模拟参考图的视觉重量
+                }
+                // 没有艺术字图时不在这里画白字——留给下方信息区的纯黑剧名，
+                // 避免出现「白字压图 + 黑字重复」两层剧名（上一版的问题）
+            }
+            // 海报底部：剧名（纯黑）+ 元数据，都在渐隐区上
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = Etkn.space.screen)
+                    .padding(bottom = 4.dp),
+                horizontalAlignment = align,
+            ) {
+                /**
+                 * 用户口径（2026-11-23）：**图下必须有纯黑粗体剧名**（参考图第②行）。
+                 * 单集页这里显示剧名（seriesName），系列页显示本剧名。
+                 */
+                Text(
+                    item.seriesName?.takeIf { item.isEpisode || item.isSeason } ?: item.name,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // 单集页：再下一行是「S1:E34 - 集标题」
+                if (item.isEpisode) {
                     Text(
-                        if (item.isEpisode) listOfNotNull(item.episodeCode, item.name).joinToString("  ") else item.name,
-                        style = (if (item.isEpisode) MaterialTheme.typography.headlineMedium else HeroTitleStyle)
-                            .copy(
-                                fontSize = if (item.isEpisode) 26.sp else 38.sp,
-                                fontWeight = FontWeight.Black,
-                                color = Color.White,
-                                shadow = Shadow(Color.Black.copy(alpha = 0.55f), blurRadius = 16f),
-                            ),
-                        textAlign = TextAlign.Start,
+                        listOfNotNull(item.episodeCode, item.name).joinToString(" - "),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
-            }
-            // 元数据（类型标签等）仍在海报底部，和播放按钮一起
+                Spacer(Modifier.height(10.dp))
+                MetaLines(item, techSource(data), align)
+            }            // 元数据（类型标签等）仍在海报底部，和播放按钮一起
             Column(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = Etkn.space.screen).padding(bottom = 4.dp),
                 horizontalAlignment = align,

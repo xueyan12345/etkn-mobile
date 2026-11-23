@@ -178,11 +178,43 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
             }
             // 用户口径（2026-11-23）：外面那圈白描边去掉，只留浅灰圆底 + 白色扇形。
         }
+        /**
+         * 用户口径（2026-11-23）**角标数字按位数动态缩放，不能超格/截断**。
+         *
+         * 问题：圆只有 24dp、字号固定 13sp。
+         * 三位数（如 168、200+）在这个圆里放不下 → 被 View 边界裁掉，
+         * 用户看到「200 多集只用显示 20」就是这么来的。
+         *
+         * 规则（用户明确）：位数越多字号越小，必须完整放进圆内。
+         *   1 位 → 11.5sp（最大）
+         *   2 位 → 9.5sp
+         *   3 位 → 7.5sp
+         *   4 位及以上 → 6.5sp（极端情况，保证不溢出）
+         * 同时收紧 letterSpacing，避免三位数横向撑破。
+         */
+        val text = unplayed.toString()
+        val digits = text.length
+        val size = when {
+            digits <= 1 -> 11.5f
+            digits == 2 -> 9.5f
+            digits == 3 -> 7.5f
+            else -> 6.5f
+        }
         Text(
-            unplayed.toString(),
-            fontSize = 13.sp,
+            text,
+            fontSize = size.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF23306B),
+            letterSpacing = when {
+                digits <= 1 -> 0.sp
+                digits == 2 -> (-0.3).sp
+                else -> (-0.4).sp
+            },
+            maxLines = 1,
+            softWrap = false,
+            textAlign = TextAlign.Center,
+            // 兜底：即使超宽也不许裁字，缩到圆内径
+            modifier = Modifier.fillMaxWidth(0.88f),
         )
     }
 }

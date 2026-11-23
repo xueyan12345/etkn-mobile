@@ -134,12 +134,25 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 用户口径（2026-11-23）：系统不认方向 -> 整层 90° 旋转（配合 TextureView 才有效）。
      * 初值 false：先让系统试；确认系统没转过去才打开。
      */
-    var forceRotate by remember { mutableStateOf(false) }
     /**
      * 用户口径（2026-11-23）：只有确认需要兜底的机型才允许画布旋转。
      * 手机 / 普通平板系统方向正常，误开就会把画面压成中央小方块。
      */
     val needsCanvasRotation = remember { CanvasRotationSupport.enabled }
+    /**
+     * 用户口径（2026-11-23）**起播方向必须一开始就是横屏**。
+     *
+     * 之前初值恒为 false：起播先按竖屏渲染 → 300ms 后校验失败才置 true
+     * → 用户明显看到「先竖屏、再跳成横屏」。
+     *
+     * 正确逻辑（用户明确）：
+     *  ① 起播瞬间直接横屏（绝大多数片源本来就是横屏，这一步就对了）
+     *  ② 等播放器给出视频真实尺寸后判断方向
+     *  ③ 如果确实是竖屏视频 → 再跳回竖屏
+     *
+     * 所以需要在兜底的机型上初值直接给 true，不等校验。
+     */
+    var forceRotate by remember { mutableStateOf(CanvasRotationSupport.enabled) }
     /**
      * 用户口径（2026-11-23）OPPO Pad Mini 专项：这台平板上「旋转屏幕」按钮完全无效，
      * 只能跟随系统方向。SenPlayer / AfuseKit 同样如此 → 不是我们独有的 bug，
@@ -218,7 +231,15 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                  * 手机 / 其他平板系统方向本来就正常，一旦误开就会把画面压成小方块
                  * （用户实测：手机播放变成中央小窗）。所以这里必须机型门控。
                  */
-                forceRotate = !ok && needsCanvasRotation
+                /**
+                 * 用户口径（2026-11-23）：这里的职责变了。
+                 *
+                 * 起播时 forceRotate 已经是 true（需要兜底的机型直接横屏），
+                 * 所以这里只在「视频确实是竖屏」时才需要把它关掉（切回竖屏）。
+                 * 横屏视频一律保持 true，不再因为系统方向校验失败而反复切。
+                 */
+                if (wantPortrait) forceRotate = false
+                else if (!ok && needsCanvasRotation) forceRotate = true
                 // 注意：real 必须打真实读到的方向，不能用 ok 反推（之前这里打错了，日志自相矛盾）
                 val realText = when (real) {
                     android.content.res.Configuration.ORIENTATION_PORTRAIT -> "P"
