@@ -490,18 +490,38 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
          * 但必须**扣掉安全区**（状态栏 / 挖孔 / 导航栏），否则内容会顶到屏幕边缘
          * 或被系统栏压住 —— 之前画面上下被截就是这个原因之一。
          */
-        val insets = WindowInsets.safeDrawing.asPaddingValues()
-        val safeW = (maxWidth - insets.calculateLeftPadding(LocalLayoutDirection.current)
-            - insets.calculateRightPadding(LocalLayoutDirection.current)).coerceAtLeast(1.dp)
-        val safeH = (maxHeight - insets.calculateTopPadding() - insets.calculateBottomPadding())
-            .coerceAtLeast(1.dp)
-        val canvasW = if (rotated) safeH else safeW
-        val canvasH = if (rotated) safeW else safeH
+        /**
+         * 用户口径（2026-11-23）**画布尺寸就用屏幕原始宽高，不扣安全区**。
+         *
+         * 之前扣了 safeDrawing（状态栏/导航栏），画布变小 → 视频跟着变小
+         * → 旋转后两侧出现黑边（实测左 490 + 视频 700 + 右 490）。
+         *
+         * 视频是 FIT 模式，它自己会在画布内等比留黑边，
+         * 画布只要给足整屏尺寸即可。系统栏本来就隐藏了（播放器全屏沉浸）。
+         */
+        val canvasW = if (rotated) maxHeight else maxWidth
+        val canvasH = if (rotated) maxWidth else maxHeight
         Box(
             Modifier.then(
                 if (rotated) {
+                    /**
+                     * 用户口径（2026-11-23）**左右黑边的真正原因**。
+                     *
+                     * 这里原来写 .size(canvasW, canvasH)。但 Compose 的子元素尺寸会被
+                     * 父容器 constraints 钳制：画布要求 2520×1680，父容器 maxWidth=1680，
+                     * 于是画布被压成 1680×1680。
+                     *
+                     * 实测验证（严丝合缝）：
+                     *  · 画布被压成 1680×1680
+                     *  · 视频 3840×1600（2.4:1）fit 进去 → 宽 1680、高 1680/2.4 = 700
+                     *  · 旋转后视频宽 700，两侧黑边各 (1680-700)/2 = 490
+                     *  · 截图实测：左 490 + 视频 700 + 右 490 = 1680 ✓
+                     *
+                     * 换成 requiredSize：明确告诉 Compose「不受父约束限制」，
+                     * 画布才能真的拿到 2520×1680，视频宽度铺满后左右黑边消失。
+                     */
                     Modifier
-                        .size(canvasW, canvasH)
+                        .requiredSize(canvasW, canvasH)
                         .graphicsLayer { rotationZ = 90f }
                 } else {
                     Modifier.fillMaxSize()
