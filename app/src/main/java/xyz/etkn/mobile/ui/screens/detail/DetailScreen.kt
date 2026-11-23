@@ -134,6 +134,7 @@ import xyz.etkn.mobile.ui.components.PersonCard
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.ui.unit.sp
+import xyz.etkn.mobile.data.model.Chapter
 
 @Composable
 fun DetailScreen(id: String) {
@@ -316,9 +317,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.ChaptersSection(
  */
 @Composable
 private fun ChapterCard(chapter: Chapter, item: Item, onPlay: () -> Unit) {
-    val thumb = remember(chapter, item.id) {
-        runCatching { images().chapter(item, chapter, 480) }.getOrNull()
-    }
+    // images() 是 @Composable，不能在 runCatching 里调；直接算（内部已做容错）
+    val thumb = images().chapter(item, chapter, 480)
     Column(
         Modifier
             .width(180.dp)
@@ -396,7 +396,7 @@ private fun DetailHeader(data: DetailData, centered: Boolean) {
                 Modifier
                     .align(Alignment.TopStart)
                     .fillMaxWidth(0.86f)
-                    .padding(start = maxWidth * 0.05f)
+                    .padding(start = Etkn.space.screen)
                     .padding(top = height * 0.20f),
                 horizontalAlignment = Alignment.Start,
             ) {
