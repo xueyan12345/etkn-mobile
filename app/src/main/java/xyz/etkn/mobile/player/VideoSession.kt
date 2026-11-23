@@ -448,9 +448,8 @@ class VideoSession(
          * 本地缓存文件；下次 playSource 时 PlaybackCache.localFile 命中，
          * 直接把 file:// 交给内核 → 一个网络请求都不发。
          */
-        if (cachedLocal == null && !disc) {
-            PlaybackCache.cacheWhilePlaying(context, url)
-        }
+        // 缓存写入不在这里启动：由 PlayerScreen 每 5 秒调 tickCache 驱动滑动窗口，
+        // 只有当前集窗口完成后才会去预加载下一集（串行流水线）。
         // A new player starts unshifted: the selected subtitle's calibration is applied again.
         _ui.update { it.copy(segments = segments(chosen.chapters.ifEmpty { current.chapters }, chosen.runTimeTicks / TICKS_PER_MS), subtitleOffset = null) }
         startProgressLoop()
@@ -485,10 +484,7 @@ class VideoSession(
             val next = runCatching { api.nextEpisode(itemId) }.getOrNull()
             if (item?.id != itemId) return@launch
             _ui.update { it.copy(next = next) }
-            // 用户口径（2026-11-23）：拿到下一集就立刻预加载，别等用户点。
-            // 之前 PlaybackCache 只被设置页调用，播放路径根本没用它，
-            // 所以「预加载」「磁盘缓存」开关、磁盘占用、闪电小圆全都不生效 —— 这就是根因。
-            if (next != null) preloadNext(next)
+            // 预加载不在这里触发：由 tickCache 在当前集缓存完成后串行推进（一环套一环）。
             }
     }
 

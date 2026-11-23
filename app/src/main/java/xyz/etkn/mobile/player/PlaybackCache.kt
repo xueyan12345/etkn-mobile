@@ -171,7 +171,9 @@ object PlaybackCache {
 
                 val wantedMs = (positionMs + windowMs).coerceAtMost(if (durationMs > 0) durationMs else Long.MAX_VALUE)
                 val wantedBytes = if (bytesPerMs > 0) {
-                    (wantedMs * bytesPerMs).toLong().coerceAtMost(positionMs * bytesPerMs + windowBytes)
+                    val byTime = (wantedMs * bytesPerMs).toLong()
+                    val cap = (positionMs * bytesPerMs).toLong() + windowBytes
+                    byTime.coerceAtMost(cap)
                 } else windowBytes
 
                 // 已拉到的位置
@@ -302,13 +304,16 @@ object PlaybackCache {
         }
     }
 
-    /** 用 Range 请求探资源总字节数；探不到返回 -1。 */
+    /**
+     * 探资源总字节数：用 HTTP HEAD 读 Content-Length。
+     * 探不到返回 -1（调用方按「位置 + 窗口」估算）。
+     * 注：DefaultHttpDataSource 不暴露 contentLength()，所以直接用 OkHttp。
+     */
     private fun probeLength(url: String): Long = runCatching {
-        val src = DefaultHttpDataSource.Factory().setUserAgent(UA).createDataSource()
-        src.open(DataSpec.Builder().setUri(Uri.parse(url)).setPosition(0).setLength(1).build())
-        val len = src.contentLength
-        src.close()
-        len
+        val request = okhttp3.Request.Builder().url(url).head().build()
+        okhttp3.OkHttpClient().newCall(request).execute().use { response ->
+            response.header("Content-Length")?.toLongOrNull() ?: -1L
+        }
     }.getOrDefault(-1L)
 
     // ---------------------------------------------------------------- 兼容旧调用
