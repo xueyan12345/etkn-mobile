@@ -78,7 +78,7 @@ object PlaybackCache {
      * ETKN 的 X-Emby-Token / UserId 都在查询串里，丢掉它们 key 才不变。
      */
     private fun stableKey(url: String): String {
-        val parsed = runCatching { okhttp3.HttpUrl.parse(url) }.getOrNull() ?: return url
+        val parsed = runCatching { HttpUrl.get(url) }.getOrNull() ?: return url
         return parsed.newBuilder().query(null).fragment(null).build().toString()
     }
 
