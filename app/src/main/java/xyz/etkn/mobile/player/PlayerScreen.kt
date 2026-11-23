@@ -633,13 +633,13 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         }
 
         if (ui.loading && ui.error == null) {
-            LoadingIndicator(Modifier.align(Alignment.Center).size(72.dp), color = Color.White)
+            LoadingIndicator(Modifier.align(Alignment.Center).size(108.dp), color = Color.White)
         }
         ui.error?.let { message ->
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(message, color = Color.White, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(16.dp))
-                FilledTonalButton(onClick = onBack) { Text("返回") }
+                Text(message, color = Color.White, style = MaterialTheme.typography.titleMedium, fontSize = 24.sp)
+                Spacer(Modifier.height(24.dp))
+                FilledTonalButton(onClick = onBack) { Text("返回", fontSize = 21.sp) }
             }
         }
         gesture?.let { feedback ->
@@ -648,7 +648,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             val isNotice = feedback is GestureFeedback.Text || feedback is GestureFeedback.Speed
             val place = if (isNotice) {
                 // 旋转画布已扣除安全区，这里不再重复补偿（否则双重偏移）
-                Modifier.align(Alignment.TopCenter).padding(top = 28.dp)
+                Modifier.align(Alignment.TopCenter).padding(top = 42.dp)
             } else Modifier.align(Alignment.Center)
             GestureBadge(feedback, place)
         }
@@ -669,9 +669,10 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 message,
                 color = Color.White,
                 style = MaterialTheme.typography.labelLarge,
+                fontSize = 21.sp,
                 modifier = Modifier.align(Alignment.TopCenter)
-                    .padding(top = 64.dp).background(Color.Black.copy(alpha = 0.55f), Corner.pill)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(top = 96.dp).background(Color.Black.copy(alpha = 0.55f), Corner.pill)
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
             )
         }
 
@@ -703,9 +704,9 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             if (locked) {
                 FilledIconButton(
                     onClick = { locked = false; controls = true },
-                    modifier = Modifier.align(Alignment.CenterStart).padding(16.dp),
+                    modifier = Modifier.align(Alignment.CenterStart).padding(24.dp).size(72.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White),
-                ) { Icon(Icons.Rounded.Lock, "解锁") }
+                ) { Icon(Icons.Rounded.Lock, "解锁", modifier = Modifier.size(42.dp)) }
             }
             // 用户口径（2026-11-23）：自动跳过模式下按钮也要显示，按钮内部用色块填充当 5 秒倒计时。
             // 之前这里是 takeUnless { Auto && Intro } —— Auto 模式直接把片头按钮藏了，所以看不到倒计时。
@@ -722,9 +723,9 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 // 尺寸天然就是按钮宽×按钮高。
                 Row(
                     Modifier.align(Alignment.BottomEnd)
-                        .padding(end = 24.dp, bottom = if (controls) 120.dp else 32.dp),
+                        .padding(end = 36.dp, bottom = if (controls) 180.dp else 48.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(15.dp),
                 ) {
                 Box(
                     Modifier
@@ -743,23 +744,23 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                             }
                         }
                         .clickable { session.skip(s) }
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                        .padding(horizontal = 24.dp, vertical = 13.5.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             if (s.kind == SkipSegment.Kind.Intro) Icons.Rounded.FastForward else Icons.Rounded.SkipNext,
                             null,
-                            Modifier.size(18.dp),
+                            Modifier.size(27.dp),
                             tint = Color.White,
                         )
-                        Spacer(Modifier.width(6.dp))
-                        Text(label, color = Color.White, fontSize = 14.sp)
+                        Spacer(Modifier.width(9.dp))
+                        Text(label, color = Color.White, fontSize = 21.sp)
                         if (countingDown) {
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(Modifier.width(9.dp))
                             Text(
                                 "${(5 * (1f - skipCountdown)).toInt() + 1}s",
                                 color = Color.White.copy(alpha = 0.75f),
-                                fontSize = 12.sp,
+                                fontSize = 18.sp,
                             )
                         }
                     }
@@ -770,7 +771,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                         Text(
                             "取消",
                             color = Color.White.copy(alpha = 0.9f),
-                            fontSize = 14.sp,
+                            fontSize = 21.sp,
                             modifier = Modifier.clickable {
                                 // 用户口径（2026-11-23）：点取消 → 这组按钮立刻消失，别再固定在那儿
                                 skipDismissed = true
