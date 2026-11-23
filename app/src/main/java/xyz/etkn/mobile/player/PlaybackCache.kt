@@ -122,6 +122,44 @@ object PlaybackCache {
     fun localFile(context: Context, url: String): File? =
         fileFor(context, url).takeIf { it.isFile && it.length() > 0 }
 
+    /**
+     * 用户口径（2026-11-23）：**部分缓存也要能用**。
+     *
+     * 之前的致命问题：只有整集下完才改名成正式文件，看一半退出时还是 .part →
+     * 下次进来 localFile 返回 null → 又去请求服务器、流量哗哗跑。
+     *
+     * 现在 .part 只要有内容就用它：先读本地这一段（秒出画面、不耗流量），
+     * 读到末尾再走网络接续。
+     */
+    fun partialFile(context: Context, url: String): File? {
+        val full = fileFor(context, url)
+        if (full.isFile && full.length() > 0) return full
+        val part = File(full.parentFile, full.name + ".part")
+        return part.takeIf { it.isFile && it.length() > 512 * 1024 }  // ≥512KB 才值得用
+    }
+
+    /**
+     * 用户口径（2026-11-23）：磁盘缓存已覆盖到第几毫秒（画进度条缓冲段）。
+     * 进度条原来画的是 player.bufferedPosition（内核几秒的前向缓冲），
+     * 和设置的「最大缓存大小/时长」是两套东西，所以永远只有细细一小条。
+     */
+    fun cachedPositionMs(context: Context, url: String, durationMs: Long, totalBytes: Long): Long {
+        val full = fileFor(context, url)
+        val part = File(full.parentFile, full.name + ".part")
+        val have = when {
+            full.isFile -> full.length()
+            part.isFile -> part.length()
+            else -> 0L
+        }
+        if (have <= 0) return 0L
+        if (full.isFile && full.length() > 0) return if (durationMs > 0) durationMs else 0L
+        if (totalBytes > 0 && durationMs > 0) {
+            val frac = (have.toDouble() / totalBytes).coerceIn(0.0, 1.0)
+            return (durationMs * frac).toLong()
+        }
+        return 0L
+    }
+
     // ---------------------------------------------------------------- 窗口缓存（核心）
 
     private val windowLock = Mutex()
