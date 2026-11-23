@@ -467,9 +467,28 @@ class VideoSession(
                 .setSelectionFlags(if (stream.isDefault) C.SELECTION_FLAG_DEFAULT else 0)
                 .build()
         }
+        /**
+         * 用户口径（2026-11-23）日志已确认的真相：
+         *   version-35806 cache hit=true 完成=true → Malformed URL → 切 mpv
+         *   version-35138 cache hit=false          → ExoPlayer 721ms 正常起播
+         * 凡是「命中缓存用 file://」就崩，「走网络」就正常 —— 所以坏在本地 URI 这条路上。
+         *
+         * 这里改成两步：① 先算出一个合法的播放 URI，② 打日志把真实值记下来。
+         */
+        val playUri: android.net.Uri = run {
+            val local = cachedLocal
+            if (local != null) {
+                // file:// 必须是绝对路径且不能带查询串；用 fromFile 生成后再校验一次
+                val u = android.net.Uri.fromFile(local)
+                val bad = !u.scheme.equals("file", true) || u.path.isNullOrEmpty()
+                if (bad) url.let { android.net.Uri.parse(it) } else u
+            } else {
+                android.net.Uri.parse(url)
+            }
+        }
+        android.util.Log.i(TAG, "playUri=${playUri} (local=${cachedLocal?.absolutePath ?: "none"})")
         val media = MediaItem.Builder()
-            // 有本地缓存文件就用它（mpv 与 Exo 都会读 file://），否则走网络 URL
-            .setUri(cachedLocal?.let { android.net.Uri.fromFile(it).toString() } ?: url)
+            .setUri(playUri)
             .setMediaId(current.id)
             .setSubtitleConfigurations(subtitles)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(_ui.value.title).setSubtitle(_ui.value.subtitle).build())
@@ -551,6 +570,13 @@ class VideoSession(
         if (!settings.preloadNext) return
         val cur = currentUrl ?: return
         val currentItem = item ?: return
+        // 用户口径（2026-11-23）：这一集已经有完整本地文件 → 不重复下载，直接推进下一集。
+        // 之前会先判断 localFile，但下一步仍然进 pipeline 又拉一遍（浪费流量）。
+        if (PlaybackCache.localFile(graph.app, cur) != null) {
+            startNextIfIdle(currentItem)
+            _ui.update { it.copy(nextPreloaded = PlaybackCache.isNextReady()) }
+            return
+        }
         /**
          * 用户口径（2026-11-23）修「起播变慢」：
          * 之前起播第 5 秒就开始全速把整集往下拉缓存，和视频播放抢同一条 115 直链带宽，

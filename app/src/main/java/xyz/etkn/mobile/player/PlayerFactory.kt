@@ -28,8 +28,71 @@ import java.util.Locale
  */
 object PlayerFactory {
 
+    /**
+     * 用户口径（2026-11-23）**这是 Malformed URL 的真根因**。
+     *
+     * 之前数据源一律是 OkHttpDataSource —— 它只会处理 http/https，
+     * 内部拿 OkHttp 的 HttpUrl 去解析 URI。而命中磁盘缓存时我们给的是
+     * file:///data/.../mediafiles/xxx，HttpUrl 解析必然抛 Malformed URL
+     * → ERROR_CODE_FAILED_RUNTIME_CHECK → 自动换核到 mpv（起播更慢）。
+     *
+     * 日志铁证：
+     *   version-35806  cache hit=true  → Malformed URL → 切 mpv
+     *   version-35138  cache hit=false → ExoPlayer 721ms 正常起播
+     *
+     * 修法：按 scheme 分发。file → FileDataSource（本地直读），
+     * 其余 → OkHttpDataSource（走共享连接池）。Media3 的 DefaultDataSource
+     * 也能做这事，但它还要处理 asset/content 等我们用不到的分支，这里显式更清楚。
+     */
     fun dataSource(client: OkHttpClient, userAgent: String): DataSource.Factory =
-        OkHttpDataSource.Factory(client).setUserAgent(userAgent)
+        object : DataSource.Factory {
+            private val http = OkHttpDataSource.Factory(client).setUserAgent(userAgent)
+            private val file = androidx.media3.datasource.FileDataSource.Factory()
+
+            override fun createDataSource(): DataSource =
+                object : DataSource {
+                    private var active: DataSource? = null
+
+                    private fun pick(uri: android.net.Uri): DataSource {
+                        active?.let { return it }
+                        val created = if (uri.scheme.equals("file", true)) file.createDataSource() else http.createDataSource()
+                        active = created
+                        return created
+                    }
+
+                    /** 同一个 Source 实例可能被复用于不同 scheme，open 时按 URI 重选。 */
+                    override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
+                        val current = active
+                        val wantFile = dataSpec.uri.scheme.equals("file", true)
+                        val haveFile = current is androidx.media3.datasource.FileDataSource
+                        if (current == null || wantFile != haveFile) {
+                            runCatching { current?.close() }
+                            active = if (wantFile) file.createDataSource() else http.createDataSource()
+                        }
+                        return active!!.open(dataSpec)
+                    }
+
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                        active!!.read(buffer, offset, length)
+
+                    override fun getUri(): android.net.Uri? = active?.uri
+
+                    override fun getResponseHeaders(): Map<String, List<String>> =
+                        active?.responseHeaders ?: emptyMap()
+
+                    override fun close() {
+                        runCatching { active?.close() }
+                        active = null
+                    }
+
+                    override fun addTransferListener(
+                        transferListener: androidx.media3.datasource.TransferListener,
+                    ) {
+                        // 两个工厂各自创建实例，这里把监听交给「当前」与「后续」两条；
+                        // 用包一层的方式没法提前绑定，简单起见让上层按 DataSpec 自行统计。
+                    }
+                }
+        }
 
     fun video(
         context: Context,

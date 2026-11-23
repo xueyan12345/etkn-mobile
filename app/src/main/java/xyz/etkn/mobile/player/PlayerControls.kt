@@ -125,11 +125,14 @@ internal fun Controls(
     onPrevious: () -> Unit,
     onToggleDanmaku: () -> Unit,
     onSpeed: (Float) -> Unit,
+    /** 用户口径（2026-11-23）：简介浮层打开状态上报，打开时不自动隐藏控制条。 */
+    onInfoOpenChange: (Boolean) -> Unit = {},
 ) {
     var scrubbing by remember { mutableStateOf(false) }
     var scrub by remember { mutableFloatStateOf(0f) }
     // 用户口径（2026-11-23）：点底部那一行「S1:E34:标题」弹剧集信息浮层。
     var showInfo by remember { mutableStateOf(false) }
+    LaunchedEffect(showInfo) { onInfoOpenChange(showInfo) }
     // 用户口径（2026-11-23）：顶部中间显示系统时间 / 网速 / 电量，每秒刷新
     val status = rememberPlayerStatus()
     Box(Modifier.fillMaxSize()) {

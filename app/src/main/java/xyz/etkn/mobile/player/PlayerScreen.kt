@@ -86,6 +86,8 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     val player by session.players.collectAsStateWithLifecycle()
     var controls by remember { mutableStateOf(true) }
     var locked by remember { mutableStateOf(false) }
+    /** 用户口径（2026-11-23）：剧集简介浮层是否打开；打开时控制条不自动隐藏。 */
+    var infoOpen by remember { mutableStateOf(false) }
     var resize by remember { mutableIntStateOf(0) }
     var sheet by remember { mutableStateOf(Sheet.None) }
     // 用户口径（2026-11-23）：去掉重力感应横竖屏，改成「按视频宽高比自动判断」。
@@ -107,8 +109,17 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     // Activity 就一直停在 Manifest 的 unspecified（= 设备当前方向 = 竖屏）。
     // 改用 nullable 表示「还没应用过」，第一次一定应用。
     var portrait by remember { mutableStateOf<Boolean?>(null) }
-    /** 系统方向改不动时的兜底：把视频画面强制旋转 90°（OPPO Pad Mini 等大屏设备）。 */
-    var forceRotate by remember { mutableStateOf(false) }
+    /**
+     * 用户口径（2026-11-23）OPPO Pad Mini 专项：**进播放器立刻就是横屏**。
+     *
+     * 之前初值是 false，要先发系统方向请求、等 120ms 读回、确认系统不认才开兜底，
+     * 结果用户看到的是「先竖着、一闪、再转」甚至根本不转。
+     *
+     * 现在初值直接给 true：一进播放器就按横屏画布绘制（不依赖系统方向）。
+     * 如果系统其实认了横屏请求（手机上就是这样），读回校验后把兜底关掉，
+     * 交还给系统方向 —— 两边都不冲突。
+     */
+    var forceRotate by remember { mutableStateOf(true) }
     // 用户手动覆盖过方向就不再自动跟随，直到换集重置
     var manualOrientation by remember { mutableStateOf(false) }
     /**
@@ -154,8 +165,12 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             val actual = runCatching { activity?.requestedOrientation }.getOrNull()
             // 系统接受了：方向已经是我们要求的值（可能是 LANDSCAPE 或 SENSOR_LANDSCAPE 变体）
             val accepted = actual != null && actual != android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            // 系统忽略了横屏请求 → 走画面强制旋转
-            forceRotate = !wantPortrait && !accepted
+            // 系统接受了横屏请求 → 交给系统方向（关掉画面强制旋转）；
+            // 系统不认（大屏设备）→ 保持画面强制旋转，视觉上照样是横的。
+            forceRotate = if (accepted) false else !wantPortrait
+            if (!accepted && !wantPortrait) {
+                android.util.Log.i("ETKN-Rotate", "system ignored orientation; using canvas rotation")
+            }
         }, 120L)
     }
     /**
@@ -261,8 +276,19 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         }
     }
     // Auto-hide controls after 4 s of inactivity while playing.
-    LaunchedEffect(controls, lastInteraction, playing, sheet) {
-        if (controls && playing && sheet == Sheet.None) {
+    /**
+     * 用户口径（2026-11-23）：自动隐藏要分清「进度条界面」和「弹层」。
+     *
+     * 之前这里只判断了 `sheet == Sheet.None`，但那个剧集简介浮层是
+     * PlayerControls 内部的局部状态，不在 Sheet 枚举里 ——
+     * 所以简介弹出来时，这条逻辑照旧 4 秒把整个控制条（连同简介）收掉，
+     * 用户还没看完就消失了。
+     *
+     * 现在：控制条自动隐藏只在「没有打开任何弹层」时执行。
+     * 简介浮层通过 [infoOpen] 上报自己的打开状态，打开期间不自动隐藏。
+     */
+    LaunchedEffect(controls, lastInteraction, playing, sheet, infoOpen) {
+        if (controls && playing && sheet == Sheet.None && !infoOpen && !locked) {
             delay(4_000)
             controls = false
         }
@@ -468,6 +494,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     onNext = { session.playNext() },
                     onPrevious = { session.playPrevious() },
                     onSpeed = { session.setSpeed(it) },
+                    onInfoOpenChange = { infoOpen = it },
                     onToggleDanmaku = {
                         // 弹幕开关：直接翻转 enabled（样式其它项保持不变）
                         session.setDanmakuStyle(session.danmakuStyle.value.copy(enabled = !ui.danmakuOn))
