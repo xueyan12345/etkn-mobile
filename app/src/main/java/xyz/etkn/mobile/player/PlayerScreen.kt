@@ -218,11 +218,16 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                  * （用户实测：手机播放变成中央小窗）。所以这里必须机型门控。
                  */
                 forceRotate = !ok && needsCanvasRotation
+                // 注意：real 必须打真实读到的方向，不能用 ok 反推（之前这里打错了，日志自相矛盾）
+                val realText = when (real) {
+                    android.content.res.Configuration.ORIENTATION_PORTRAIT -> "P"
+                    android.content.res.Configuration.ORIENTATION_LANDSCAPE -> "L"
+                    else -> "?"
+                }
                 android.util.Log.i(
                     "ETKN-Rotate",
                     "round=$round want=${if (wantPortrait) "P" else "L"} " +
-                        "real=${if (ok) "P" else "L"} ok=$ok " +
-                        "gate=$needsCanvasRotation canvasRotate=$forceRotate",
+                        "real=$realText ok=$ok gate=$needsCanvasRotation canvasRotate=$forceRotate",
                 )
                 if (!ok && round < 3) {
                     apply()
