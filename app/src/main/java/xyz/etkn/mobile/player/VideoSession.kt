@@ -391,6 +391,16 @@ class VideoSession(
         autoSkippedIntro = false
         autoSkippedCredits = false
         val url = PlaybackAddress.resolve(chosen, session.server, session.token, session.userId)
+        /**
+         * 用户口径（2026-11-23）：mpv 走本地文件缓存。
+         *
+         * mpv 不认 Media3 的 CacheDataSource，所以给它一个真实的本地文件：
+         *  · 这一集已经完整缓存过 → 直接把本地路径交给 mpv，完全不发网络请求
+         *  · 没缓存过 → 保持走网络（边播边缓存由 Exo 那边负责；mpv 只能靠预加载写文件）
+         *
+         * 只有普通视频走这条路；蓝光 ISO（disc）必须走 libbluray，不能替换成本地文件。
+         */
+        val cachedLocal = if (!disc) PlaybackCache.localFile(context, settings, url) else null
         val subtitles = chosen.subtitles.filter { it.isExternal && it.deliveryUrl != null && !offline }.mapNotNull { stream ->
             val address = PlaybackAddress.subtitle(stream.deliveryUrl!!, session.server, session.token) ?: return@mapNotNull null
             val mime = subtitleMime(stream.codec) ?: return@mapNotNull null
@@ -403,7 +413,8 @@ class VideoSession(
                 .build()
         }
         val media = MediaItem.Builder()
-            .setUri(url)
+            // 有本地缓存文件就用它（mpv 与 Exo 都会读 file://），否则走网络 URL
+            .setUri(cachedLocal?.let { android.net.Uri.fromFile(it).toString() } ?: url)
             .setMediaId(current.id)
             .setSubtitleConfigurations(subtitles)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(_ui.value.title).setSubtitle(_ui.value.subtitle).build())
@@ -417,6 +428,17 @@ class VideoSession(
         player.setMediaItem(media, startMs.coerceAtLeast(0))
         player.prepare()
         player.playWhenReady = true
+        /**
+         * 用户口径（2026-11-23）：边播边缓存。
+         *
+         * 用户要的是「看一半退出，下次进来直接读本地，不再请求网络」。
+         * 所以只要是在线播放（不是本地文件、不是蓝光 ISO），就在后台把这一集整段写进
+         * 本地缓存文件；下次 playSource 时 PlaybackCache.localFile 命中，
+         * 直接把 file:// 交给内核 → 一个网络请求都不发。
+         */
+        if (cachedLocal == null && !disc) {
+            PlaybackCache.cacheWhilePlaying(context, settings, current.id, url)
+        }
         // A new player starts unshifted: the selected subtitle's calibration is applied again.
         _ui.update { it.copy(segments = segments(chosen.chapters.ifEmpty { current.chapters }, chosen.runTimeTicks / TICKS_PER_MS), subtitleOffset = null) }
         startProgressLoop()
@@ -584,6 +606,18 @@ class VideoSession(
                 skip(segment)
                 true
             }
+        }
+    }
+
+    /**
+     * 用户口径（2026-11-23）：用户在 5 秒倒计时期间点了「取消」。
+     * 表示这一段这次不要自动跳 —— 把已跳标记置上，倒计时就不会再触发。
+     * 拖动进度回到片头之前会由 resetAutoSkipIfBefore 复位，之后仍然能自动跳。
+     */
+    fun cancelAutoSkip(segment: SkipSegment) {
+        when (segment.kind) {
+            SkipSegment.Kind.Intro -> autoSkippedIntro = true
+            SkipSegment.Kind.Credits -> autoSkippedCredits = true
         }
     }
 

@@ -56,25 +56,25 @@ class AppNav(
      *   1. 同步判断本地是否有播放记录 → 立即 navigate（点击零延迟，绝不会没反应）
      *   2. 只有确实有播放记录、但不知道是哪一集时，才后台查一次，拿到后替换成那一集
      */
+    /**
+     * 用户口径（2026-11-23，方案 3）：点剧集 → 直接进「上次播放的那一集」，拿不到才进剧集详情页。
+     *
+     * 为什么不再「先跳第一层、再替换成第二层」：
+     * 那样用户会先看到剧集详情页闪一下才变成单集页，而且如果第二次导航被
+     * launchSingleTop 挡掉，就会永远停第一层 —— 这就是前三轮一直没修好的原因。
+     *
+     * 现在只做一次导航：查到续播集 → 进那一集；查不到 → 进剧集详情页。
+     *
+     * 查不到的情况（正常）：这部剧从没播过。
+     * 接口层面已实测：/Users/{uid}/Items/Resume 对 xy 账号返回 8 条，
+     * 《走马上任》SeriesId=item-23691 命中 Episode item-25750。
+     */
     fun openSmart(item: Item) {
         if (!item.isSeries) { open(item); return }
-        /**
-         * 用户口径（2026-11-23）：只要这部剧有播放记录，点它就必须进「续播那一集的单集详情页」
-         * （和「继续观看」里点出来的是同一个界面）。没播放记录才进剧集详情页。
-         *
-         * ⚠️ 之前判据用错了：看的是 Series 自己的 userData.playbackPositionTicks / playCount，
-         * 但播放进度是记在 Episode 上的，Series 的这两项恒为 0 →
-         * 永远判成「没看过」→ 直接进第一层 → 异步查续播那段一次都没跑。
-         * 现在不再用本地 UserData 猜，改成「先跳第一层保证有反应，同时无条件查一次续播」，
-         * 查到就替换成那一集（第二层）。
-         */
-        to(DetailRoute(item.id))
         scope.launch {
-            val resume = runCatching { context.graph.api.resumeEpisodeOf(item.id) }.getOrNull() ?: return@launch
-            // 只有用户还停在这部剧的详情页时才顶替，避免他中途点了别的被抢跳。
-            if (controller.currentDestination?.hasRoute<DetailRoute>() == true) {
-                to(DetailRoute(resume.id))
-            }
+            val resume = runCatching { context.graph.api.resumeEpisodeOf(item.id) }.getOrNull()
+            // 只有一次导航，不会出现「先第一层再第二层」的闪跳
+            to(DetailRoute(resume?.id ?: item.id))
         }
     }
 

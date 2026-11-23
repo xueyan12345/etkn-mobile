@@ -64,6 +64,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.layout.Arrangement
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
@@ -229,11 +230,12 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         skipCountdown = 0f
         if (segment == null) return@LaunchedEffect
         if (ui.skipMode != SkipMode.Auto) return@LaunchedEffect
-        // 5 秒，每 50ms 走一格（20 格），够平滑又不费
+        // 5 秒色块填充：每 50ms 走 1%，5 秒正好 100%
         repeat(100) { step ->
             delay(50)
             skipCountdown = (step + 1) / 100f
         }
+        // 填满才真正跳；用户中途点了「取消」的话 autoSkip 会返回 false，这次就不跳
         session.autoSkip(segment)
     }
     // Double-tap seek feedback clears itself; drag feedback is cleared on release.
@@ -397,20 +399,22 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     else -> "跳过片尾"
                 }
                 val countingDown = ui.skipMode == SkipMode.Auto && skipCountdown > 0f
-                Box(
+                // 用户口径（2026-11-23）：倒计时色块只在这颗胶囊按钮**内部**从左往右填，
+                // 绝不能铺到整屏 —— 之前把填充层写成 fillMaxSize 的独立 Box，撑满的是整个播放界面，
+                // 所以出现了「整个屏幕在倒计时」。现在直接在胶囊自己的 drawBehind 里画，
+                // 尺寸天然就是按钮宽×按钮高。
+                Row(
                     Modifier.align(Alignment.BottomEnd).windowInsetsPadding(WindowInsets.safeDrawing)
-                        .padding(end = 24.dp, bottom = if (controls) 120.dp else 32.dp)
+                        .padding(end = 24.dp, bottom = if (controls) 120.dp else 32.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                Box(
+                    Modifier
                         .clip(Corner.pill)
                         .background(Color.Black.copy(alpha = 0.55f))
-                        .clickable { session.skip(s) }
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
-                ) {
-                    // 倒计时填充：从左往右一块色块，5 秒铺满
-                    if (countingDown) {
-                        // 倒计时色块：从左往右铺开，宽度 = 进度 × 按钮宽。
-                        // 直接用 drawBehind 画一个圆角矩形，比 clipRect+drawContent 更直接、不会有隐式接收者冲突。
-                        Box(
-                            Modifier.fillMaxSize().drawBehind {
+                        .drawBehind {
+                            if (countingDown) {
                                 val w = size.width * skipCountdown.coerceIn(0f, 1f)
                                 if (w > 0f) {
                                     drawRoundRect(
@@ -419,9 +423,11 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                                         cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f),
                                     )
                                 }
-                            },
-                        )
-                    }
+                            }
+                        }
+                        .clickable { session.skip(s) }
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             if (s.kind == SkipSegment.Kind.Intro) Icons.Rounded.FastForward else Icons.Rounded.SkipNext,
@@ -439,6 +445,17 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                                 fontSize = 12.sp,
                             )
                         }
+                    }
+                }
+                    // 用户口径（2026-11-23）：照参考图，胶囊右边还有一个「取消」。
+                    // 点它 = 这次不跳（关掉倒计时，也不要再自动跳这一段）。
+                    if (countingDown) {
+                        Text(
+                            "取消",
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontSize = 14.sp,
+                            modifier = Modifier.clickable { session.cancelAutoSkip(s) },
+                        )
                     }
                 }
             }
