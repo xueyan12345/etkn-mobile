@@ -61,7 +61,11 @@ class DanmakuView(context: Context, private val player: Player) : View(context) 
         lifeMs = (8000 / next.speed.toDouble().coerceIn(0.5, 2.0)).roundToLong()
         alphaByte = (next.opacity.coerceIn(10, 100) * 2.55f).roundToInt()
         paint.textSize = next.fontSize * dp
-        paint.setShadowLayer(dp, 0f, dp, 0xFF000000.toInt())
+        // 用户口径（2026-11-23）：原来这里是 setShadowLayer(dp, 0f, dp, 黑)——
+        // 半径 = 1dp 的柔和阴影，四向扩散，叠在浅色画面上就是一层灰雾，
+        // 字看着发虚发糊。弹幕只要清晰可读就行，改成不带模糊的细描边：
+        // 描边宽度 0.6dp、纯黑不透明，边缘干净，不再有那圈灰。
+        paint.setShadowLayer(0.6f * dp, 0f, 0f, 0xFF000000.toInt())
         val metrics = paint.fontMetrics
         lineHeight = metrics.descent - metrics.ascent + 4 * dp
         top = -metrics.ascent + 8 * dp

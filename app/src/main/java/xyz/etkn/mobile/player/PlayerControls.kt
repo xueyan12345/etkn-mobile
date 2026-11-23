@@ -79,6 +79,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.rounded.Bolt
 
 /**
  * 播放器控制层。
@@ -240,15 +242,19 @@ internal fun Controls(
             val previews = ui.previews
             if (scrubbing && previews != null && duration > 0) SeekThumbnail(previews, scrub, duration)
 
-            // 用户口径（2026-11-23）：剧名 + 第几集放在进度条上方
+            // 用户口径（2026-11-23）按参考图：这一行只放「S1:E34:本集标题」，
+            // 不带剧名、不带分隔点。参考图格式就是   S1:E34:关铁山识破王老五身份
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 2.dp)) {
+                val code = ui.subtitle   // 服务端给的就是 "S1:E34:标题" 这种形态
+                val line = when {
+                    code.isEmpty() -> ui.title
+                    code.startsWith("S") -> code
+                    else -> ui.title
+                }
                 Text(
-                    buildString {
-                        append(ui.title)
-                        ui.subtitle.takeIf { it.isNotEmpty() }?.let { append("  ·  $it") }
-                    },
+                    line,
                     color = Color.White,
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -259,8 +265,16 @@ internal fun Controls(
                 // 用户口径（2026-11-23）按参考图重做进度条：
                 // 细轨道 + 纯白已播放 + 半透明白未播放 + 缓冲条（浅白，夹在轨道层）
                 // + 实心白色圆形播放头；时间文字在左侧外侧同一行。
+                // 用户口径（2026-11-23）照参考图：时间在进度条左端外侧，
+                // 格式是「当前 / 总时长」同行（01:50 / 33:04）。
                 Text(
-                    formatClock(if (scrubbing) (scrub * duration).toLong() else position),
+                    buildString {
+                        append(formatClock(if (scrubbing) (scrub * duration).toLong() else position))
+                        if (duration > 0) {
+                            append(" / ")
+                            append(formatClock(duration))
+                        }
+                    },
                     color = Color.White,
                     style = MaterialTheme.typography.labelMedium,
                 )
@@ -351,7 +365,9 @@ internal fun Controls(
                 // 弹幕那两个是这次按用户要求加回来的（之前换成了音轨/字幕/选集）。
                 PlayerAction(Icons.Rounded.SkipPrevious, "上一集", onPrevious)
                 PlayerAction(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "暂停" else "播放", onPlayPause)
-                PlayerAction(Icons.Rounded.SkipNext, "下一集", onNext)
+                // 用户口径（2026-11-23）：只有「下一集已预加载好」时，才在按钮右上角
+                // 显示一个白色小圆 + 黑色闪电。预加载没开 / 没跑完 / 没有下一集 → 完全不显示。
+                NextEpisodeAction(onNext, warmed = ui.nextPreloaded)
                 Spacer(Modifier.weight(1f))
                 DanmakuAction(0, if (ui.danmakuOn) "关闭弹幕" else "开启弹幕", ui.danmakuOn, onToggleDanmaku)
                 DanmakuAction(1, "弹幕设置", ui.danmakuOn) { onSheet(Sheet.Danmaku) }
@@ -535,5 +551,31 @@ private fun SeekThumbnail(previews: SeekPreviews, fraction: Float, duration: Lon
                 .border(1.dp, Color.White.copy(alpha = 0.5f), Corner.card),
             background = Color.Black,
         )
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：下一集按钮 + 预加载指示。
+ * 那个白色小圆里的黑闪电 = 「下一集已经缓存到本地，点了秒开」。
+ * 只由 warmed 决定显不显示；warmed 来自 PlaybackCache.isWarmed(下一集 id)。
+ */
+@Composable
+private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
+    Box(contentAlignment = Alignment.TopEnd) {
+        PlayerAction(Icons.Rounded.SkipNext, "下一集", onClick)
+        if (warmed) {
+            Box(
+                Modifier.size(14.dp)
+                    .background(Color.White, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Rounded.Bolt,
+                    contentDescription = "下一集已预加载",
+                    tint = Color.Black,
+                    modifier = Modifier.size(9.dp),
+                )
+            }
+        }
     }
 }

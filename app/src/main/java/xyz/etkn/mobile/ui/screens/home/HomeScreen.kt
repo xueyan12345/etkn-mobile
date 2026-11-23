@@ -173,7 +173,9 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                 // 用户口径（2026-11-23）：去掉「最新 · 」前缀，直接显示库名。
                 shelf("latest-${library.id}", library.name, shelfData.items,
                     onMore = { nav.openLibrary(library) }) { item ->
-                    PosterCard(item, onClick = { nav.open(item) })
+                    // 用户口径（2026-11-23）：首页各区块（国产剧集/华语电影…）点剧集要和「继续观看」
+                    // 一样走续播判断——有播放记录进续播那集（第二层），没记录进剧集详情页（第一层）。
+                    PosterCard(item, onClick = { nav.openSmart(item) })
                 }
             }
             data.musicLatest?.let { (library, albums) ->

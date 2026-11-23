@@ -593,6 +593,36 @@ class EtknApi(
         return null
     }
 
+    /**
+     * 用户口径（2026-11-23）：探索搜索的音乐 / MV。
+     *
+     * 走独立接口 `GET /api/shared-pool/music`（不是 discover/shared-resources，
+     * 实测那个只接受 movie|tv|season|episode，传 music 直接 422）。
+     * 参数：kind=music|music_video，q 关键词，limit 1~200。
+     *
+     * ⚠️ 这个接口要管理员权限（普通账号 403「需要管理员权限」）。
+     * 所以先探一次权限，没有就返回 null，界面上不显示音乐/MV 标签页。
+     */
+    suspend fun sharedPoolMusic(kind: String, term: String, start: Int = 0, limit: Int = 60): DiscoverPage? {
+        val path = query(
+            "/api/shared-pool/music",
+            "kind" to kind,
+            "q" to term,
+            "limit" to limit.coerceIn(1, 200),
+            "offset" to start,
+        )
+        return runCatching {
+            val result = get(path)
+            DiscoverPage(result.rows().map { DiscoverItem(it, DiscoverKind.Movie) }, 1)
+        }.getOrNull()
+    }
+
+    /** 当前账号能不能用共享池音乐（管理员才行）。 */
+    suspend fun canSharedMusic(): Boolean = runCatching {
+        get(query("/api/shared-pool/music", "kind" to "music", "q" to "", "limit" to 1))
+        true
+    }.getOrDefault(false)
+
     suspend fun cloudResources(provider: CloudProvider, item: DiscoverItem, season: Int?): List<CloudResource> {
         val type = item.kind.mediaType
         val path = when (provider) {

@@ -39,6 +39,14 @@ class SearchViewModel(private val graph: AppGraph) : PagedViewModel() {
         private set
     private val _scope = MutableStateFlow(SearchScope.Video)
     val scope: StateFlow<SearchScope> = _scope.asStateFlow()
+    /**
+     * 用户口径（2026-11-23）：音乐 / MV 标签页的在线结果（走 /api/shared-pool/music）。
+     * null = 这个账号没权限（非管理员），界面就不显示在线区块。
+     */
+    private val _sharedMusic = MutableStateFlow<Load<List<DiscoverItem>>?>(null)
+    val sharedMusic: StateFlow<Load<List<DiscoverItem>>?> = _sharedMusic.asStateFlow()
+    private var musicAllowed: Boolean? = null
+    private var musicJob: Job? = null
     private val _discover = MutableStateFlow<Map<DiscoverKind, Load<List<DiscoverItem>>>?>(null)
     /** Null while the library answers (or has answers); otherwise one result per kind. */
     val discover: StateFlow<Map<DiscoverKind, Load<List<DiscoverItem>>>?> = _discover.asStateFlow()
@@ -66,6 +74,11 @@ class SearchViewModel(private val graph: AppGraph) : PagedViewModel() {
                 if (allowed && _scope.value == SearchScope.Video && current.isNotEmpty() && discoverTerm != current) {
                     searchDiscover(current)
                 }
+                // 用户口径（2026-11-23）：音乐/MV 标签页也要接在线共享池。
+                // 需要管理员权限，探不到就不显示（界面上按 null 处理）。
+                if (_scope.value != SearchScope.Video && current.isNotEmpty() && discoverTerm != current) {
+                    searchSharedMusic(current, _scope.value)
+                }
             }
         }
     }
@@ -82,6 +95,25 @@ class SearchViewModel(private val graph: AppGraph) : PagedViewModel() {
                     _discover.update { it?.plus(kind to result) }
                 }
             }
+        }
+    }
+
+    /**
+     * 用户口径（2026-11-23）音乐 / MV 的在线搜索。
+     * kind 用服务端的 music / music_video；没管理员权限时整体返回 null（界面隐藏）。
+     */
+    private fun searchSharedMusic(query: String, target: SearchScope) {
+        discoverTerm = query
+        musicJob?.cancel()
+        _sharedMusic.value = Load.Loading
+        musicJob = viewModelScope.launch {
+            if (musicAllowed == null) musicAllowed = runCatching { api.canSharedMusic() }.getOrDefault(false)
+            if (musicAllowed != true) { _sharedMusic.value = null; return@launch }
+            val kind = if (target == SearchScope.MusicVideo) "music_video" else "music"
+            val result = runCatching {
+                api.sharedPoolMusic(kind, query)?.items.orEmpty()
+            }.fold({ Load.Ready(it) }, { Load.Failed(it.userMessage()) })
+            _sharedMusic.value = result
         }
     }
 

@@ -174,6 +174,8 @@ dependencies {
     // Declared before Media3 / NextLib so its native libraries come first when merged.
     implementation(libs.mpv.android)
     implementation(libs.media3.exoplayer)
+    // 用户口径（2026-11-23）：预加载 + 磁盘缓存需要 Media3 的 cache 数据源。
+    implementation(libs.media3.datasource.cache)
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.ui)
     implementation(libs.media3.session)

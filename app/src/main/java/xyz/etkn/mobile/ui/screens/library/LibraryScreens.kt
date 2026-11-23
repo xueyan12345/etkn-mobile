@@ -398,11 +398,15 @@ fun PosterGridScaffold(
                 else -> PosterGrid(paged, grid, onLoadMore, onRetry, top = top, cell = cell, card = card, onOpen = onOpen)
             }
         }
+        // 用户口径（2026-11-23）：列表页顶部不要那个大椭圆气泡（毛玻璃胶囊/面板）。
+        // 参考图是纯扁平的一整块：返回箭头 + 库名，下面一排文字标签（选中带下划线），
+        // 再下面一排工具图标 + 「N 项目」，全程无圆角底框、无毛玻璃。
+        // 没有底框就不能再靠玻璃吃背景，直接给一层不透明的 surface 色，保证图标清晰。
         Column(
-            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars)
+            Modifier.fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface)
+                .windowInsetsPadding(WindowInsets.statusBars)
                 .padding(horizontal = Etkn.space.screen, vertical = 6.dp)
-                // A bare bar is a pill like every other; with filter rows it grows into a panel.
-                .glass(if (header != null) Corner.panel else Corner.pill, elevation = 8.dp, state = haze)
                 .onSizeChanged { barHeight = with(density) { it.height.toDp() } },
         ) {
             Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {

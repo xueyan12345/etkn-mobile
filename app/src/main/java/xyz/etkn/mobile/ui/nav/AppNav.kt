@@ -46,16 +46,33 @@ class AppNav(
     }
 
     /**
-     * 用户口径（2026-11-23，列表页点击行为 = 方案 B：点的时候才查，不预加载）：
-     * · 这部剧有播放记录 → 查出续播的是哪一集 → 直接进那一集的单集详情页（第二层）
-     * · 没有播放记录 / 查不到 → 进剧集详情页（第一层）
-     * 只有剧集（Series）需要判断；电影、单集、文件夹等直接走 [open]。
+     * 用户口径（2026-11-23，列表页点击行为）：
+     * · 这部剧有播放记录 → 直接进续播那一集的单集详情页（第二层）
+     * · 没有播放记录 → 进剧集详情页（第一层）
+     *
+     * ⚠️ 曾经写成「点击时 await 网络请求查续播再跳」，实测后果是点击全部没反应：
+     * 列表接口 LIST_FIELDS 本来就带 UserData，续播进度本地就有；再发一次请求不但慢，
+     * 失败一次还让整次点击静默失效（严重 bug）。现在改成「先立刻跳，再后台补正」：
+     *   1. 同步判断本地是否有播放记录 → 立即 navigate（点击零延迟，绝不会没反应）
+     *   2. 只有确实有播放记录、但不知道是哪一集时，才后台查一次，拿到后替换成那一集
      */
     fun openSmart(item: Item) {
         if (!item.isSeries) { open(item); return }
+        // 列表/首页拿到的 item 一般带 UserData；没有进度就直接进剧集详情页（第一层）。
+        // UserData 里能判「看过」的只有这两项（服务端没给 LastPlayedDate）：
+        // 有播放进度 或 播放次数 > 0。
+        val hasProgress = (item.userData?.playbackPositionTicks ?: 0L) > 0L ||
+            (item.userData?.playCount ?: 0) > 0
+        if (!hasProgress) { to(DetailRoute(item.id)); return }
+        // 有播放记录：先进第一层（保证立即有反应），同时后台查续播是哪一集，拿到就顶替成第二层。
+        to(DetailRoute(item.id))
+        if (item.isEpisode || item.seriesId != null) return
         scope.launch {
-            val resume = runCatching { context.graph.api.resumeEpisodeOf(item.id) }.getOrNull()
-            if (resume != null) to(DetailRoute(resume.id)) else to(DetailRoute(item.id))
+            val resume = runCatching { context.graph.api.resumeEpisodeOf(item.id) }.getOrNull() ?: return@launch
+            // 只有用户还停在这部剧的详情页时才顶替，避免他中途又点了别的被抢跳。
+            if (controller.currentDestination?.hasRoute<DetailRoute>() == true) {
+                to(DetailRoute(resume.id))
+            }
         }
     }
 

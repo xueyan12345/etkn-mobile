@@ -69,6 +69,11 @@ import xyz.etkn.mobile.ui.nav.visibleTabs
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.LocalSettings
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.material3.Spacer
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 
 enum class SettingsPage(val title: String) { Appearance("外观"), Playback("播放"), Danmaku("弹幕"), Update("检查更新") }
 
@@ -134,6 +139,8 @@ fun SettingsScreen(page: SettingsPage) {
                         SwitchRow("后台播放", settings.backgroundPlay) { scope.launch { graph.settings.setBackgroundPlay(it) } }
                         ServerPlaybackPreferences()
                         SwitchRow("入库与获取通知", settings.ingestNotices) { scope.launch { graph.settings.setIngestNotices(it) } }
+                        // 用户口径（2026-11-23）：照参考图的缓存设置六项
+                        CacheSettings(settings)
                     }
                     SettingsPage.Danmaku -> DanmakuControls(settings.danmaku) { scope.launch { graph.settings.setDanmaku(it) } }
                     SettingsPage.Update -> UpdateSettings(settings)
@@ -268,4 +275,102 @@ private fun SliderRow(
             onValueChangeFinished = { onCommit(local) },
         )
     }
+}
+
+/**
+ * 用户口径（2026-11-23）：缓存设置（照参考图六项）。
+ *  · 预加载                    开关
+ *  · 最大缓存大小              数值（MB）
+ *  · 最大缓存时长              数值（秒）
+ *  · 最大磁盘缓存大小           数值（GB）
+ *  · 播放结束后自动清空磁盘缓存  开关
+ *  · 清空磁盘缓存              按钮 + 当前占用
+ */
+@Composable
+private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.AppSettings) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val graph = context.graph
+    var usage by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(settings.cacheDiskGb) {
+        usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage()
+    }
+    SwitchRow("预加载", settings.preloadNext) { scope.launch { graph.settings.setPreloadNext(it) } }
+    NumberRow("最大缓存大小", settings.cacheMemoryMb, "MB", listOf(200, 400, 600, 800, 1200)) {
+        scope.launch { graph.settings.setCacheMemoryMb(it) }
+    }
+    NumberRow("最大缓存时长", settings.cacheMemorySeconds, "秒", listOf(600, 1200, 1800, 2400, 3600)) {
+        scope.launch { graph.settings.setCacheMemorySeconds(it) }
+    }
+    NumberRow("最大磁盘缓存大小", settings.cacheDiskGb, "GB", listOf(2, 5, 10, 20, 50)) {
+        scope.launch { graph.settings.setCacheDiskGb(it) }
+    }
+    SwitchRow("播放结束后自动清空磁盘缓存", settings.cacheClearOnFinish) {
+        scope.launch { graph.settings.setCacheClearOnFinish(it) }
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = ROW_INSET, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(
+            onClick = {
+                xyz.etkn.mobile.player.PlaybackCache.clearDisk()
+                usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage()
+            },
+        ) { Text("清空磁盘缓存") }
+        Spacer(Modifier.weight(1f))
+        Text(
+            formatBytes(usage),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 数值型设置行：标签 + 当前值（点了弹选择）。 */
+@Composable
+private fun NumberRow(label: String, value: Int, unit: String, options: List<Int>, onPick: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().clickable { open = true }.padding(horizontal = ROW_INSET, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Text(
+            "$value $unit",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text(label) },
+            text = {
+                Column {
+                    options.forEach { option ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onPick(option); open = false }
+                                .padding(vertical = 12.dp),
+                        ) {
+                            Text(
+                                "$option $unit",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = if (option == value) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (option == value) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { open = false }) { Text("取消") } },
+        )
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> "%.1f GB".format(bytes / 1024.0 / 1024 / 1024)
+    bytes >= 1024L * 1024 -> "%.0f MB".format(bytes / 1024.0 / 1024)
+    else -> "0 MB"
 }

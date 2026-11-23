@@ -82,7 +82,17 @@ fun HeroCarousel(
     }
     val widthPx = LocalWindowInfo.current.containerSize.width
     Box(modifier.fillMaxWidth().height(height).clipToBounds()) {
-        HorizontalPager(state = pager, modifier = Modifier.fillMaxSize(), key = { items[it].id }) { page ->
+        // 用户口径（2026-11-23）：轮播图这里的横向 Pager 不能接受手势。
+        // 它是嵌在 TabPager 里的内层 Pager——手指落在这一块横划时，内层到边界 /
+        // 或正好赶上 7 秒自动轮播的 animateScrollToPage 在跑，位移会经嵌套滚动
+        // 泄漏给外层 TabPager，导致整个首页被拖成两页并排、松手不回弹（偶发就是这个原因）。
+        // 关掉手势后：自动轮播照常（那是程序化滚动，不受这个开关影响），只是不能手划。
+        HorizontalPager(
+            state = pager,
+            modifier = Modifier.fillMaxSize(),
+            userScrollEnabled = false,
+            key = { items[it].id },
+        ) { page ->
             HeroPage(items[page], widthPx, scrollOffsetPx, onPlay, onOpen)
         }
         if (items.size > 1) {

@@ -107,6 +107,8 @@ data class VideoUi(
     val castingTo: String? = null,
     /** 用户口径（2026-11-23）：进度条要显示已缓冲区间。 */
     val bufferedPosition: Long = 0L,
+    /** 用户口径（2026-11-23）：下一集已经预加载到本地（控制「下一集」按钮上的闪电小圆）。 */
+    val nextPreloaded: Boolean = false,
 )
 
 private const val TAG = "ETKN-Play"

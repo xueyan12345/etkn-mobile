@@ -126,6 +126,17 @@ data class Settings(
     val danmaku: DanmakuStyle = DanmakuStyle(),
     val autoUpdate: Boolean = true,
     val updateSource: UpdateSource = UpdateSource.Proxy,
+    // 用户口径（2026-11-23）：缓存与预加载六项（照参考图的缓存设置页）
+    /** 预加载下一集（把下一集提前写进磁盘缓存）。 */
+    val preloadNext: Boolean = true,
+    /** 内存侧前向缓冲上限（MB）。 */
+    val cacheMemoryMb: Int = 400,
+    /** 内存侧前向缓冲上限（秒）。 */
+    val cacheMemorySeconds: Int = 1200,
+    /** 磁盘缓存上限（GB）。 */
+    val cacheDiskGb: Int = 10,
+    /** 播放结束后自动清空该集磁盘缓存。 */
+    val cacheClearOnFinish: Boolean = false,
     val heroMode: HeroMode = HeroMode.Auto,
     /** Names of the chosen top-level tabs; null = automatic default. */
     val tabs: Set<String>? = null,
@@ -179,6 +190,11 @@ class AppSettings(private val context: Context) {
         val autoUpdate = booleanPreferencesKey("auto_update")
         val updateSource = stringPreferencesKey("update_source")
         val heroMode = stringPreferencesKey("hero_mode")
+        val preloadNext = booleanPreferencesKey("preload_next")
+        val cacheMemoryMb = intPreferencesKey("cache_memory_mb")
+        val cacheMemorySeconds = intPreferencesKey("cache_memory_seconds")
+        val cacheDiskGb = intPreferencesKey("cache_disk_gb")
+        val cacheClearOnFinish = booleanPreferencesKey("cache_clear_on_finish")
         val tabs = stringSetPreferencesKey("nav_tabs")
         val navPosition = stringPreferencesKey("nav_position")
         val ingestNotices = booleanPreferencesKey("ingest_notices")
@@ -212,6 +228,11 @@ class AppSettings(private val context: Context) {
         autoUpdate = this[Keys.autoUpdate] ?: true,
         updateSource = enumOr(this[Keys.updateSource], UpdateSource.Proxy),
         heroMode = enumOr(this[Keys.heroMode], HeroMode.Auto),
+        preloadNext = this[Keys.preloadNext] ?: true,
+        cacheMemoryMb = this[Keys.cacheMemoryMb] ?: 400,
+        cacheMemorySeconds = this[Keys.cacheMemorySeconds] ?: 1200,
+        cacheDiskGb = this[Keys.cacheDiskGb] ?: 10,
+        cacheClearOnFinish = this[Keys.cacheClearOnFinish] ?: false,
         tabs = this[Keys.tabs],
         navPosition = enumOr(this[Keys.navPosition], NavPosition.Side),
         ingestNotices = this[Keys.ingestNotices] ?: true,
@@ -232,6 +253,13 @@ class AppSettings(private val context: Context) {
     suspend fun setBackgroundPlay(value: Boolean) = context.settingsDataStore.edit { it[Keys.backgroundPlay] = value }
     suspend fun setIngestNotices(value: Boolean) = context.settingsDataStore.edit { it[Keys.ingestNotices] = value }
     suspend fun setHeroMode(value: HeroMode) = context.settingsDataStore.edit { it[Keys.heroMode] = value.name }
+
+    // 用户口径（2026-11-23）：缓存设置六项的写入
+    suspend fun setPreloadNext(value: Boolean) = context.settingsDataStore.edit { it[Keys.preloadNext] = value }
+    suspend fun setCacheMemoryMb(value: Int) = context.settingsDataStore.edit { it[Keys.cacheMemoryMb] = value }
+    suspend fun setCacheMemorySeconds(value: Int) = context.settingsDataStore.edit { it[Keys.cacheMemorySeconds] = value }
+    suspend fun setCacheDiskGb(value: Int) = context.settingsDataStore.edit { it[Keys.cacheDiskGb] = value }
+    suspend fun setCacheClearOnFinish(value: Boolean) = context.settingsDataStore.edit { it[Keys.cacheClearOnFinish] = value }
 
     suspend fun setAutoUpdate(value: Boolean) = context.settingsDataStore.edit { it[Keys.autoUpdate] = value }
     suspend fun setUpdateSource(value: UpdateSource) = context.settingsDataStore.edit { it[Keys.updateSource] = value.name }

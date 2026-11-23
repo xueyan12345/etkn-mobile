@@ -22,6 +22,7 @@ import xyz.etkn.mobile.data.net.ResponseCache
 import xyz.etkn.mobile.launcher.LauncherEntries
 import xyz.etkn.mobile.ui.common.Load
 import xyz.etkn.mobile.ui.common.userMessage
+import kotlin.random.Random
 
 @Immutable
 data class LatestShelf(val library: Item, val items: List<Item>)
@@ -145,41 +146,57 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
     }
 
     /**
-     * The personal-recommendation stream is paged one item at a time (as on TV). Items are
-     * appended as they arrive so the hero paints after the first response; entries without
-     * backdrop artwork are skipped.
+     * 用户口径（2026-11-23）轮播图改成本地随机：
+     * · 不读服务端 `PersonalRecommendations`（服务端 media.item_vectors 是空表，
+     *   personal_vector 推荐实测一直返回 0 条，还会因为缺 ShuffleSeed 报 400）
+     * · 改成：从本账号所有影视库各自取一批，合并去重后随机抽 8 部
+     * · 12 小时固定不动：0 点、12 点各换一批（用时段桶当随机种子，同桶结果恒定）
      */
     private fun loadHero(data: HomeData, quiet: Boolean = false) {
         heroJob?.cancel()
         heroJob = viewModelScope.launch {
-            val seed = UUID.randomUUID().toString()
-            var cursor: String? = null
-            val collected = ArrayList<Item>()
-            var requests = 0
-            try {
-                while (collected.size < HERO_SIZE && requests < HERO_SIZE * 2) {
-                    requests++
-                    val page = api.recommendations(seed, cursor)
-                    page.items.firstOrNull()?.let { item ->
-                        if (hasBackdrop(item) && collected.none { it.id == item.id }) {
-                            collected += item
-                            if (!quiet) publishHero(collected.toList())
-                        }
+            val bucket = heroBucket()   // 0 点 / 12 点两档，桶内不变
+          coroutineScope {
+            val pool = ArrayList<Item>()
+            // 各库并行取，谁拿到都算
+            val jobs = data.latest.map { shelfData ->
+                async {
+                    val types = when (shelfData.library.collectionType) {
+                        "movies" -> "Movie"
+                        "tvshows" -> "Series"
+                        else -> null
                     }
-                    cursor = page.nextCursor ?: break
+                    runCatching { api.latest(shelfData.library.id, types, HERO_POOL_PER_LIBRARY) }.getOrDefault(emptyList())
                 }
-            } catch (_: Exception) {
-                // Recommendation stream unavailable: fall back to latest titles with backdrops.
             }
-            if (quiet && collected.isNotEmpty()) publishHero(collected.toList())
-            if (collected.isEmpty() && !quiet) {
+            jobs.forEach { pool += it.await() }
+          }
+            // 只有带背景图的才能上轮播
+            val candidates = pool.asSequence()
+                .filter(::hasBackdrop)
+                .distinctBy { it.id }
+                .toList()
+            if (candidates.isNotEmpty()) {
+                // 同一个 12 小时桶内种子固定 → 抽出来的一批 12 小时不变
+                publishHero(candidates.shuffled(Random(bucket)).take(HERO_SIZE))
+                return@launch
+            }
+            // 连库列表都还没到（首屏缓存路径）时退回旧的兜底，别让轮播空着
+            if (!quiet) {
                 val fallback = fallbackHero(data)
                 if (fallback.isNotEmpty()) {
-                    val detailed = runCatching { coroutineScope { fallback.map { async { api.item(it.id, "Overview") } }.awaitAll() } }.getOrDefault(fallback)
-                    publishHero(detailed)
+                    publishHero(fallback.shuffled(Random(bucket)).take(HERO_SIZE))
                 }
             }
         }
+    }
+
+    /** 12 小时一档的桶号：0~12 点、12~24 点各一个，用来做随机种子。 */
+    private fun heroBucket(): Long {
+        val now = java.util.Calendar.getInstance()
+        val day = now.get(java.util.Calendar.DAY_OF_YEAR).toLong()
+        val half = now.get(java.util.Calendar.HOUR_OF_DAY) / 12
+        return day * 2 + half
     }
 
     private fun publishHero(items: List<Item>) {
@@ -192,7 +209,8 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
     private fun hasBackdrop(item: Item) = item.backdropTags.isNotEmpty() || item.parentBackdropTags.isNotEmpty()
 
     companion object {
-        private const val HERO_SIZE = 6
+        private const val HERO_SIZE = 8
+        private const val HERO_POOL_PER_LIBRARY = 30
         private val NON_LATEST = setOf("music", "boxsets", "playlists", "livetv", "folders")
     }
 }
