@@ -295,7 +295,7 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
     val graph = context.graph
     var usage by remember { mutableLongStateOf(0L) }
     LaunchedEffect(settings.cacheDiskGb) {
-        usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage()
+        usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage(context)
     }
     SwitchRow("预加载", settings.preloadNext) { scope.launch { graph.settings.setPreloadNext(it) } }
     NumberRow("最大缓存大小", settings.cacheMemoryMb, "MB", listOf(200, 400, 600, 800, 1200)) {
@@ -316,8 +316,8 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
     ) {
         TextButton(
             onClick = {
-                xyz.etkn.mobile.player.PlaybackCache.clearDisk()
-                usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage()
+                xyz.etkn.mobile.player.PlaybackCache.clearDisk(context)
+                usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage(context)
             },
         ) { Text("清空磁盘缓存") }
         Spacer(Modifier.weight(1f))

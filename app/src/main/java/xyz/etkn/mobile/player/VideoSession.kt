@@ -400,7 +400,7 @@ class VideoSession(
          *
          * 只有普通视频走这条路；蓝光 ISO（disc）必须走 libbluray，不能替换成本地文件。
          */
-        val cachedLocal = if (!disc) PlaybackCache.localFile(context, settings, url) else null
+        val cachedLocal = if (!disc) PlaybackCache.localFile(context, url) else null
         val subtitles = chosen.subtitles.filter { it.isExternal && it.deliveryUrl != null && !offline }.mapNotNull { stream ->
             val address = PlaybackAddress.subtitle(stream.deliveryUrl!!, session.server, session.token) ?: return@mapNotNull null
             val mime = subtitleMime(stream.codec) ?: return@mapNotNull null
@@ -437,7 +437,7 @@ class VideoSession(
          * 直接把 file:// 交给内核 → 一个网络请求都不发。
          */
         if (cachedLocal == null && !disc) {
-            PlaybackCache.cacheWhilePlaying(context, settings, current.id, url)
+            PlaybackCache.cacheWhilePlaying(context, url)
         }
         // A new player starts unshifted: the selected subtitle's calibration is applied again.
         _ui.update { it.copy(segments = segments(chosen.chapters.ifEmpty { current.chapters }, chosen.runTimeTicks / TICKS_PER_MS), subtitleOffset = null) }

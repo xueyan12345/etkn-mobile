@@ -189,6 +189,7 @@ fun LibraryScreen(route: LibraryRoute) {
     val paged by vm.paged.collectAsStateWithLifecycle()
     val query by vm.query.collectAsStateWithLifecycle()
     val view by vm.view.collectAsStateWithLifecycle()
+    val resume by vm.resume.collectAsStateWithLifecycle()
     val nav = LocalNav.current
     val facets = view.facet != null
     PosterGridScaffold(
@@ -198,9 +199,10 @@ fun LibraryScreen(route: LibraryRoute) {
         onLoadMore = vm::loadMore,
         onRetry = vm::retry,
         onOpen = { item ->
-            // 用户口径（2026-11-23）：列表里点剧集时——有播放记录直接进续播那一集的单集详情页（第二层），
-            // 没记录进剧集详情页（第一层）。判定走 openSmart（点的时候才查续播，方案 B）。
-            if (item.isFacet) nav.to(FacetRoute(route.id, item.kind.orEmpty(), item.name)) else nav.openSmart(item)
+            // 用户口径（2026-11-23）：列表里点剧集时——有播放记录直接进续播那一集的单集详情页，
+            // 没记录进剧集详情页。续播列表已在 ViewModel 里取好，点击纯本地判断、零请求。
+            if (item.isFacet) nav.to(FacetRoute(route.id, item.kind.orEmpty(), item.name))
+            else nav.openSmart(item, resume)
         },
         cell = if (facets) 156.dp else null,
         card = if (facets) { item -> FacetCard(route.id, item, vm) } else null,

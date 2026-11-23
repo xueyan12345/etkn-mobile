@@ -175,7 +175,8 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                     onMore = { nav.openLibrary(library) }) { item ->
                     // 用户口径（2026-11-23）：首页各区块（国产剧集/华语电影…）点剧集要和「继续观看」
                     // 一样走续播判断——有播放记录进续播那集（第二层），没记录进剧集详情页（第一层）。
-                    PosterCard(item, onClick = { nav.openSmart(item) })
+                    // 用户口径（2026-11-23）：传入首页已有的续播列表，本地判断，点击零延迟。
+                    PosterCard(item, onClick = { nav.openSmart(item, data.resume) })
                 }
             }
             data.musicLatest?.let { (library, albums) ->

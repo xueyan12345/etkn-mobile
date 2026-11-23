@@ -105,14 +105,9 @@ object PlayerFactory {
         userAgent: String,
         settings: xyz.etkn.mobile.data.settings.Settings?,
     ): BlurayMediaSourceFactory {
-        val base = dataSource(client, userAgent)
-        // 用户口径（2026-11-23）：ExoPlayer 也走同一份磁盘缓存。
-        // 命中就本地读，没命中边下边写 —— 和 mpv 那条「本地整文件」路径共用目录上限与清理逻辑。
-        val data: DataSource.Factory = if (settings != null) {
-            PlaybackCache.dataSourceFactory(context, settings, base)
-        } else {
-            base
-        }
+        // 用户口径（2026-11-23）：缓存不做在数据源层（SimpleCache 的 key 带 token 永远命中不了），
+        // 改成落地成整文件：命中时 VideoSession 直接把 file:// 交给播放器。
+        val data: DataSource.Factory = dataSource(client, userAgent)
         val ordinary = DefaultMediaSourceFactory(ResolvedRedirects(data), BlurayMediaSourceFactory.baseLayerExtractors())
         return BlurayMediaSourceFactory(ordinary, client, userAgent, data)
     }

@@ -125,6 +125,10 @@ class PlayerActivity : ComponentActivity() {
         VideoPlaybackService.detach(this)
         session?.release()
         session = null
+        // 用户口径（2026-11-23）：退出播放/切集时把所有缓存下载一起停掉。
+        // 之前 PlaybackCache 用的是 object 级常驻协程，退出后下载还在跑，
+        // 用户能看到「退出播放了网速还在持续跑」。
+        PlaybackCache.stopAll()
     }
 
     private fun hideSystemBars() {

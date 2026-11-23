@@ -57,25 +57,22 @@ class AppNav(
      *   2. 只有确实有播放记录、但不知道是哪一集时，才后台查一次，拿到后替换成那一集
      */
     /**
-     * 用户口径（2026-11-23，方案 3）：点剧集 → 直接进「上次播放的那一集」，拿不到才进剧集详情页。
+     * 用户口径（2026-11-23）：点剧集 → 有播放记录就进「上次看到的那一集」，没有就进剧集详情页。
      *
-     * 为什么不再「先跳第一层、再替换成第二层」：
-     * 那样用户会先看到剧集详情页闪一下才变成单集页，而且如果第二次导航被
-     * launchSingleTop 挡掉，就会永远停第一层 —— 这就是前三轮一直没修好的原因。
+     * ⚠️ 这个函数**绝不能发网络请求**。前两轮的教训：
+     *  · 第一轮把跳转包在 scope.launch{ 请求; 跳转 } 里 → 请求失败就静默不跳，点了没反应
+     *  · 第二轮虽然查到了，但是「先跳第一层再替换成第二层」两次导航 → 闪跳 / 被 singleTop 拦下
      *
-     * 现在只做一次导航：查到续播集 → 进那一集；查不到 → 进剧集详情页。
+     * 现在：首页手里本来就有续播列表（data.resume，每条是 Episode，自带 SeriesId），
+     * 直接本地匹配 → 立刻同步导航。零请求、零延迟、绝不会点不动。
      *
-     * 查不到的情况（正常）：这部剧从没播过。
-     * 接口层面已实测：/Users/{uid}/Items/Resume 对 xy 账号返回 8 条，
-     * 《走马上任》SeriesId=item-23691 命中 Episode item-25750。
+     * @param resume 首页/列表页已经拿到的续播条目（提供不了就传空，走剧集详情页）
      */
-    fun openSmart(item: Item) {
+    fun openSmart(item: Item, resume: List<Item> = emptyList()) {
         if (!item.isSeries) { open(item); return }
-        scope.launch {
-            val resume = runCatching { context.graph.api.resumeEpisodeOf(item.id) }.getOrNull()
-            // 只有一次导航，不会出现「先第一层再第二层」的闪跳
-            to(DetailRoute(resume?.id ?: item.id))
-        }
+        // 本地找：这部剧是否有正在看的单集
+        val watching = resume.firstOrNull { it.seriesId == item.id || it.id == item.id }
+        to(DetailRoute(watching?.id ?: item.id))
     }
 
     fun open(item: Item) {
