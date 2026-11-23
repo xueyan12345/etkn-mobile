@@ -203,10 +203,21 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     // (enough for the skip-intro / credits segments).
     LaunchedEffect(player) {
         val current = player ?: return@LaunchedEffect
+        var lastCacheTick = 0L
         while (true) {
             position = current.currentPosition.coerceAtLeast(0)
             duration = current.duration.takeIf { it > 0 } ?: 0
             buffered = current.bufferedPosition
+            /**
+             * 用户口径（2026-11-23）：缓存窗口跟着播放进度往前推。
+             * 每 5 秒驱动一次（不必每 250ms 一次，避免频繁开 Range 请求），
+             * 由 VideoSession 决定「当前集窗口是否到位 / 是否该启动下一集流水线」。
+             */
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastCacheTick > 5_000L) {
+                lastCacheTick = now
+                session.tickCache(position, duration)
+            }
             delay(if (controls || gesture != null) 250 else 1_000)
         }
     }

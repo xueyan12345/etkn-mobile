@@ -67,6 +67,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.unit.sp
 
 @Composable
 internal fun PlayerSheet(
@@ -231,23 +233,32 @@ private fun MoreMenuItem(
     trailing: String? = null,
     onClick: () -> Unit,
 ) {
+    // 用户口径（2026-11-23）：照参考图 —— 行高约 60dp、图标 24dp、文字 18sp、
+    // 左右内边距 18dp、行尾值淡色右对齐。行与行之间不画分隔线（参考图没有）。
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 15.dp),
+        Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(onClick = onClick)
+            .padding(horizontal = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.width(14.dp))
-        Text(label, color = Color.White, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(24.dp))
+        Spacer(Modifier.width(16.dp))
+        Text(
+            label,
+            color = Color.White,
+            fontSize = 18.sp,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+        )
         if (!trailing.isNullOrEmpty()) {
-            Text(trailing, color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.width(8.dp))
+            Text(trailing, color = Color.White.copy(alpha = 0.55f), fontSize = 15.sp, maxLines = 1)
         }
     }
 }
 
 @Composable
 private fun MenuDivider() {
-    Box(Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 18.dp).height(0.5.dp).background(Color.White.copy(alpha = 0.18f)))
+    // 用户口径（2026-11-23）：照参考图，菜单行之间不画分隔线，靠留白分隔。
 }
 
 /** 统计信息：把播放器的关键数据摊开，方便排查卡顿/解码问题。 */

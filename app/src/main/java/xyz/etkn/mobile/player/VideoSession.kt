@@ -169,6 +169,12 @@ class VideoSession(
     private var loadJob: Job? = null
     private var previewJob: Job? = null
     private var previewKey = ""
+    /** 当前集的实际播放地址（含 token，仅用于缓存下载）。 */
+    private var currentUrl: String? = null
+    /** 当前集资源总字节数（-1 = 未知）。 */
+    private var currentLength: Long = -1L
+    /** 下一集的 (episodeId, url)，用于流水线预加载。 */
+    private var nextUrl: Pair<String, String>? = null
     private var autoSkippedIntro = false
     private var autoSkippedCredits = false
 
@@ -400,6 +406,12 @@ class VideoSession(
          *
          * 只有普通视频走这条路；蓝光 ISO（disc）必须走 libbluray，不能替换成本地文件。
          */
+        // 用户口径（2026-11-23）：记下当前集地址与总长，供缓存流水线使用。
+        // 换集时把「下一集直链」清掉，避免沿用上一集的。
+        currentUrl = url
+        currentLength = chosen.size ?: -1L
+        nextUrl = null
+        PlaybackCache.clearReady()
         val cachedLocal = if (!disc) PlaybackCache.localFile(context, url) else null
         val subtitles = chosen.subtitles.filter { it.isExternal && it.deliveryUrl != null && !offline }.mapNotNull { stream ->
             val address = PlaybackAddress.subtitle(stream.deliveryUrl!!, session.server, session.token) ?: return@mapNotNull null
@@ -481,19 +493,63 @@ class VideoSession(
     }
 
     /**
-     * 用户口径（2026-11-23）预加载下一集：
-     * 取它的播放直链，整段写进磁盘缓存；写完把 nextPreloaded 置 true（驱动按钮上的闪电小圆）。
-     * 只在设置里「预加载」开着时做。
+     * 用户口径（2026-11-23）缓存流水线：一环套一环，由播放进度驱动。
+     *
+     * 每 5 秒被 PlayerScreen 调一次，传当前进度：
+     *  ① 当前集：从进度往后开窗口缓存（受最大缓存大小/时长双阈值约束，达阈值即停）
+     *  ② 当前集窗口跑完 → 才去取下一集直链
+     *  ③ 下一集同样跑窗口缓存
+     *  ④ 两边都完成 → 气泡亮（下一集可秒播）
+     *
+     * 只在「预加载」开着时做；关着就什么也不做。
      */
-    private fun preloadNext(next: Item) {
+    fun tickCache(positionMs: Long, durationMs: Long) {
         if (!settings.preloadNext) return
+        val cur = currentUrl ?: return
+        val currentItem = item ?: return
+        // 当前集已整集落盘就不用再跑
+        if (PlaybackCache.localFile(graph.app, cur) != null) {
+            // 当前集完成 → 尝试推进到下一集
+            startNextIfIdle(currentItem)
+            _ui.update { it.copy(nextPreloaded = PlaybackCache.isNextReady()) }
+            return
+        }
+        val length = currentLength
+        scope.launch {
+            PlaybackCache.pipeline(
+                context = graph.app,
+                settings = settings,
+                currentEpisodeId = currentItem.id,
+                currentUrl = cur,
+                currentPositionMs = positionMs,
+                currentDurationMs = durationMs,
+                currentLength = length,
+                next = nextUrl?.let { (id, url) -> id to url },
+            )
+            _ui.update { it.copy(nextPreloaded = PlaybackCache.isNextReady()) }
+        }
+    }
+
+    /** 当前集缓存完成后，取下一集直链并交给流水线。 */
+    private fun startNextIfIdle(current: Item) {
+        val nextItem = _ui.value.next ?: return
+        if (nextUrl?.first == nextItem.id) return
         scope.launch {
             runCatching {
-                val info = api.playbackInfo(next.id)
+                val info = api.playbackInfo(nextItem.id)
                 val source = info.sources.firstOrNull() ?: return@runCatching
-                val url = source.directStreamUrl ?: return@runCatching
-                PlaybackCache.preload(graph.app, settings, next.id, url)
-                if (_ui.value.next?.id == next.id) _ui.update { it.copy(nextPreloaded = true) }
+                val url = PlaybackAddress.resolve(source, session.server, session.token, session.userId)
+                nextUrl = nextItem.id to url
+                PlaybackCache.pipeline(
+                    context = graph.app,
+                    settings = settings,
+                    currentEpisodeId = current.id,
+                    currentUrl = currentUrl ?: return@runCatching,
+                    currentPositionMs = player?.currentPosition ?: 0L,
+                    currentDurationMs = player?.duration?.takeIf { it > 0 } ?: 0L,
+                    currentLength = currentLength,
+                    next = nextItem.id to url,
+                )
             }
         }
     }

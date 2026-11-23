@@ -67,10 +67,15 @@ fun PlayerSidePanel(onDismiss: () -> Unit, content: @Composable () -> Unit) {
                         // 面板本体自己画圆角背景，window 背景保持全透明，
                         // 这样圆角外侧不会被 window 背景染出一圈方角/暗边。
                         Box(
+                            // 用户口径（2026-11-23）：照参考图 —— 半透明深色底 + 大圆角(24dp)，
+                            // 能透出后面的画面。之前是不透明纯色，死板且和参考图不像。
                             Modifier.fillMaxSize()
-                                .background(surface, RoundedCornerShape(20.dp)),
+                                .background(
+                                    surface.copy(alpha = 0.88f),
+                                    RoundedCornerShape(24.dp),
+                                ),
                         ) {
-                            Column(Modifier.fillMaxSize().padding(top = 12.dp, bottom = 8.dp)) {
+                            Column(Modifier.fillMaxSize().padding(top = 10.dp, bottom = 6.dp)) {
                                 currentContent()
                             }
                         }
@@ -92,8 +97,9 @@ fun PlayerSidePanel(onDismiss: () -> Unit, content: @Composable () -> Unit) {
             // 之前这里 setBackgroundDrawable(GradientDrawable + setStroke) 就是那圈暗边的来源。
             window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
             window.attributes = window.attributes.apply {
-                width = (host.width * 0.42f).toInt()
-                    .coerceIn((300 * dp).toInt(), (420 * dp).toInt())
+                // 用户口径（2026-11-23）：照参考图收窄到约 32% 屏宽（原来 42% 太宽大）。
+                width = (host.width * 0.32f).toInt()
+                    .coerceIn((240 * dp).toInt(), (320 * dp).toInt())
                     .coerceAtMost(host.width - margin * 2)
                 height = host.height - margin * 2
                 x = margin
@@ -101,9 +107,9 @@ fun PlayerSidePanel(onDismiss: () -> Unit, content: @Composable () -> Unit) {
             }
             // 不压暗外部画面
             window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            // 不启用跨窗口模糊（模糊是毛玻璃效果的来源，这里要纯色）
+            // 用户口径（2026-11-23）：参考图有轻微毛玻璃感 —— 打开小半径背景模糊。
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                window.setBackgroundBlurRadius(0)
+                window.setBackgroundBlurRadius((16 * dp).toInt())
             }
             WindowCompat.getInsetsController(window, window.decorView).apply {
                 systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
