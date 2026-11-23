@@ -63,7 +63,17 @@
             android:screenOrientation="unspecified"
             android:supportsPictureInPicture="true"
             android:excludeFromRecents="true"
-            android:theme="@style/Theme.Etkn.Player" />
+            android:theme="@style/Theme.Etkn.Player">
+            <!--
+                用户口径（2026-11-23）OPPO Pad Mini 旋转专项 —— 官方正规开关。
+                Android 16(API 36)：宽 ≥600dp 大屏默认忽略 requestedOrientation
+                （手机正常、平板怎么点都不转，SenPlayer 同样如此）。
+                这个 property 置 true = 允许本 Activity 覆盖系统方向策略。
+            -->
+            <property
+                android:name="android.window.PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE"
+                android:value="true" />
+        </activity>
 
         <provider
             android:name="androidx.core.content.FileProvider"

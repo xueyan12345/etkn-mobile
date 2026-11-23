@@ -160,10 +160,52 @@ class PlayerActivity : ComponentActivity() {
      *     resources.updateConfiguration 不可行，但可以 adjustResize + 重设布局
      *  ③ 都无效时由 PlayerScreen 的画面级 90° 旋转兜底
      */
+    /**
+     * 用户口径（2026-11-23）OPPO Pad Mini 旋转专项 —— **最终方案**。
+     *
+     * 事实（日志 + 已证实）：
+     *  · 手机正常，这台平板点旋转毫无反应，SenPlayer/AfuseKit 同样。
+     *  · Android 16(API 36) 起，≤600dp 以上的大屏**默认忽略** requestedOrientation。
+     *  · 画⾯旋转（graphicsLayer 90°）走不通：SurfaceView 是独立硬件层，
+     *    Compose 转不动它，实测把画面转成「竖排文字」。
+     *
+     * 所以只能让系统重新承认方向请求。三条手段，按可用性依次尝试：
+     *  ① 清单里已声明 PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE（首选，系统级）
+     *  ② 运行时通过反射打开「应用兼容性变更」的同类开关（部分 ROM 需要）
+     *  ③ 打开 Android 的「大屏多窗口自适应」兼容模式：
+     *     resizeableActivity=false + 固定方向 → 系统把窗口当固定型，不再套用大屏策略
+     *
+     * 全部失败也不崩：最终仍靠 requestedOrientation 走传统路径（小屏设备本来就好使）。
+     */
     private fun allowOrientationOverride() {
-        // ① 记录一下设备是否属于「大屏」范畴，便于日志排查
         val smallest = resources.configuration.smallestScreenWidthDp
-        android.util.Log.i("ETKN-Rotate", "smallestWidthDp=$smallest sdk=${Build.VERSION.SDK_INT}")
+        android.util.Log.i(
+            "ETKN-Rotate",
+            "init smallestWidthDp=$smallest sdk=${Build.VERSION.SDK_INT} large=${smallest >= 600}",
+        )
+        if (smallest < 600) return   // 不是大屏设备，系统本来就尊重方向请求
+
+        // 手段②：反射尝试系统兼容性开关（不同 ROM 方法名不一样，逐个试，全不中就算了）
+        val tried = mutableListOf<String>()
+        for ((cls, method, arg) in listOf(
+            Triple("android.app.Activity", "setShouldDismissRequestedOrientation", false),
+            Triple("android.app.Activity", "setIgnoreOrientationRequest", false),
+            Triple("android.view.WindowManager", "setIgnoreOrientationRequest", false),
+        )) {
+            val ok = runCatching {
+                val c = Class.forName(cls)
+                val m = c.getDeclaredMethod(method, Boolean::class.javaPrimitiveType)
+                m.isAccessible = true
+                val target: Any? = when (cls) {
+                    "android.app.Activity" -> this
+                    "android.view.WindowManager" -> windowManager
+                    else -> null
+                }
+                if (target != null) { m.invoke(target, arg); true } else false
+            }.getOrDefault(false)
+            tried += "$cls.$method=$ok"
+        }
+        android.util.Log.i("ETKN-Rotate", "compat-switches ${tried.joinToString()}")
     }
 
     private fun hideSystemBars() {
