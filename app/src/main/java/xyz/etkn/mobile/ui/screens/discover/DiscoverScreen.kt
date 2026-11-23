@@ -111,7 +111,11 @@ fun DiscoverScreen() {
      * 首项 index 和偏移量会被存进 SavedStateRegistry，
      * 返回时原样恢复，停在你刚才翻到的位置。
      */
-    val grid = rememberSaveable(saver = androidx.compose.foundation.lazy.grid.rememberLazyGridStateSaver()) {
+    /**
+     * LazyGridState 自带 Saver：rememberSaveable 直接用它，
+     * 首项 index 和偏移量会进 SavedStateRegistry，返回时原样恢复。
+     */
+    val grid = rememberSaveable(saver = androidx.compose.foundation.lazy.grid.LazyGridState.Saver) {
         rememberLazyGridState()
     }
     val density = LocalDensity.current

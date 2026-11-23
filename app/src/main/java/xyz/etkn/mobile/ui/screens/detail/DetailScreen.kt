@@ -268,7 +268,8 @@ private fun DetailContent(
                             onSeason = { vm.selectSeason(seriesId, it) },
                             // On an episode's page the others replace it in place; elsewhere they open.
                             onOpen = { if (item.isEpisode) vm.show(it.id) else nav.open(it) },
-                            onAll = { nav.to(EpisodesRoute(seriesId, episodes.seasonId, item.seriesName ?: item.name, seed)) },
+                            // 用户口径（2026-11-24）：不再按画面取色，seed 用默认值 null
+                            onAll = { nav.to(EpisodesRoute(seriesId, episodes.seasonId, item.seriesName ?: item.name)) },
                         )
                     }
                 }
