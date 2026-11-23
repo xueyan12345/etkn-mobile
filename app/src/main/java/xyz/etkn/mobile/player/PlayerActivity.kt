@@ -163,7 +163,7 @@ class PlayerActivity : ComponentActivity() {
     private fun allowOrientationOverride() {
         // ① 记录一下设备是否属于「大屏」范畴，便于日志排查
         val smallest = resources.configuration.smallestScreenWidthDp
-        android.util.Log.i("ETKN-Rotate", "smallestWidthDp=$smallest sdk=$SDK_INT")
+        android.util.Log.i("ETKN-Rotate", "smallestWidthDp=$smallest sdk=${Build.VERSION.SDK_INT}")
     }
 
     private fun hideSystemBars() {
