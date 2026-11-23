@@ -105,9 +105,62 @@ object PlaybackCache {
         clearReady()
     }
 
-    // ---------------------------------------------------------------- key
+    // ---------------------------------------------------------------- 缓存 key（itemId 为主键）
 
-    /** 稳定 key：丢掉 X-Emby-Token/UserId 等查询参数，否则每次都是新 key、永远命中不了。 */
+    /**
+     * 用户口径（2026-11-23）**缓存 key 改成 itemId，不再依赖 URL**。
+     *
+     * 之前用 URL 做 key 的致命问题：URL 必须请求 PlaybackInfo 才有，
+     * 于是每次起播都得先等一个网络请求，才知道「有没有缓存」——
+     * 起播慢就慢在这一步，接口一慢缓存就等于白做。
+     *
+     * 改成 itemId 之后（用户原话：有缓存就直接先播缓存，播放的时候再继续请求网络）：
+     *   ① 点开一集 → 立刻知道有没有缓存文件（纯本地 IO，零网络）
+     *   ② 有缓存 → 马上 file:// 起播，同时后台照常请求接口（拿下一集、续传、进度上报）
+     *   ③ 没缓存 → 走网络，边播边写
+     *
+     * itemId 是 ETKN 的稳定主键（item-25098 这种），永远不变。
+     */
+    private fun fileForId(context: Context, itemId: String): File {
+        val safe = itemId.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        return File(dir(context), safe)
+    }
+
+    /** 这一集是否已有完整本地文件（只查本地，零网络）。 */
+    fun localFileById(context: Context, itemId: String): File? =
+        fileForId(context, itemId).takeIf { it.isFile && it.length() > 0 }
+
+    /** 这一集的部分缓存文件（.part），只用于续传，不作为播放源。 */
+    fun partFileById(context: Context, itemId: String): File =
+        File(dir(context), fileForId(context, itemId).name + ".part")
+
+    /** itemId → 播放直链（下载/续传用）。 */
+    private val knownUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun rememberUrl(itemId: String, url: String) {
+        if (itemId.isNotBlank() && url.isNotBlank()) knownUrls[itemId] = url
+    }
+
+    fun knownUrlFor(itemId: String): String? = knownUrls[itemId]
+
+    /**
+     * 用户口径（2026-11-23）：磁盘缓存已覆盖到第几毫秒（画进度条缓冲段）。
+     *
+     * 进度条原来画的是 player.bufferedPosition —— 那是播放器内核几秒的前向缓冲，
+     * 和设置里的「最大缓存大小/时长」完全是两套东西，所以永远只有细细一小条。
+     * 这里按 itemId 直接读缓存文件大小换算。
+     */
+    fun cachedPositionMs(context: Context, itemId: String, durationMs: Long, totalBytes: Long): Long {
+        val full = fileForId(context, itemId)
+        if (full.isFile && full.length() > 0) return if (durationMs > 0) durationMs else 0L
+        val part = partFileById(context, itemId)
+        val have = if (part.isFile) part.length() else 0L
+        if (have <= 0 || totalBytes <= 0 || durationMs <= 0) return 0L
+        val frac = (have.toDouble() / totalBytes).coerceIn(0.0, 1.0)
+        return (durationMs * frac).toLong()
+    }
+
+    /** 稳定 key：丢掉 token/UserId 等查询参数。按 URL 查的场景（预加载）仍需要它。 */
     private fun stableKey(url: String): String {
         val parsed = runCatching { url.toHttpUrlOrNull() }.getOrNull() ?: return url
         return parsed.newBuilder().query(null).fragment(null).build().toString()
@@ -115,50 +168,26 @@ object PlaybackCache {
 
     private fun fileFor(context: Context, url: String): File {
         val key = stableKey(url)
-        return File(dir(context), key.hashCode().toUInt().toString(16) + "_" + key.length)
+        return File(dir(context), "u_" + key.hashCode().toUInt().toString(16) + "_" + key.length)
     }
 
-    /** 这一集是否已有完整本地文件；有就返回（播放器直接读 file://）。 */
+    /** 这一集是否已有完整本地文件（按 URL 查，供预加载用）。 */
     fun localFile(context: Context, url: String): File? =
         fileFor(context, url).takeIf { it.isFile && it.length() > 0 }
 
     /**
-     * 用户口径（2026-11-23）：**部分缓存也要能用**。
-     *
-     * 之前的致命问题：只有整集下完才改名成正式文件，看一半退出时还是 .part →
-     * 下次进来 localFile 返回 null → 又去请求服务器、流量哗哗跑。
-     *
-     * 现在 .part 只要有内容就用它：先读本地这一段（秒出画面、不耗流量），
-     * 读到末尾再走网络接续。
+     * 部分缓存（.part）—— **不交给播放器当播放源**。
+     * MKV/MP4 的索引在文件末尾，半截文件不是合法可播文件，
+     * 之前拿它起播导致 ExoPlayer 报 Malformed URL 并自动切 mpv。
+     * 保留这个查询只用于「续传进度」和缓冲条显示。
      */
     fun partialFile(context: Context, url: String): File? {
         val full = fileFor(context, url)
         if (full.isFile && full.length() > 0) return full
         val part = File(full.parentFile, full.name + ".part")
-        return part.takeIf { it.isFile && it.length() > 512 * 1024 }  // ≥512KB 才值得用
+        return part.takeIf { it.isFile && it.length() > 512 * 1024 }
     }
 
-    /**
-     * 用户口径（2026-11-23）：磁盘缓存已覆盖到第几毫秒（画进度条缓冲段）。
-     * 进度条原来画的是 player.bufferedPosition（内核几秒的前向缓冲），
-     * 和设置的「最大缓存大小/时长」是两套东西，所以永远只有细细一小条。
-     */
-    fun cachedPositionMs(context: Context, url: String, durationMs: Long, totalBytes: Long): Long {
-        val full = fileFor(context, url)
-        val part = File(full.parentFile, full.name + ".part")
-        val have = when {
-            full.isFile -> full.length()
-            part.isFile -> part.length()
-            else -> 0L
-        }
-        if (have <= 0) return 0L
-        if (full.isFile && full.length() > 0) return if (durationMs > 0) durationMs else 0L
-        if (totalBytes > 0 && durationMs > 0) {
-            val frac = (have.toDouble() / totalBytes).coerceIn(0.0, 1.0)
-            return (durationMs * frac).toLong()
-        }
-        return 0L
-    }
 
     // ---------------------------------------------------------------- 窗口缓存（核心）
 
@@ -196,13 +225,15 @@ object PlaybackCache {
     private suspend fun pullWindow(
         context: Context,
         settings: Settings,
+        itemId: String,
         url: String,
         positionMs: Long,
         durationMs: Long,
         knownLength: Long,
     ): Boolean {
         windowLock.withLock {
-            val target = fileFor(context, url)
+            // 用户口径（2026-11-23）：缓存文件按 itemId 命名，不再用 URL
+            val target = fileForId(context, itemId)
             // 整集已完成
             if (target.isFile && target.length() > 0) return true
             val part = File(target.parentFile, target.name + ".part")
@@ -246,6 +277,7 @@ object PlaybackCache {
     fun ensureWindow(
         context: Context,
         settings: Settings,
+        itemId: String,
         url: String,
         positionMs: Long,
         durationMs: Long,
@@ -253,7 +285,7 @@ object PlaybackCache {
         onComplete: (Boolean) -> Unit = {},
     ) {
         pipelineJob = workScope.launch {
-            val done = pullWindow(context, settings, url, positionMs, durationMs, knownLength)
+            val done = pullWindow(context, settings, itemId, url, positionMs, durationMs, knownLength)
             onComplete(done)
         }
     }
@@ -321,7 +353,7 @@ object PlaybackCache {
             try {
                 // 第一环：当前集 —— 把「位置 + 窗口」这段拉到本地
                 val currentDone = pullWindow(
-                    context, settings, currentUrl,
+                    context, settings, currentEpisodeId, currentUrl,
                     currentPositionMs, currentDurationMs, currentLength,
                 )
                 // 只有当前集整集缓存完成，才算「这一环跑完」
@@ -335,7 +367,7 @@ object PlaybackCache {
                 nextEpisodeId = nextId
                 nextComplete = false
                 val nextLength = probeLength(nextUrl)
-                val nextDone = pullWindow(context, settings, nextUrl, 0L, 0L, nextLength)
+                val nextDone = pullWindow(context, settings, nextId, nextUrl, 0L, 0L, nextLength)
                 nextComplete = nextDone
             } finally {
                 writing.remove(key)
@@ -365,7 +397,7 @@ object PlaybackCache {
         if (writing.containsKey(key)) return
         writing[key] = workScope.launch {
             try {
-                pullWindow(context, settings, url, 0L, 0L, probeLength(url))
+                pullWindow(context, settings, episodeId, url, 0L, 0L, probeLength(url))
                 nextEpisodeId = episodeId
                 nextComplete = true
                 trim(context, settings)
@@ -375,10 +407,14 @@ object PlaybackCache {
         }
     }
 
-    fun afterEpisodeFinished(context: Context, settings: Settings, url: String?) {
+    /** 播完一集按设置清掉该集缓存（按 itemId 定位文件）。 */
+    fun afterEpisodeFinished(context: Context, settings: Settings, itemId: String?) {
         if (!settings.cacheClearOnFinish) return
-        if (url.isNullOrEmpty()) return
-        workScope.launch { runCatching { fileFor(context, url).delete() } }
+        if (itemId.isNullOrEmpty()) return
+        workScope.launch {
+            runCatching { fileForId(context, itemId).delete() }
+            runCatching { partFileById(context, itemId).delete() }
+        }
     }
 
     /** 超过磁盘上限就按最后修改时间删最旧的。 */

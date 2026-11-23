@@ -361,6 +361,48 @@ class VideoSession(
         val handoff = PlaybackPrefetch.take(itemId)
         // Never fails the load: a missing detail only leaves the tapped item's fields on screen.
         val detail = async { runCatching { api.item(itemId, EtknApi.DETAIL_FIELDS) }.getOrNull() ?: runCatching { api.item(itemId) }.getOrNull() }
+
+        /**
+         * 用户口径（2026-11-23）起播提速：**有缓存就先播缓存，播放的同时再请求网络**。
+         *
+         * 缓存 key 已改成 itemId（不再依赖直链 URL），所以这里能纯本地判断：
+         *  · 命中完整缓存 → 立刻用 file:// 起播，同时后台继续请求 PlaybackInfo
+         *    （用于拿下一集、进度上报、断点续传；播完这段缓存还能无缝接网络）
+         *  · 没命中 → 照原路径等接口
+         */
+        val localFile = PlaybackCache.localFileById(graph.app, itemId)
+        if (localFile != null && !offline) {
+            val baseItem = (handoff?.item ?: known ?: detail.await())?.takeIf { it.id == itemId }
+            if (baseItem != null) {
+                android.util.Log.i(
+                    TAG,
+                    "cache-first after ${SystemClock.elapsedRealtime() - loadStartedAt} ms " +
+                        "size=${localFile.length()}",
+                )
+                showItem(baseItem)
+                // 本地起播：不需要 PlaybackInfo
+                playLocalFile(baseItem, localFile, startMs)
+                applyDanmaku()
+                // 后台补请求：拿下一集 + 记住直链，供续传与预加载
+                scope.launch {
+                    runCatching {
+                        val late = handoff?.info?.let { it.await() } ?: api.playbackInfo(itemId)
+                        if (late.sources.isNotEmpty()) {
+                            playSession = late.playSessionId
+                            danmakuAvailable = late.danmakuAvailable
+                            val url = runCatching {
+                                PlaybackAddress.resolve(late.sources.first(), session.server, session.token, session.userId)
+                            }.getOrNull()
+                            if (url != null) PlaybackCache.rememberUrl(itemId, url)
+                            _ui.update { it.copy(sources = late.sources, sourceIndex = 0) }
+                        }
+                        runCatching { loadNext(baseItem.id) }
+                    }
+                }
+                return@coroutineScope
+            }
+        }
+
         val info = handoff?.info?.let { runCatching { it.await() }.getOrNull() } ?: api.playbackInfo(itemId)
         if (info.sources.isEmpty()) throw IllegalStateException("暂无可播放版本")
         val index = sourceId?.let { id -> info.sources.indexOfFirst { it.id == id }.takeIf { it >= 0 } } ?: 0
@@ -454,7 +496,8 @@ class VideoSession(
          *                        .part 继续作为续传底子，攒满后自动转正，
          *                        下次进来才是真命中
          */
-        val cachedLocal = if (!disc) PlaybackCache.localFile(context, url) else null
+        // 用户口径（2026-11-23）：缓存文件按 itemId 命名，这里也按 id 查
+        val cachedLocal = if (!disc) PlaybackCache.localFileById(context, current.id) else null
         val cacheComplete = cachedLocal != null
         val subtitles = chosen.subtitles.filter { it.isExternal && it.deliveryUrl != null && !offline }.mapNotNull { stream ->
             val address = PlaybackAddress.subtitle(stream.deliveryUrl!!, session.server, session.token) ?: return@mapNotNull null
@@ -572,7 +615,7 @@ class VideoSession(
         val currentItem = item ?: return
         // 用户口径（2026-11-23）：这一集已经有完整本地文件 → 不重复下载，直接推进下一集。
         // 之前会先判断 localFile，但下一步仍然进 pipeline 又拉一遍（浪费流量）。
-        if (PlaybackCache.localFile(graph.app, cur) != null) {
+        if (PlaybackCache.localFileById(graph.app, currentItem.id) != null) {
             startNextIfIdle(currentItem)
             _ui.update { it.copy(nextPreloaded = PlaybackCache.isNextReady()) }
             return
@@ -590,7 +633,7 @@ class VideoSession(
         val bufferedAhead = (player?.bufferedPosition ?: 0L) - positionMs
         if (bufferedAhead < 30_000) return
         // 当前集已整集落盘就不用再跑
-        if (PlaybackCache.localFile(graph.app, cur) != null) {
+        if (PlaybackCache.localFileById(graph.app, currentItem.id) != null) {
             // 当前集完成 → 尝试推进到下一集
             startNextIfIdle(currentItem)
             _ui.update { it.copy(nextPreloaded = PlaybackCache.isNextReady()) }
@@ -610,7 +653,7 @@ class VideoSession(
             )
             // 用户口径（2026-11-23）：缓冲条要反映「按设置真正缓存到哪」，
             // 不是播放器内核那一小截前向缓冲。
-            val covered = PlaybackCache.cachedPositionMs(graph.app, cur, durationMs, length)
+            val covered = PlaybackCache.cachedPositionMs(graph.app, currentItem.id, durationMs, length)
             _ui.update {
                 it.copy(
                     nextPreloaded = PlaybackCache.isNextReady(),
@@ -618,6 +661,41 @@ class VideoSession(
                 )
             }
         }
+    }
+
+    /**
+     * 用户口径（2026-11-23）：直接用本地缓存文件起播（零网络）。
+     *
+     * 不经过 PlaybackInfo —— 命中完整缓存时直链根本用不上。
+     * 播放器内核仍然按设置选（默认 Exo），数据源已按 scheme 分发，
+     * file:// 会走 FileDataSource。
+     */
+    private fun playLocalFile(base: Item, file: java.io.File, startMs: Long) {
+        val uri = Uri.fromFile(file)
+        val engineWant = engineForLocal()
+        val p = runCatching { ensurePlayer(engineWant) }.getOrNull() ?: return
+        val media = MediaItem.Builder()
+            .setUri(uri)
+            .setMediaId(base.id)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(_ui.value.title)
+                    .setSubtitle(_ui.value.subtitle)
+                    .build(),
+            )
+            .build()
+        android.util.Log.i(TAG, "playLocal uri=$uri on ${engine?.label}")
+        p.setMediaItem(media, startMs.coerceAtLeast(0))
+        p.prepare()
+        p.playWhenReady = true
+        startProgressLoop()
+    }
+
+    /** 本地文件起播时内核选择：尊重设置，Auto 一律 Exo（与 engineFor 保持一致）。 */
+    private fun engineForLocal(): Engine = when (settings.engine) {
+        PlayerEngine.Exo -> Engine.Exo
+        PlayerEngine.Mpv -> Engine.Mpv
+        PlayerEngine.Auto -> Engine.Exo
     }
 
     /** 当前集缓存完成后，取下一集直链并交给流水线。 */

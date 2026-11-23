@@ -119,7 +119,6 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 如果系统其实认了横屏请求（手机上就是这样），读回校验后把兜底关掉，
      * 交还给系统方向 —— 两边都不冲突。
      */
-    var forceRotate by remember { mutableStateOf(false) }
     // 用户手动覆盖过方向就不再自动跟随，直到换集重置
     var manualOrientation by remember { mutableStateOf(false) }
     /**
@@ -150,48 +149,55 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      *   对上了 → 系统认了，交还给系统方向
      *   没对上 → 系统忽略（大屏设备）→ 打开画面级 90° 旋转兜底
      */
+    /**
+     * 用户口径（2026-11-23）旋转 —— **最终方案：只走系统方向，不做画面旋转**。
+     *
+     * 为什么放弃画面旋转：实测给视频层套 graphicsLayer rotationZ=90° 之后，
+     * SurfaceView 是独立硬件图层，Compose 转不动它，画面变成「竖排文字」（用户截图证实）。
+     *
+     * 系统方向在大屏设备上会被忽略（Android 16 行为变更），所以要做的是
+     * **把请求发得更强硬**，而不是自己转画面：
+     *  ① 用 USER_LANDSCAPE / USER_PORTRAIT（比 LANDSCAPE 更强制，部分 ROM 认这个）
+     *  ② 一次性把 activity 的所有方向相关锁定都清掉再设
+     *  ③ 300ms 后检查真实方向，没转过去就重发一次（有些设备首次会被丢弃）
+     */
     val applyOrientation: (Boolean) -> Unit = { wantPortrait ->
         portrait = wantPortrait
-        val target = if (wantPortrait) {
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        } else {
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        }
-        /**
-         * 用户口径（2026-11-23）：点旋转按钮要「立刻」看到效果，不能等系统。
-         * 所以先把画面旋转兜底翻过来（如果当前是画面旋转态），
-         * 再发系统方向请求；350ms 后按真实方向校正一次。
-         * 这样在系统永远不认的大屏设备上，点一下也是马上生效。
-         */
         val act = activity
-        val realNow = act?.resources?.configuration?.orientation
-        val wantNow = if (wantPortrait) android.content.res.Configuration.ORIENTATION_PORTRAIT
-        else android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        if (realNow != wantNow) {
-            // 系统转不过去 → 立刻用画面旋转做出效果（再取反，避免和旧状态同向）
-            forceRotate = !wantPortrait
+        val target = if (wantPortrait) {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
+        } else {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
         }
-        runCatching { activity?.requestedOrientation = target }
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            // 真实屏幕方向（不受我们请求值的干扰）
-            val real = act?.resources?.configuration?.orientation
-            val want = if (wantPortrait) android.content.res.Configuration.ORIENTATION_PORTRAIT
-            else android.content.res.Configuration.ORIENTATION_LANDSCAPE
-            val ok = real == want
-            /**
-             * 用户口径（2026-11-23）：横屏要「一定成功」。
-             * 系统认了 → 交还系统方向；系统不认（OPPO Pad Mini 这类大屏）→
-             * 立刻启用画面 90° 旋转，用户看到的就是横的，不等第二次重试。
-             */
-            forceRotate = !ok
-            android.util.Log.i(
-                "ETKN-Rotate",
-                "request=${if (wantPortrait) "portrait" else "landscape"} " +
-                    "real=${if (real == want) "ok" else "mismatch"} canvasRotation=$forceRotate",
-            )
-            // 再补一次：有些设备第一次转屏会被忽略，隔 250ms 重发一次
-            if (!ok) runCatching { activity?.requestedOrientation = target }
-        }, 350L)
+        val apply = {
+            runCatching { act?.requestedOrientation = target }
+            // 部分 ROM 需要再碰一次 window 属性才会重新评估方向
+            runCatching {
+                act?.window?.attributes = act.window.attributes.apply {
+                    screenOrientation = target
+                }
+            }
+        }
+        apply()
+        val want = if (wantPortrait) android.content.res.Configuration.ORIENTATION_PORTRAIT
+        else android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        // 300ms 后校验真实方向，没成再强推一次（最多三次）
+        fun verify(round: Int) {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                val real = act?.resources?.configuration?.orientation
+                val ok = real == want
+                android.util.Log.i(
+                    "ETKN-Rotate",
+                    "round=$round want=${if (wantPortrait) "P" else "L"} " +
+                        "real=${if (ok) "P" else "L"} ok=$ok",
+                )
+                if (!ok && round < 3) {
+                    apply()
+                    verify(round + 1)
+                }
+            }, 300L)
+        }
+        verify(1)
     }
 
     /**
@@ -370,24 +376,16 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 再把容器整体转 90° 铺满屏幕。布局按横屏算、画面也是横的，
      * 完全不依赖系统 orientation。
      */
-    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
-        val rotated = forceRotate
-        val canvasW = if (rotated) maxHeight else maxWidth
-        val canvasH = if (rotated) maxWidth else maxHeight
-        Box(
-            Modifier.then(
-                if (rotated) {
-                    Modifier.size(canvasW, canvasH).graphicsLayer {
-                        rotationZ = 90f
-                        // 转 90° 后需要位移把旋转后的画布挪回屏幕中心
-                        translationX = (canvasH - canvasW).toPx() / 2f
-                        translationY = (canvasW - canvasH).toPx() / 2f
-                    }
-                } else {
-                    Modifier.fillMaxSize()
-                },
-            ),
-        ) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        /**
+         * 用户口径（2026-11-23）**画面旋转方案彻底废弃**。
+         *
+         * 实测结果：给整层套 graphicsLayer rotationZ=90° 之后，
+         * 横屏播放时画面被转成了「竖排文字」（用户截图为证）——
+         * 因为 SurfaceView 是独立的硬件图层，Compose 的图层旋转不能正确搬运它。
+         *
+         * 结论：横屏必须靠系统方向，不能靠旋转画面。这里恢复成普通 Box。
+         */
         when (val core = player) {
             null -> Unit
             // mpv draws video and subtitles into its own SurfaceView.
@@ -599,7 +597,6 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     }
                 }
             }
-        }
         }
     }
 

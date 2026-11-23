@@ -121,14 +121,28 @@ object PlayerFactory {
             )
         }
         /**
-         * 用户口径（2026-11-23）修「起播变慢」：
-         * 原来是 (min=20s, max=90s, forPlayback=800ms, afterRebuffer=2500ms)。
-         * 起播要等 800ms 缓冲才出首帧，网络一般时体感明显延迟。
-         * 降到 400ms（够避免立刻卡顿，又明显更快出画面），rebuffer 保持 2500ms 保住稳定性。
+         * 用户口径（2026-11-23）起播速度继续压 —— 目标是「点开就播」。
+         * 参照对象是 Hills：播本地已缓存的片子，点开约 0.5 秒出画面。
+         *
+         * 分两档（本地缓存 vs 网络），本地可以直接更激进：
+         *  · 本地文件（file://）：缓冲几乎无延迟，最小值/起播阈值都给到很低
+         *  · 网络：保留一点缓冲余量，避免起播就卡
+         *
+         * 参数含义 setBufferDurationsMs(min, max, forPlayback, afterRebuffer)：
+         *  · min         最小缓冲时长
+         *  · max         最大缓冲时长
+         *  · forPlayback 起播要攒够多少才出首帧  ← 这条直接决定「点开多久能看到画面」
+         *  · afterRebuffer 卡顿后要攒够多少继续播
          */
         val load = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 90_000, 400, 2_500)
-            .setPrioritizeTimeOverSizeThresholds(false)
+            .setBufferDurationsMs(
+                /* min */ 8_000,
+                /* max */ 60_000,
+                /* forPlayback */ 200,
+                /* afterRebuffer */ 1_500,
+            )
+            // 按字节判断是否够播会让大码率片源起播更慢，改成只看时间
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         return ExoPlayer.Builder(context, renderers)
             .setTrackSelector(selector)
