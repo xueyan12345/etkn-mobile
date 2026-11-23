@@ -284,6 +284,8 @@ class HomeViewModel(
     companion object {
         private const val HERO_SIZE = 8
         private const val HERO_POOL_PER_LIBRARY = 30
+        /** 轮播图「多久换一批」：满 12 小时（按上次生成时间算，不跟日历走）。 */
+        private const val HERO_TTL_MS = 12L * 60L * 60L * 1000L
         private val NON_LATEST = setOf("music", "boxsets", "playlists", "livetv", "folders")
     }
 }
