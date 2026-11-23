@@ -694,6 +694,9 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     onPrevious = { session.playPrevious() },
                     onSpeed = { session.setSpeed(it) },
                     onInfoOpenChange = { infoOpen = it },
+                    // 用户口径（2026-11-23）平板画布旋转时，控件不再扣一遍安全区
+                    // （旋转后竖屏的 inset 会变成左右大留白，把按钮挤到中间）
+                    applyWindowInsets = !rotated,
                     onToggleDanmaku = {
                         // 弹幕开关：直接翻转 enabled（样式其它项保持不变）
                         session.setDanmakuStyle(session.danmakuStyle.value.copy(enabled = !ui.danmakuOn))
@@ -723,9 +726,9 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 // 尺寸天然就是按钮宽×按钮高。
                 Row(
                     Modifier.align(Alignment.BottomEnd)
-                        .padding(end = 36.dp, bottom = if (controls) 180.dp else 48.dp),
+                        .padding(end = 24.dp, bottom = if (controls) 120.dp else 32.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(15.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                 Box(
                     Modifier
@@ -744,23 +747,24 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                             }
                         }
                         .clickable { session.skip(s) }
-                        .padding(horizontal = 24.dp, vertical = 13.5.dp),
+                        // 用户口径（2026-11-23）**跳过片头 / 取消 这一组不放大**，保持原尺寸
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             if (s.kind == SkipSegment.Kind.Intro) Icons.Rounded.FastForward else Icons.Rounded.SkipNext,
                             null,
-                            Modifier.size(27.dp),
+                            Modifier.size(18.dp),
                             tint = Color.White,
                         )
-                        Spacer(Modifier.width(9.dp))
-                        Text(label, color = Color.White, fontSize = 21.sp)
+                        Spacer(Modifier.width(6.dp))
+                        Text(label, color = Color.White, fontSize = 14.sp)
                         if (countingDown) {
-                            Spacer(Modifier.width(9.dp))
+                            Spacer(Modifier.width(6.dp))
                             Text(
                                 "${(5 * (1f - skipCountdown)).toInt() + 1}s",
                                 color = Color.White.copy(alpha = 0.75f),
-                                fontSize = 18.sp,
+                                fontSize = 12.sp,
                             )
                         }
                     }
@@ -771,7 +775,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                         Text(
                             "取消",
                             color = Color.White.copy(alpha = 0.9f),
-                            fontSize = 21.sp,
+                            fontSize = 14.sp,
                             modifier = Modifier.clickable {
                                 // 用户口径（2026-11-23）：点取消 → 这组按钮立刻消失，别再固定在那儿
                                 skipDismissed = true

@@ -127,7 +127,20 @@ internal fun Controls(
     onSpeed: (Float) -> Unit,
     /** 用户口径（2026-11-23）：简介浮层打开状态上报，打开时不自动隐藏控制条。 */
     onInfoOpenChange: (Boolean) -> Unit = {},
+    /**
+     * 用户口径（2026-11-23）**OPPO 平板画布旋转时不能重复扣安全区**。
+     *
+     * 平板走「整层 90° 旋转」兜底时，画布已经是屏幕原始宽高（2520×1680），
+     * 系统栏本来就是沉浸隐藏的。但 Controls 内部有 4 处
+     * windowInsetsPadding(safeDrawing)，竖屏的 top/bottom inset 旋转后会变成
+     * 左右方向的大留白 → 按钮被挤到中间、两侧空一大块。
+     *
+     * 所以旋转态传 false，让控件贴着画布边缘走；普通全屏仍为 true。
+     */
+    applyWindowInsets: Boolean = true,
 ) {
+    // 统一入口：需要扣安全区时才加这个 Modifier，避免四处各写一遍漏改
+    val insetMod = if (applyWindowInsets) Modifier.windowInsetsPadding(WindowInsets.safeDrawing) else Modifier
     var scrubbing by remember { mutableStateOf(false) }
     var scrub by remember { mutableFloatStateOf(0f) }
     // 用户口径（2026-11-23）：点底部那一行「S1:E34:标题」弹剧集信息浮层。
@@ -151,13 +164,13 @@ internal fun Controls(
             fontSize = 19.5.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.align(Alignment.TopCenter)
-                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .then(insetMod)
                 .padding(top = 12.dp),
         )
         // 右上角：网速 + 电量百分比 + 电池图标（同一行，紧贴右边）。
         Row(
             Modifier.align(Alignment.TopEnd)
-                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .then(insetMod)
                 .padding(end = 24.dp, top = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -178,7 +191,7 @@ internal fun Controls(
         // ===== 顶栏：返回 + 剧名 + 右侧功能图标 =====
         // 用户口径（2026-11-23）：功能图标整体下移，明显低于「时间」那一行（照参考图）。
         Row(
-            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing)
+            Modifier.fillMaxWidth().then(insetMod)
                 .padding(horizontal = 12.dp).padding(top = 45.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -260,7 +273,7 @@ internal fun Controls(
 
         // ===== 底栏：剧名+集号 / 进度条 / 功能图标 =====
         Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing)
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().then(insetMod)
                 .padding(horizontal = 24.dp, vertical = 6.dp),
         ) {
             val previews = ui.previews
