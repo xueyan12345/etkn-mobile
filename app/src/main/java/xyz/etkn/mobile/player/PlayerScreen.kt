@@ -66,6 +66,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.BoxWithConstraints
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
@@ -132,22 +133,30 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         } else {
             android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
-        var applied = false
-        // ① Android 16+ 大屏：先解除「忽略应用方向请求」
-        if (android.os.Build.VERSION.SDK_INT >= 36) {
-            applied = runCatching {
-                val act = activity ?: return@runCatching false
-                // 官方 API：允许应用方向请求在大屏上生效（需要 activity 级别声明）
-                val m = android.app.Activity::class.java
-                    .getMethod("setIgnoreOrientationRequest", Boolean::class.java)
-                m.invoke(act, false)
-                true
-            }.getOrDefault(false)
-        }
-        // ② 传统路径
+        /**
+         * 用户口径（2026-11-23，OPPO Pad Mini 专项·第二轮）：
+         *
+         * 上一版这里写错了：用反射在 android.app.Activity 上找
+         * setIgnoreOrientationRequest —— 那个方法根本不存在（它在
+         * androidx.window 的 WindowManager / ActivityInfo 层面），
+         * 必然抛 NoSuchMethodException，applied 永远是 false。
+         *
+         * 现在的做法：
+         *  ① 照常发 requestedOrientation（手机、以及系统没限制的平板都有效）
+         *  ② 立刻读回 activity.requestedOrientation 验证系统是否真的接受了
+         *     —— 大屏被忽略时，读回值仍是 SCREEN_ORIENTATION_UNSPECIFIED(-1)
+         *  ③ 读回没变 → 判定系统忽略了这个请求 → 打开画面级强制旋转兜底
+         */
         runCatching { activity?.requestedOrientation = target }
-        // ③ 画面级强制旋转标记（真正兜底：不改系统方向，改绘制）
-        forceRotate = !wantPortrait && !applied
+        // 稍等一帧再读回（系统处理是异步的）
+        val requested = target
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val actual = runCatching { activity?.requestedOrientation }.getOrNull()
+            // 系统接受了：方向已经是我们要求的值（可能是 LANDSCAPE 或 SENSOR_LANDSCAPE 变体）
+            val accepted = actual != null && actual != android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            // 系统忽略了横屏请求 → 走画面强制旋转
+            forceRotate = !wantPortrait && !accepted
+        }, 120L)
     }
     /**
      * 用户口径（2026-11-23）：打开播放器瞬间默认就是横屏。
@@ -304,20 +313,34 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     }
     val touch = { lastInteraction = System.currentTimeMillis() }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        /**
-         * 用户口径（2026-11-23）OPPO Pad Mini 兜底：
-         * 系统方向请求在大屏上被忽略时，直接把视频层旋转 90° 并交换宽高，
-         * 视觉上就是「横过来了」，完全不依赖系统 orientation。
-         */
-        val videoModifier = if (forceRotate) {
-            Modifier
-                .fillMaxSize()
-                .graphicsLayer { rotationZ = 90f }
-                .then(Modifier.fillMaxSize())
-        } else {
-            Modifier.fillMaxSize()
-        }
+    /**
+     * 用户口径（2026-11-23）OPPO Pad Mini 兜底（重做）：
+     *
+     * 上一版用 graphicsLayer rotationZ=90° 只转单个图层 —— 转完画面跑出可视区、
+     * 也没交换宽高，所以用户看到的还是「竖窗口里塞横屏画面」。
+     *
+     * 正确做法：把**整个播放器 UI** 放进一个「逻辑尺寸 = 屏宽高互换」的容器，
+     * 再把容器整体转 90° 铺满屏幕。布局按横屏算、画面也是横的，
+     * 完全不依赖系统 orientation。
+     */
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+        val rotated = forceRotate
+        val canvasW = if (rotated) maxHeight else maxWidth
+        val canvasH = if (rotated) maxWidth else maxHeight
+        Box(
+            Modifier.then(
+                if (rotated) {
+                    Modifier.size(canvasW, canvasH).graphicsLayer {
+                        rotationZ = 90f
+                        // 转 90° 后需要位移把旋转后的画布挪回屏幕中心
+                        translationX = (canvasH - canvasW).toPx() / 2f
+                        translationY = (canvasW - canvasH).toPx() / 2f
+                    }
+                } else {
+                    Modifier.fillMaxSize()
+                },
+            ),
+        ) {
         when (val core = player) {
             null -> Unit
             // mpv draws video and subtitles into its own SurfaceView.
@@ -325,7 +348,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 AndroidView(
                     factory = { (core.view.parent as? ViewGroup)?.removeView(core.view); core.view },
                     update = { core.setResize(resize) },
-                    modifier = videoModifier,
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
             else -> key(core) {
@@ -528,6 +551,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     }
                 }
             }
+        }
         }
     }
 
