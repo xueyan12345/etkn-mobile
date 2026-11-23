@@ -82,15 +82,33 @@ fun HeroCarousel(
     }
     val widthPx = LocalWindowInfo.current.containerSize.width
     Box(modifier.fillMaxWidth().height(height).clipToBounds()) {
-        // 用户口径（2026-11-23）：轮播图这里的横向 Pager 不能接受手势。
-        // 它是嵌在 TabPager 里的内层 Pager——手指落在这一块横划时，内层到边界 /
-        // 或正好赶上 7 秒自动轮播的 animateScrollToPage 在跑，位移会经嵌套滚动
-        // 泄漏给外层 TabPager，导致整个首页被拖成两页并排、松手不回弹（偶发就是这个原因）。
-        // 关掉手势后：自动轮播照常（那是程序化滚动，不受这个开关影响），只是不能手划。
+        // 用户口径（2026-11-23）：
+        //  · 轮播图必须能左右滑（之前我为了堵手势泄漏把它关了，滑不动了 —— 这是改坏了）
+        //  · 但滑到头之后，多余的水平位移不能漏给外层 TabPager（否则整个首页被拖成两页并排）
+        // 解法：Pager 恢复手势，外面再套一层「只消费水平方向」的 pointerInput。
+        // 内层 Pager 先拿到手势正常翻页；只有它走到边界不再消费的残余位移，
+        // 才被这层拦下来吃掉，不漏到外层。
         HorizontalPager(
             state = pager,
-            modifier = Modifier.fillMaxSize(),
-            userScrollEnabled = false,
+            modifier = Modifier.fillMaxSize()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.type == androidx.compose.ui.input.pointer.PointerEventType.Move) {
+                                event.changes.forEach { change ->
+                                    // 只吃水平位移，不改位置（翻页由内层 Pager 自己做）；
+                                    // 消费掉是为了不让它继续冒泡到外层 Pager。
+                                    if (kotlin.math.abs(change.positionChange().x) >
+                                        kotlin.math.abs(change.positionChange().y)
+                                    ) {
+                                        change.consume()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
             key = { items[it].id },
         ) { page ->
             HeroPage(items[page], widthPx, scrollOffsetPx, onPlay, onOpen)

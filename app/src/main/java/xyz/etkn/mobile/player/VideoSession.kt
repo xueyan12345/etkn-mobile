@@ -266,9 +266,9 @@ class VideoSession(
             runCatching { Engine.Mpv to MpvPlayer(context, graph.identity.userAgent, settings.decoder, PlayerFactory.preferredLanguages().toList()) }
                 .onFailure { Log.e(TAG, "mpv unavailable", it) }
                 .getOrNull()
-                ?: (Engine.Exo to PlayerFactory.video(context, graph.http.media, graph.identity.userAgent, settings.decoder))
+                ?: (Engine.Exo to PlayerFactory.video(context, graph.http.media, graph.identity.userAgent, settings.decoder, settings))
         } else {
-            Engine.Exo to PlayerFactory.video(context, graph.http.media, graph.identity.userAgent, settings.decoder)
+            Engine.Exo to PlayerFactory.video(context, graph.http.media, graph.identity.userAgent, settings.decoder, settings)
         }
         engine = created.first
         val next = created.second
@@ -449,7 +449,30 @@ class VideoSession(
     private fun loadNext(itemId: String) {
         scope.launch {
             val next = runCatching { api.nextEpisode(itemId) }.getOrNull()
-            if (item?.id == itemId) _ui.update { it.copy(next = next) }
+            if (item?.id != itemId) return@launch
+            _ui.update { it.copy(next = next) }
+            // 用户口径（2026-11-23）：拿到下一集就立刻预加载，别等用户点。
+            // 之前 PlaybackCache 只被设置页调用，播放路径根本没用它，
+            // 所以「预加载」「磁盘缓存」开关、磁盘占用、闪电小圆全都不生效 —— 这就是根因。
+            if (next != null) preloadNext(next)
+            }
+    }
+
+    /**
+     * 用户口径（2026-11-23）预加载下一集：
+     * 取它的播放直链，整段写进磁盘缓存；写完把 nextPreloaded 置 true（驱动按钮上的闪电小圆）。
+     * 只在设置里「预加载」开着时做。
+     */
+    private fun preloadNext(next: Item) {
+        if (!settings.preloadNext) return
+        scope.launch {
+            runCatching {
+                val info = api.playbackInfo(next.id)
+                val source = info.sources.firstOrNull() ?: return@runCatching
+                val url = source.directStreamUrl ?: return@runCatching
+                PlaybackCache.preload(graph.app, settings, next.id, url)
+                if (_ui.value.next?.id == next.id) _ui.update { it.copy(nextPreloaded = true) }
+            }
         }
     }
 

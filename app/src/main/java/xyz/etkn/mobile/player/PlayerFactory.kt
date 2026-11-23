@@ -31,7 +31,14 @@ object PlayerFactory {
     fun dataSource(client: OkHttpClient, userAgent: String): DataSource.Factory =
         OkHttpDataSource.Factory(client).setUserAgent(userAgent)
 
-    fun video(context: Context, client: OkHttpClient, userAgent: String, decoder: DecoderPreference): ExoPlayer {
+    fun video(
+        context: Context,
+        client: OkHttpClient,
+        userAgent: String,
+        decoder: DecoderPreference,
+        /** 用户口径（2026-11-23）：带上设置，播放走磁盘缓存（预加载的内容直接命中）。 */
+        settings: xyz.etkn.mobile.data.settings.Settings? = null,
+    ): ExoPlayer {
         DolbyVision.init(context)
         val renderers = NextRenderersFactory(context)
             .setExtensionRendererMode(
@@ -57,7 +64,7 @@ object PlayerFactory {
         return ExoPlayer.Builder(context, renderers)
             .setTrackSelector(selector)
             .setLoadControl(load)
-            .setMediaSourceFactory(videoSources(client, userAgent))
+            .setMediaSourceFactory(videoSources(context, client, userAgent, settings))
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .setAudioAttributes(
@@ -92,8 +99,24 @@ object PlayerFactory {
      * the default extractors. Both play Dolby Vision profile 7 as 8.1 where the device can, else as
      * its HEVC HDR10 base layer.
      */
-    private fun videoSources(client: OkHttpClient, userAgent: String): BlurayMediaSourceFactory {
-        val data = dataSource(client, userAgent)
+    private fun videoSources(
+        context: Context,
+        client: OkHttpClient,
+        userAgent: String,
+        settings: xyz.etkn.mobile.data.settings.Settings?,
+    ): BlurayMediaSourceFactory {
+        val base = dataSource(client, userAgent)
+        // 用户口径（2026-11-23）：把磁盘缓存套在网络层外面。
+        // 预加载写进 SimpleCache 的那一段，这里播放时会直接命中，不再走网络。
+        // 之前 PlaybackCache 只被设置页调用，播放器根本没用它 —— 所以「磁盘缓存」看着有开关却完全不生效。
+        val data: DataSource.Factory = if (settings != null) {
+            androidx.media3.datasource.cache.CacheDataSource.Factory()
+                .setCache(PlaybackCache.cache(context, settings))
+                .setUpstreamDataSourceFactory(base)
+                .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        } else {
+            base
+        }
         val ordinary = DefaultMediaSourceFactory(ResolvedRedirects(data), BlurayMediaSourceFactory.baseLayerExtractors())
         return BlurayMediaSourceFactory(ordinary, client, userAgent, data)
     }

@@ -81,6 +81,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyRow
 
 /**
  * 播放器控制层。
@@ -120,6 +128,8 @@ internal fun Controls(
 ) {
     var scrubbing by remember { mutableStateOf(false) }
     var scrub by remember { mutableFloatStateOf(0f) }
+    // 用户口径（2026-11-23）：点底部那一行「S1:E34:标题」弹剧集信息浮层。
+    var showInfo by remember { mutableStateOf(false) }
     // 用户口径（2026-11-23）：顶部中间显示系统时间 / 网速 / 电量，每秒刷新
     val status = rememberPlayerStatus()
     Box(Modifier.fillMaxSize()) {
@@ -149,9 +159,14 @@ internal fun Controls(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            if (status.speed.isNotEmpty()) {
-                Text(status.speed, color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
-            }
+            // 用户口径（2026-11-23）：网速要一直显示，不能时有时无。
+            // 之前是 if (status.speed.isNotEmpty()) 才画 —— 取不到采样就整块消失。
+            // 现在固定占位，取不到就显示 0 B/s。
+            Text(
+                status.speed.ifEmpty { "0 B/s" },
+                color = Color.White.copy(alpha = 0.85f),
+                fontSize = 12.sp,
+            )
             Text("${status.battery}%", color = Color.White, fontSize = 12.sp)
             // 电池图标：随电量变长度（像素风）
             BatteryGlyph(status.battery)
@@ -244,7 +259,13 @@ internal fun Controls(
 
             // 用户口径（2026-11-23）按参考图：这一行只放「S1:E34:本集标题」，
             // 不带剧名、不带分隔点。参考图格式就是   S1:E34:关铁山识破王老五身份
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 2.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .padding(bottom = 2.dp)
+                    // 用户口径（2026-11-23）：这一行可以点，弹出剧集简介浮层
+                    .clickable { showInfo = true },
+            ) {
                 val code = ui.subtitle   // 服务端给的就是 "S1:E34:标题" 这种形态
                 val line = when {
                     code.isEmpty() -> ui.title
@@ -352,11 +373,8 @@ internal fun Controls(
                         )
                     }
                 }
-                Text(
-                    formatClock(duration),
-                    color = Color.White.copy(alpha = 0.75f),
-                    style = MaterialTheme.typography.labelMedium,
-                )
+                // 用户口径（2026-11-23）：进度条最右侧这个总时长删掉 ——
+                // 左边已经是「当前 / 总时长」，右边再写一遍是重复的。
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -374,6 +392,117 @@ internal fun Controls(
                 PlayerAction(Icons.Rounded.Audiotrack, "音轨") { onSheet(Sheet.Audio) }
                 PlayerAction(Icons.Rounded.ClosedCaption, "字幕") { onSheet(Sheet.Subtitle) }
                 if (ui.item?.isEpisode == true) PlayerAction(Icons.AutoMirrored.Rounded.PlaylistPlay, "选集") { onSheet(Sheet.Episodes) }
+            }
+        }
+
+        // 用户口径（2026-11-23）：点底部的「S1:E34:标题」弹出剧集信息浮层（照参考图）。
+        if (showInfo) {
+            EpisodeInfoSheet(ui, onDismiss = { showInfo = false })
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-23）：剧集信息浮层，完全照参考图。
+ * 结构：剧名 / 集号+标题 / 评分·日期·类型 / 简介 / 演职人员（一排头像）。
+ * 半透明黑底浮层，点外部关闭。
+ */
+@Composable
+private fun EpisodeInfoSheet(ui: VideoUi, onDismiss: () -> Unit) {
+    val item = ui.item ?: return
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismiss() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth(0.86f)
+                .heightIn(max = 420.dp)
+                .clip(Corner.panel)
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }
+                .verticalScroll(rememberScrollState())
+                .padding(18.dp),
+        ) {
+            // 剧名
+            Text(
+                item.seriesName ?: item.name,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            // 集号 + 标题
+            val code = buildString {
+                val s = item.parentIndexNumber
+                val e = item.indexNumber
+                if (s != null && e != null) append("S${s}:E$e")
+                val sub = ui.subtitle
+                val title = if (sub.startsWith("S")) sub.substringAfter(":", "").substringAfter(":", "") else sub
+                if (title.isNotEmpty()) { if (isNotEmpty()) append("「"); append(title); append("」") }
+            }
+            if (code.isNotEmpty()) {
+                Text(
+                    code,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            // 评分 / 日期 / 类型
+            val rating = item.communityRating ?: item.tmdbRating ?: item.doubanRating
+            val meta = listOfNotNull(
+                "评分 " + String.format(Locale.ROOT, "%.1f", rating ?: 0.0),
+                item.premiereDate?.take(10)?.replace("-", "/"),
+                item.genres.takeIf { it.isNotEmpty() }?.joinToString("/"),
+            ).joinToString(" · ")
+            Text(
+                meta,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            // 简介
+            item.overview?.takeIf { it.isNotBlank() }?.let { text ->
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+            }
+            // 演职人员
+            if (item.people.isNotEmpty()) {
+                Text(
+                    "演职人员",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(item.people.take(20), key = { it.id + it.role }) { person ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
+                            Box(
+                                Modifier.size(52.dp).clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Person,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            }
+                            Text(
+                                person.name,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -394,8 +523,11 @@ private fun rememberPlayerStatus(): PlayerStatus {
         var lastRx = 0L
         while (true) {
             val rx = android.net.TrafficStats.getTotalRxBytes()
+            // 用户口径（2026-11-23）：网速恒定有值。
+            // 第一秒（lastRx 还没建立）或这一秒没有流量时返回 0 B/s，而不是空串，
+            // 否则界面上会是「有时显示有时不显示」。
             val speed = when {
-                lastRx <= 0L || rx <= lastRx -> ""
+                lastRx <= 0L || rx <= lastRx -> "0 B/s"
                 else -> {
                     val bytes = rx - lastRx
                     when {

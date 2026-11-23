@@ -70,6 +70,7 @@ class DanmakuView(context: Context, private val player: Player) : View(context) 
         lineHeight = metrics.descent - metrics.ascent + 4 * dp
         top = -metrics.ascent + 8 * dp
         glyphs.evictAll()
+        glyphCache = emptyMap()
         dirty = true
         refresh()
     }
@@ -104,27 +105,46 @@ class DanmakuView(context: Context, private val player: Player) : View(context) 
     }
 
     private fun layoutCues() {
+        glyphCache = emptyMap()
         val lanes = (1 + ((height * 0.8f - top) / lineHeight).toInt()).coerceIn(1, style.rows.coerceAtLeast(1))
         placed = DanmakuLayout.place(cues, lanes, width, lifeMs, 16 * dp, style.density) { paint.measureText(it) }
         dirty = false
     }
 
+    /**
+     * 用户口径（2026-11-23）：弹幕滚动掉帧优化。
+     *
+     * 原实现每帧都从 firstAt(now - lifeMs) 一路遍历到「第一条还没到时间的」，
+     * 也就是说一集里**所有已经出现过但还没飞出屏幕的弹幕**每帧都要走一遍，
+     * 每条还要算一次 x(now) 浮点运算 + 一次字符串拼接 key（"$color/${text}"）。
+     * 弹幕密集时一帧几十上百次分配 → 明显掉帧，到不了 60fps。
+     *
+     * 改法：
+     *  · 预先把「颜色/文本 → 位图」的查找在布局阶段就算好存进 PlacedCue，
+     *    绘制时不再拼字符串、不再查 LruCache
+     *  · 位图在 buildGlyphs 里一次性生成，onDraw 只做 drawBitmap
+     *  · 遍历范围仍然是活跃窗口，但循环体里只剩一次算术 + 一次 drawBitmap
+     */
+    private var glyphCache: Map<PlacedCue, Bitmap> = emptyMap()
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (closed || width == 0) return
-        if (dirty) layoutCues()
+        if (dirty) {
+            layoutCues()
+            buildGlyphs()
+        }
         val now = player.currentPosition.coerceAtLeast(0)
         val pad = 2 * dp
         val ascent = paint.fontMetrics.ascent
         blit.alpha = alphaByte
         var i = DanmakuLayout.firstAt(placed, now - lifeMs)
+        // 活跃窗口：从第一条还在屏幕上的，到第一条还没开始的。
         while (i < placed.size) {
             val item = placed[i++]
             if (item.startMs > now) break
             if (now - item.startMs >= lifeMs) continue
-            val color = if (style.themeColor && themeColor != 0) themeColor else item.cue.color
-            val key = "$color/${item.cue.text}"
-            val bitmap = glyphs.get(key) ?: shape(item, color, pad).also { glyphs.put(key, it) }
+            val bitmap = glyphCache[item] ?: continue
             val y = top + lineHeight * item.lane + ascent - pad
             canvas.drawBitmap(bitmap, item.x(now, width, lifeMs) - pad, y, blit)
         }
@@ -132,6 +152,23 @@ class DanmakuView(context: Context, private val player: Player) : View(context) 
             framePending = true
             postOnAnimation(frame)
         }
+    }
+
+    /** 一次性把所有弹幕的位图都造好（布局变化时跑一次，不在绘制里跑）。 */
+    private fun buildGlyphs() {
+        val pad = 2 * dp
+        val out = HashMap<PlacedCue, Bitmap>(placed.size)
+        // 同色同文本复用同一张位图，避免重复生成
+        val shared = HashMap<String, Bitmap>()
+        for (item in placed) {
+            val color = if (style.themeColor && themeColor != 0) themeColor else item.cue.color
+            val key = "$color/${item.cue.text}"
+            val bitmap = shared.getOrPut(key) {
+                glyphs.get(key) ?: shape(item, color, pad).also { glyphs.put(key, it) }
+            }
+            out[item] = bitmap
+        }
+        glyphCache = out
     }
 
     private fun shape(item: PlacedCue, color: Int, pad: Float): Bitmap {

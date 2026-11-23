@@ -58,18 +58,20 @@ class AppNav(
      */
     fun openSmart(item: Item) {
         if (!item.isSeries) { open(item); return }
-        // 列表/首页拿到的 item 一般带 UserData；没有进度就直接进剧集详情页（第一层）。
-        // UserData 里能判「看过」的只有这两项（服务端没给 LastPlayedDate）：
-        // 有播放进度 或 播放次数 > 0。
-        val hasProgress = (item.userData?.playbackPositionTicks ?: 0L) > 0L ||
-            (item.userData?.playCount ?: 0) > 0
-        if (!hasProgress) { to(DetailRoute(item.id)); return }
-        // 有播放记录：先进第一层（保证立即有反应），同时后台查续播是哪一集，拿到就顶替成第二层。
+        /**
+         * 用户口径（2026-11-23）：只要这部剧有播放记录，点它就必须进「续播那一集的单集详情页」
+         * （和「继续观看」里点出来的是同一个界面）。没播放记录才进剧集详情页。
+         *
+         * ⚠️ 之前判据用错了：看的是 Series 自己的 userData.playbackPositionTicks / playCount，
+         * 但播放进度是记在 Episode 上的，Series 的这两项恒为 0 →
+         * 永远判成「没看过」→ 直接进第一层 → 异步查续播那段一次都没跑。
+         * 现在不再用本地 UserData 猜，改成「先跳第一层保证有反应，同时无条件查一次续播」，
+         * 查到就替换成那一集（第二层）。
+         */
         to(DetailRoute(item.id))
-        if (item.isEpisode || item.seriesId != null) return
         scope.launch {
             val resume = runCatching { context.graph.api.resumeEpisodeOf(item.id) }.getOrNull() ?: return@launch
-            // 只有用户还停在这部剧的详情页时才顶替，避免他中途又点了别的被抢跳。
+            // 只有用户还停在这部剧的详情页时才顶替，避免他中途点了别的被抢跳。
             if (controller.currentDestination?.hasRoute<DetailRoute>() == true) {
                 to(DetailRoute(resume.id))
             }

@@ -56,6 +56,13 @@ import xyz.etkn.mobile.data.settings.SkipMode
 import xyz.etkn.mobile.player.danmaku.DanmakuView
 import xyz.etkn.mobile.player.mpv.MpvPlayer
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.matchParentSize
+import androidx.compose.ui.draw.clipRect
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.runtime.mutableFloatStateOf
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
@@ -209,7 +216,25 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         }
     }
     val segment = remember(position, ui.segments, ui.skipMode) { session.segmentAt(position) }
-    LaunchedEffect(segment) { segment?.let(session::autoSkip) }
+    /**
+     * 用户口径（2026-11-23）：自动跳过要加 5 秒倒计时。
+     * · 选「自动跳过」时，跳过按钮照常显示，按钮内部用色块从左往右填充当进度
+     * · 5 秒填满 → 才真正触发跳过
+     * · 用户中途点了按钮 → 立即跳过（取消倒计时）
+     * · 离开这个片段（倒计时没走完）→ 取消，不跳
+     */
+    var skipCountdown by remember { mutableFloatStateOf(0f) }   // 0f..1f
+    LaunchedEffect(segment) {
+        skipCountdown = 0f
+        if (segment == null) return@LaunchedEffect
+        if (ui.skipMode != SkipMode.Auto) return@LaunchedEffect
+        // 5 秒，每 50ms 走一格（20 格），够平滑又不费
+        repeat(100) { step ->
+            delay(50)
+            skipCountdown = (step + 1) / 100f
+        }
+        session.autoSkip(segment)
+    }
     // Double-tap seek feedback clears itself; drag feedback is cleared on release.
     LaunchedEffect(gesture) {
         val shown = gesture
@@ -362,15 +387,55 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White),
                 ) { Icon(Icons.Rounded.Lock, "解锁") }
             }
-            segment?.takeUnless { ui.skipMode == SkipMode.Auto && it.kind == SkipSegment.Kind.Intro }?.let { s ->
-                FilledTonalButton(
-                    onClick = { session.skip(s) },
-                    modifier = Modifier.align(Alignment.BottomEnd).windowInsetsPadding(WindowInsets.safeDrawing)
-                        .padding(end = 24.dp, bottom = if (controls) 120.dp else 32.dp),
+            // 用户口径（2026-11-23）：自动跳过模式下按钮也要显示，按钮内部用色块填充当 5 秒倒计时。
+            // 之前这里是 takeUnless { Auto && Intro } —— Auto 模式直接把片头按钮藏了，所以看不到倒计时。
+            segment?.let { s ->
+                val label = when {
+                    s.kind == SkipSegment.Kind.Intro -> "跳过片头"
+                    ui.next != null -> "下一集"
+                    else -> "跳过片尾"
+                }
+                val countingDown = ui.skipMode == SkipMode.Auto && skipCountdown > 0f
+                Box(
+                    Modifier.align(Alignment.BottomEnd).windowInsetsPadding(WindowInsets.safeDrawing)
+                        .padding(end = 24.dp, bottom = if (controls) 120.dp else 32.dp)
+                        .clip(Corner.pill)
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .clickable { session.skip(s) }
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
                 ) {
-                    Icon(if (s.kind == SkipSegment.Kind.Intro) Icons.Rounded.FastForward else Icons.Rounded.SkipNext, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (s.kind == SkipSegment.Kind.Intro) "跳过片头" else if (ui.next != null) "下一集" else "跳过片尾")
+                    // 倒计时填充：从左往右一块色块，5 秒铺满
+                    if (countingDown) {
+                        Box(
+                            Modifier.matchParentSize()
+                                .background(Color.White.copy(alpha = 0.28f), Corner.pill)
+                                .then(
+                                    Modifier.drawWithContent {
+                                        clipRect(right = size.width * skipCountdown.coerceIn(0f, 1f)) {
+                                            drawContent()
+                                        }
+                                    },
+                                ),
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (s.kind == SkipSegment.Kind.Intro) Icons.Rounded.FastForward else Icons.Rounded.SkipNext,
+                            null,
+                            Modifier.size(18.dp),
+                            tint = Color.White,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(label, color = Color.White, fontSize = 14.sp)
+                        if (countingDown) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "${(5 * (1f - skipCountdown)).toInt() + 1}s",
+                                color = Color.White.copy(alpha = 0.75f),
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
                 }
             }
         }
