@@ -15,7 +15,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import xyz.etkn.mobile.data.settings.AppSettings
+import xyz.etkn.mobile.data.settings.Settings
 import java.io.File
 
 /**
@@ -47,20 +47,22 @@ object PlaybackCache {
     fun clearWarmed() { warmedEpisodeId = null }
 
     @Synchronized
-    fun cache(context: Context, settings: AppSettings): SimpleCache {
+    fun cache(context: Context, settings: Settings): SimpleCache {
         cache?.let { return it }
         val dir = File(context.cacheDir, "media")
         dir.mkdirs()
+        // 用 LRU 淘汰器并带上限：超过设置的 GB 数就自动清最久没用的。
+        val limit = maxDiskBytes(settings)
         val built = SimpleCache(
             dir,
-            object : androidx.media3.datasource.cache.NoOpCacheEvictor() {},
+            androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor(limit),
         )
         cache = built
         return built
     }
 
     /** 磁盘上限（GB → 字节）。设置里改了要重建缓存才会生效。 */
-    fun maxDiskBytes(settings: AppSettings): Long =
+    fun maxDiskBytes(settings: Settings): Long =
         (settings.cacheDiskGb.coerceIn(1, 100).toLong() * 1024L * 1024L * 1024L)
 
     /** 当前磁盘缓存占用（字节）。 */
@@ -75,7 +77,7 @@ object PlaybackCache {
      * 预加载一集：把它整段读进磁盘缓存。
      * 只在「预加载」开着、拿到直链、且缓存还没命中时做。
      */
-    fun preload(context: Context, settings: AppSettings, episodeId: String, url: String) {
+    fun preload(context: Context, settings: Settings, episodeId: String, url: String) {
         if (!settings.preloadNext) return
         preloadJob?.cancel()
         preloadJob = scope.launch {
@@ -89,7 +91,10 @@ object PlaybackCache {
                 val cached = simple.getCachedBytes(url, 0, -1)
                 if (cached > 0) { warmedEpisodeId = episodeId; return@launch }
                 CacheWriter(
-                    CacheDataSource.Factory().setCache(simple).setUpstreamDataSourceFactory { dataSource as DataSource.Factory }.createDataSource(),
+                    CacheDataSource.Factory()
+                        .setCache(simple)
+                        .setUpstreamDataSourceFactory(androidx.media3.datasource.DefaultHttpDataSource.Factory().setUserAgent("ETKN-Mobile"))
+                        .createDataSource(),
                     dataSpec,
                     null,
                     null,
@@ -100,7 +105,7 @@ object PlaybackCache {
     }
 
     /** 播完一集后按设置清掉该集缓存，避免磁盘越堆越多。 */
-    fun afterEpisodeFinished(context: Context, settings: AppSettings, url: String?) {
+    fun afterEpisodeFinished(context: Context, settings: Settings, url: String?) {
         if (!settings.cacheClearOnFinish) return
         if (url.isNullOrEmpty()) return
         scope.launch { runCatching { cache(context, settings).removeResource(url) } }
@@ -108,7 +113,7 @@ object PlaybackCache {
 
     /** 供播放内核取用的可复用数据源（命中缓存就不走网络）。 */
     @Synchronized
-    fun dataSourceFactory(context: Context, settings: AppSettings): CacheDataSource.Factory {
+    fun dataSourceFactory(context: Context, settings: Settings): CacheDataSource.Factory {
         factory?.let { return it }
         val built = CacheDataSource.Factory()
             .setCache(cache(context, settings))

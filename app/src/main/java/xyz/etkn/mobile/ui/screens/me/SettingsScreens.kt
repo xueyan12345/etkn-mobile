@@ -74,6 +74,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.material3.Spacer
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 
 enum class SettingsPage(val title: String) { Appearance("外观"), Playback("播放"), Danmaku("弹幕"), Update("检查更新") }
 
@@ -287,7 +289,7 @@ private fun SliderRow(
  *  · 清空磁盘缓存              按钮 + 当前占用
  */
 @Composable
-private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.AppSettings) {
+private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val graph = context.graph

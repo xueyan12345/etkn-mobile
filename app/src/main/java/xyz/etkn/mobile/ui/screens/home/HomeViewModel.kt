@@ -156,21 +156,21 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
         heroJob?.cancel()
         heroJob = viewModelScope.launch {
             val bucket = heroBucket()   // 0 点 / 12 点两档，桶内不变
-          coroutineScope {
-            val pool = ArrayList<Item>()
-            // 各库并行取，谁拿到都算
-            val jobs = data.latest.map { shelfData ->
-                async {
-                    val types = when (shelfData.library.collectionType) {
-                        "movies" -> "Movie"
-                        "tvshows" -> "Series"
-                        else -> null
+            // 各库并行取，结果汇总到一个池子里
+            val pool = coroutineScope {
+                val jobs = data.latest.map { shelfData ->
+                    async {
+                        val types = when (shelfData.library.collectionType) {
+                            "movies" -> "Movie"
+                            "tvshows" -> "Series"
+                            else -> null
+                        }
+                        runCatching { api.latest(shelfData.library.id, types, HERO_POOL_PER_LIBRARY) }
+                            .getOrDefault(emptyList())
                     }
-                    runCatching { api.latest(shelfData.library.id, types, HERO_POOL_PER_LIBRARY) }.getOrDefault(emptyList())
                 }
+                jobs.awaitAll().flatten()
             }
-            jobs.forEach { pool += it.await() }
-          }
             // 只有带背景图的才能上轮播
             val candidates = pool.asSequence()
                 .filter(::hasBackdrop)
