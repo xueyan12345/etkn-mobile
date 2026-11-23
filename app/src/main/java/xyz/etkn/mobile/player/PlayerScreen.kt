@@ -128,6 +128,11 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     // 用户手动覆盖过方向就不再自动跟随，直到换集重置
     var manualOrientation by remember { mutableStateOf(false) }
     /**
+     * 用户口径（2026-11-23）：系统不认方向 -> 整层 90° 旋转（配合 TextureView 才有效）。
+     * 初值 false：先让系统试；确认系统没转过去才打开。
+     */
+    var forceRotate by remember { mutableStateOf(false) }
+    /**
      * 用户口径（2026-11-23）OPPO Pad Mini 专项：这台平板上「旋转屏幕」按钮完全无效，
      * 只能跟随系统方向。SenPlayer / AfuseKit 同样如此 → 不是我们独有的 bug，
      * 是这台设备（Android 16 大屏 + ColorOS）的取向限制。
@@ -192,10 +197,13 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 val real = localConfig.orientation
                 val ok = real == want
+                // 用户口径（2026-11-23）：系统真转过去了 -> 不需要旋转画面；
+                // 系统不认（大屏设备）-> 打开整层 90° 旋转，配合 TextureView 真正生效。
+                forceRotate = !ok
                 android.util.Log.i(
                     "ETKN-Rotate",
                     "round=$round want=${if (wantPortrait) "P" else "L"} " +
-                        "real=${if (ok) "P" else "L"} ok=$ok",
+                        "real=${if (ok) "P" else "L"} ok=$ok canvasRotate=$forceRotate",
                 )
                 if (!ok && round < 3) {
                     apply()
@@ -423,16 +431,41 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 再把容器整体转 90° 铺满屏幕。布局按横屏算、画面也是横的，
      * 完全不依赖系统 orientation。
      */
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        /**
-         * 用户口径（2026-11-23）**画面旋转方案彻底废弃**。
-         *
-         * 实测结果：给整层套 graphicsLayer rotationZ=90° 之后，
-         * 横屏播放时画面被转成了「竖排文字」（用户截图为证）——
-         * 因为 SurfaceView 是独立的硬件图层，Compose 的图层旋转不能正确搬运它。
-         *
-         * 结论：横屏必须靠系统方向，不能靠旋转画面。这里恢复成普通 Box。
-         */
+    /**
+     * 用户口径（2026-11-23）**平板旋转最终方案：TextureView + 整层 90° 旋转**。
+     *
+     * 前两次为什么失败：
+     *  · 只转视频层 → PlayerView 用 SurfaceView 输出，SurfaceView 是独立硬件合成层，
+     *    不在 View 树里绘制，Compose 转不动它 → 画面变「竖排文字」。
+     *  · 改用系统 requestedOrientation → Android 16 大屏直接忽略这个请求。
+     *
+     * 这次两条一起做（缺一不可）：
+     *  ① Exo 的 PlayerView 已切 setUseTextureView(true)
+     *     → 画面变成普通纹理，绘制在 View 树内，可以被变换
+     *  ② 整层（视频+控制条+弹幕）按「宽高互换画布」+ rotationZ=90° 绘制
+     *     → 竖屏窗口里看到完整横屏画面，控件位置也正确
+     *
+     * 仅当系统确实不转（forceRotate=true）时启用；正常设备仍是普通全屏。
+     */
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+        val rotated = forceRotate
+        val canvasW = if (rotated) maxHeight else maxWidth
+        val canvasH = if (rotated) maxWidth else maxHeight
+        Box(
+            Modifier.then(
+                if (rotated) {
+                    Modifier
+                        .size(canvasW, canvasH)
+                        .graphicsLayer {
+                            rotationZ = 90f
+                            translationX = (canvasH - canvasW).toPx() / 2f
+                            translationY = (canvasW - canvasH).toPx() / 2f
+                        }
+                } else {
+                    Modifier.fillMaxSize()
+                },
+            ),
+        ) {
         when (val core = player) {
             null -> Unit
             // mpv draws video and subtitles into its own SurfaceView.
@@ -448,6 +481,19 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     factory = { ctx ->
                         PlayerView(ctx).apply {
                             useController = false
+                            /**
+                             * 用户口径（2026-11-23）**平板旋转的关键**。
+                             *
+                             * 之前旋转整层失败，画面变成「竖排文字」，根因是：
+                             * PlayerView 默认用 SurfaceView 输出画面，SurfaceView 是独立的
+                             * 硬件合成层（不在 View 层级树里绘制），Compose 的
+                             * graphicsLayer/graphicsLayer 旋转只能转 View 树，转不动它。
+                             *
+                             * 换成 TextureView：画面作为普通纹理绘制在 View 树内，
+                             * 父容器做 90° 旋转变换就能真正生效。代价是略多一点 GPU 合成开销，
+                             * 但换来「系统不认方向时也能强制横屏」这个必须有的能力。
+                             */
+                            setUseTextureView(true)
                             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                             setShutterBackgroundColor(android.graphics.Color.BLACK)
                             setKeepContentOnPlayerReset(true)
@@ -649,6 +695,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     }
                 }
             }
+        }
         }
     }
 

@@ -34,8 +34,16 @@ object Diagnostics {
     private const val FILES = 8
     private const val KEEP_DAYS = 7L
 
-    /** Tags written at info level; everything else only at error level. */
-    private val TAGS = listOf("ETKN", "ETKN-Play", "ETKN-Disc", "ETKN-Player", "ETKN-Mpv")
+    /**
+     * Tags written at info level; everything else only at error level.
+     *
+     * 用户口径（2026-11-23）：**这里漏了 ETKN-Rotate，导致平板旋转的所有诊断日志
+     * 一条都没进日志文件**（logcat 过滤只保留白名单 tag 的 info）。
+     * 我连着两版加日志都看不到，就是因为这个。
+     *
+     * 不再逐个列举：凡是 ETKN 打头的 tag 都要 info，新加模块不会再漏。
+     */
+    private val TAGS = listOf("ETKN", "ETKN-Play", "ETKN-Disc", "ETKN-Player", "ETKN-Mpv", "ETKN-Rotate")
     private val FILTER = TAGS.map { "$it:I" } + "*:E"
 
     fun start(context: Context) {
