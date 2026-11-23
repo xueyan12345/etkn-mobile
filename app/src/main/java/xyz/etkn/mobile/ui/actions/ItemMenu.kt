@@ -100,6 +100,11 @@ internal data class Entry(val action: ItemAction, val label: String, val icon: I
 data class PopupChoice(
     val label: String,
     val icon: ImageVector? = null,
+    /**
+     * 用户口径（2026-11-23）：账号快捷浮层里每人要显示 ETKN 服务器上给该账号设的头像。
+     * 有 url 就画头像（小圆角方框），没有就退回 [icon]。
+     */
+    val avatarUrl: String? = null,
     val selected: Boolean = false,
     val trailing: ImageVector? = null,
     val onClick: () -> Unit,
@@ -481,9 +486,19 @@ private fun PopupCard(popup: GlassPopup, menu: ItemMenu, haze: HazeState?) {
                     .padding(horizontal = 12.dp, vertical = RowPadding),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                choice.icon?.let {
-                    Icon(it, null, tint = tint, modifier = Modifier.size(MenuIcon))
+                if (choice.avatarUrl != null) {
+                    xyz.etkn.mobile.ui.components.Artwork(
+                        choice.avatarUrl,
+                        Modifier.size(MenuAvatar).clip(androidx.compose.foundation.shape.RoundedCornerShape(5.dp)),
+                        choice.label,
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
                     Spacer(Modifier.width(12.dp))
+                } else {
+                    choice.icon?.let {
+                        Icon(it, null, tint = tint, modifier = Modifier.size(MenuIcon))
+                        Spacer(Modifier.width(12.dp))
+                    }
                 }
                 Text(choice.label, style = MaterialTheme.typography.bodyMedium, color = tint, modifier = Modifier.weight(1f))
                 choice.trailing?.let {
@@ -498,6 +513,8 @@ private fun PopupCard(popup: GlassPopup, menu: ItemMenu, haze: HazeState?) {
 // Compact rows: 40 dp tall (the minimum comfortable touch height), small icon and body text.
 private val MenuWidth = 200.dp
 private val MenuIcon = 18.dp
+/** 账号头像尺寸：比通用图标小一点，不撑高行高。 */
+private val MenuAvatar = 20.dp
 private val RowPadding = 11.dp
 
 

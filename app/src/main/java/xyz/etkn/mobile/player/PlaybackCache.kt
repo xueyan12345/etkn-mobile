@@ -345,11 +345,11 @@ object PlaybackCache {
         currentDurationMs: Long,
         currentLength: Long,
         next: Pair<String, String>?,   // (episodeId, url)
-    ) {
+    ): Job? {
         val key = stableKey(currentUrl)
-        if (writing.containsKey(key)) return
+        if (writing.containsKey(key)) return writing[key]
 
-        writing[key] = workScope.launch {
+        val job = workScope.launch {
             try {
                 // 第一环：当前集 —— 把「位置 + 窗口」这段拉到本地
                 val currentDone = pullWindow(
@@ -373,6 +373,13 @@ object PlaybackCache {
                 writing.remove(key)
             }
         }
+        /**
+         * 用户口径（2026-11-23）修「缓冲条到头了但下一集闪电气泡不亮」：
+         * 原来这个函数自己 launch 完就返回，调用方紧接着读 isNextReady() 永远是 false，
+         * 而且之后再没人更新 UI。改成把 Job 返回出去，调用方可以挂完成回调再刷新状态。
+         */
+        writing[key] = job
+        return job
     }
 
 
@@ -405,6 +412,13 @@ object PlaybackCache {
                 writing.remove(key)
             }
         }
+        /**
+         * 用户口径（2026-11-23）修「缓冲条到头了但下一集闪电气泡不亮」：
+         * 原来这个函数自己 launch 完就返回，调用方紧接着读 isNextReady() 永远是 false，
+         * 而且之后再没人更新 UI。改成把 Job 返回出去，调用方可以挂完成回调再刷新状态。
+         */
+        writing[key] = job
+        return job
     }
 
     /** 播完一集按设置清掉该集缓存（按 itemId 定位文件）。 */

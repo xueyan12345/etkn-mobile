@@ -138,6 +138,15 @@ internal fun Dock(
                                         PopupChoice(
                                             label = acc.userName,
                                             icon = Icons.Rounded.Person,
+                                            /**
+                                             * 用户口径（2026-11-23）：这个快捷切号浮层里的两个小人，
+                                             * 换成各账号在 ETKN 服务器上设置的头像。
+                                             * 「管理账号 / 添加」进去那一页本来就是头像，不用动。
+                                             */
+                                            avatarUrl = runCatching {
+                                                xyz.etkn.mobile.data.api.ImageUrls(acc.serverUrl, acc.userId)
+                                                    .user(acc.userId, acc.imageTag, 72)
+                                            }.getOrNull(),
                                             selected = acc.key == activeAccountKey,
                                             trailing = if (acc.sealedToken == null) Icons.Rounded.Lock else null,
                                             onClick = { scope.launch { runCatching { onSwitchAccount(acc) } } },

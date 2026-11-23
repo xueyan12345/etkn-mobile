@@ -641,7 +641,12 @@ class VideoSession(
         }
         val length = currentLength
         scope.launch {
-            PlaybackCache.pipeline(
+            /**
+             * 用户口径（2026-11-23）修「缓冲条到头但下一集气泡不亮」：
+             * pipeline() 以前是 fire-and-forget，这里 await 它真正跑完再刷新状态，
+             * 否则 isNextReady() 在下载刚开始时就返回 false，气泡永远不亮。
+             */
+            val job = PlaybackCache.pipeline(
                 context = graph.app,
                 settings = settings,
                 currentEpisodeId = currentItem.id,
@@ -651,6 +656,7 @@ class VideoSession(
                 currentLength = length,
                 next = nextUrl?.let { (id, url) -> id to url },
             )
+            job?.join()
             // 用户口径（2026-11-23）：缓冲条要反映「按设置真正缓存到哪」，
             // 不是播放器内核那一小截前向缓冲。
             val covered = PlaybackCache.cachedPositionMs(graph.app, currentItem.id, durationMs, length)

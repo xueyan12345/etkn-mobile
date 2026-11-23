@@ -355,7 +355,24 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 现在加前置条件：**必须已经在播且不在起播缓冲中**，才显示按钮和起倒计时。
      * 起播阶段（ui.loading / 首帧未出）完全不显示，避免闪。
      */
-    val skipVisible = segment != null && !ui.loading && ui.error == null && position > 500
+    /**
+     * 用户口径（2026-11-23）**「取消」要真的取消掉整组按钮**。
+     *
+     * 之前的问题：点「取消」只是调 session.cancelAutoSkip(s) 设了个标志位，
+     * 而 skipCountdown 这个 UI 状态没人清、segment 也没变 →
+     *  ① 胶囊 + 「取消」两个字一直留在屏幕上不走
+     *  ② 倒计时照样跑到 100%，数字停在「1s」不动
+     * 用户看到的就是「固定在 1 秒，取消也不消失」。
+     *
+     * 现在用一个独立的 dismissed 状态：点取消 → 立刻把倒计时清零 + 标记已忽略这一段，
+     * 整组按钮马上消失，并且这一段不会再弹出来（换段/换集才复位）。
+     */
+    var skipDismissed by remember { mutableStateOf(false) }
+    // 换到别的片段 / 换集时复位「已忽略」
+    LaunchedEffect(segment?.kind, ui.item?.id) { skipDismissed = false }
+
+    val skipVisible = segment != null && !ui.loading && ui.error == null &&
+        position > 500 && !skipDismissed
     LaunchedEffect(segment, skipVisible) {
         if (!skipVisible) {
             skipCountdown = 0f
@@ -369,10 +386,15 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         // 5 秒色块填充：每 50ms 走 1%，5 秒正好 100%
         repeat(100) { step ->
             delay(50)
+            // 中途点了取消 → 立刻停止填充，保持 0（按钮已由 skipDismissed 隐藏）
+            if (skipDismissed) {
+                skipCountdown = 0f
+                return@LaunchedEffect
+            }
             skipCountdown = (step + 1) / 100f
         }
-        // 填满才真正跳；用户中途点了「取消」的话 autoSkip 会返回 false，这次就不跳
-        session.autoSkip(segment)
+        // 填满才真正跳
+        if (!skipDismissed) session.autoSkip(segment)
     }
     // Double-tap seek feedback clears itself; drag feedback is cleared on release.
     LaunchedEffect(gesture) {
@@ -610,7 +632,12 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                             "取消",
                             color = Color.White.copy(alpha = 0.9f),
                             fontSize = 14.sp,
-                            modifier = Modifier.clickable { session.cancelAutoSkip(s) },
+                            modifier = Modifier.clickable {
+                                // 用户口径（2026-11-23）：点取消 → 这组按钮立刻消失，别再固定在那儿
+                                skipDismissed = true
+                                skipCountdown = 0f
+                                session.cancelAutoSkip(s)
+                            },
                         )
                     }
                 }
