@@ -112,11 +112,12 @@ fun DiscoverScreen() {
      * 返回时原样恢复，停在你刚才翻到的位置。
      */
     /**
-     * LazyGridState 自带 Saver：rememberSaveable 直接用它，
+     * LazyGridState 自带 Saver：用 rememberSaveable 直接构造，
      * 首项 index 和偏移量会进 SavedStateRegistry，返回时原样恢复。
+     * 注意不能在里面调 rememberLazyGridState()（那是 @Composable，saver lambda 不是组合上下文）。
      */
     val grid = rememberSaveable(saver = androidx.compose.foundation.lazy.grid.LazyGridState.Saver) {
-        rememberLazyGridState()
+        androidx.compose.foundation.lazy.grid.LazyGridState()
     }
     val density = LocalDensity.current
     // Measured with the status bar and its padding: the grid starts right below the bar.
