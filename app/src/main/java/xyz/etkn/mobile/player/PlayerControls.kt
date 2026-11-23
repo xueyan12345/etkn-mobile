@@ -30,7 +30,6 @@ import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.LockOpen
-import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -212,7 +211,10 @@ internal fun Controls(
             PlayerAction(Icons.Rounded.AspectRatio, resizeLabel, onResize)
             PlayerAction(Icons.Rounded.PictureInPictureAlt, "画中画", onPip)
             PlayerAction(Icons.Rounded.ScreenRotation, rotateLabel, onRotate)
-            PlayerAction(Icons.Rounded.MoreVert, "更多") { onSheet(Sheet.More) }
+            // 用户口径（2026-11-23）：右上角三点按钮 + 它打开的菜单**整个删掉**。
+            // 只删显示 —— 菜单背后的功能全部保留（旋转屏幕顶栏另有按钮、
+            // 跳过片头片尾/定时关闭在设置页可改、切换内核由设置页内核选项控制），
+            // 不做任何功能删减。
         }
 
         // ===== 用户口径（2026-11-23）左侧垂直居中：只放锁（从底栏移过来）=====

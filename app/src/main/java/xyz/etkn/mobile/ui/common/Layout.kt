@@ -5,6 +5,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
 
 /** Material window width classes: phone (< 600 dp), small tablet / unfolded (600–839), tablet (≥ 840). */
 enum class WindowLayout {
@@ -36,12 +37,17 @@ fun currentWindowLayout(): WindowLayout {
 }
 
 /**
- * 用户口径（2026-11-23）：卡片尺寸不能只用两个固定档（手机 210dp / 宽屏 260dp）。
- * 平板实测继续观看封面明显偏大 —— 固定 dp 在大屏上占屏比例失衡。
- * 这里按窗口宽度算一个合理的卡片宽度，并夹在可用范围内。
+ * 用户口径（2026-11-23，平板尺寸彻底重做）：
  *
- * [base] 手机上想要的宽度；[fraction] 该宽度大约占手机屏宽的比例。
- * 返回值随窗口线性放大，但不超过 [maxWidth]。
+ * 之前两版都错在同一个地方 —— 用「屏幕宽度 × 固定比例」算卡片宽度：
+ *   responsiveCardWidth(base=210, max=300, fraction=0.42) 在 840dp 上算出 352dp(封顶300)
+ *   比手机上的 260dp 还大 → 平板看着更挤、一张卡占掉近半屏。
+ *
+ * 正确算法是反过来：**先定「这一行要放几张」，再拿它反推卡片宽度**。
+ * 平板一行放得下更多张，所以卡片应该更小，而不是更大。
+ *
+ * [base]      手机上一行放 2.2 张时的基准宽度（用于紧凑屏兜底）
+ * [minColumns] 宽屏时一行至少放几张（卡片宽度的上限由它决定）
  */
 @Composable
 fun responsiveCardWidth(
@@ -50,9 +56,33 @@ fun responsiveCardWidth(
     fractionOfScreen: Float = 0.56f,
 ): androidx.compose.ui.unit.Dp {
     val screen = windowSizeDp().width
+    val layout = currentWindowLayout()
+    // 宽屏：按「一行放几张」反推，绝不比手机基准更宽
+    if (layout.wide) {
+        // 平板一行放 4 张（手机约 2.2 张）；算上屏幕左右边距与卡片间距的余量
+        val columns = if (layout == WindowLayout.Expanded) 4.2f else 3.2f
+        val byColumns = screen / columns
+        return (if (byColumns < base) byColumns else base).coerceAtLeast(120.dp)
+    }
+    // 手机：沿用比例算法
     val desired = screen * fractionOfScreen
-    // 宽屏上别太大：至少保证一屏能放下 2.2 张，避免封面占满半屏
     val capped = if (desired > maxWidth) maxWidth else desired
-    // 不小于手机上的基准尺寸
     return if (capped < base) base else capped
 }
+
+/**
+ * 用户口径（2026-11-23）：网格按「一行几张」直接算，而不是靠固定 dp 撞运气。
+ * 首页媒体库分类卡、海报行、网格页统一用它，平板才不会出现「第三张被切一半」。
+ */
+@Composable
+fun gridColumns(default: Int): Int {
+    val screen = windowSizeDp().width.value
+    return when {
+        screen >= 1200 -> default + 3
+        screen >= 1000 -> default + 2
+        screen >= 840 -> default + 1
+        screen >= 600 -> default
+        else -> default - 1
+    }.coerceAtLeast(2)
+}
+

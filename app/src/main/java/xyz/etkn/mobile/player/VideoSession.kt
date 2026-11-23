@@ -249,14 +249,22 @@ class VideoSession(
         }
     }
 
-    /** Discs and HDR / Dolby Vision stay on ExoPlayer: it outputs HDR, mpv's GL path tone-maps. */
+    /**
+     * 用户口径（2026-11-23）：**默认全走 ExoPlayer，播放失败才切 mpv。**
+     *
+     * 之前 Auto 是「HDR → Exo，其余 → mpv」，会在普通片源上直接给到 mpv。
+     * 现在改成：Auto = 一律 ExoPlayer；Exo 起播失败/解码报错时，由
+     * onPlayerError 里的自动换核逻辑切到 mpv（那段本来就是 Exo→Mpv，无需改）。
+     * 手动在设置里选了内核仍然优先。
+     */
     private fun engineFor(chosen: MediaSource, disc: Boolean): Engine {
         forcedEngine?.let { return it }
         if (disc) return Engine.Exo
         return when (settings.engine) {
             PlayerEngine.Exo -> Engine.Exo
             PlayerEngine.Mpv -> Engine.Mpv
-            PlayerEngine.Auto -> if (PlaybackAddress.isHdr(chosen)) Engine.Exo else Engine.Mpv
+            // Auto：一律先用 ExoPlayer，失败再自动退 mpv
+            PlayerEngine.Auto -> Engine.Exo
         }
     }
 

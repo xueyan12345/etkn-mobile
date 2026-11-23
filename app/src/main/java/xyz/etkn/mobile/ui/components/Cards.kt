@@ -193,14 +193,12 @@ fun WideCard(
     item: Item,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    // 用户口径（2026-11-23）：平板实测继续观看封面偏大 —— 改成按窗口宽度自适应。
-    // 手机上仍是 210dp；平板随屏宽放大但封顶 300dp（一屏至少放得下 3 张）。
+    // 用户口径（2026-11-23）：继续观看卡**宽屏不许比手机更宽**。
+    // 前两版一直错在「屏越宽卡越大」，平板上反而更挤。现在封顶就是手机尺寸，
+    // 平板靠「一行多放几张」来利用空间，而不是把单张放大。
     width: Dp = responsiveCardWidth(
         base = Etkn.space.wideCard,
-        // 用户口径（2026-11-23）：平板上一张继续观看卡不该占太多屏宽 ——
-        // 之前 maxWidth=300dp 反而比原来的 260dp 更大。收到 210dp 封顶，
-        // 一屏能放下 4 张左右，和手机观感一致。
-        maxWidth = 210.dp,
+        maxWidth = Etkn.space.wideCard,
         fractionOfScreen = 0.26f,
     ),
     /** Continue-watching cards add 从继续观看移除 to the long-press menu. */
@@ -281,8 +279,9 @@ fun LibraryCard(
     item: Item,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    // 用户口径（2026-11-23）：平板适配，媒体库卡也跟着屏宽走（手机 200dp，封顶 260dp）。
-    width: Dp = responsiveCardWidth(base = 200.dp, maxWidth = 260.dp, fractionOfScreen = 0.40f),
+    // 用户口径（2026-11-23）：媒体库分类卡按「一行放几张」反推宽度。
+    // 平板一行要能完整放下 3 张以上（之前固定 200dp 在竖屏平板上只能放 2 张，第 3 张被切一半）。
+    width: Dp = responsiveCardWidth(base = 200.dp, maxWidth = 200.dp, fractionOfScreen = 0.40f),
     /** 用户口径（2026-11-23）：长按弹服务端功能菜单（只有管理员给）。 */
     onLongClick: (() -> Unit)? = null,
 ) {

@@ -73,7 +73,7 @@ private val ResizeModes = listOf(
     AspectRatioFrameLayout.RESIZE_MODE_FILL to "拉伸",
 )
 
-internal enum class Sheet { None, Audio, Subtitle, Speed, Episodes, Versions, Danmaku, Sleep, Cast, More }
+internal enum class Sheet { None, Audio, Subtitle, Speed, Episodes, Versions, Danmaku, Sleep, Cast }
 
 @Composable
 fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPip: () -> Unit) {
