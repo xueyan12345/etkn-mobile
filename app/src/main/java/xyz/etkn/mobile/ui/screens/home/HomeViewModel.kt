@@ -156,9 +156,14 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
         heroJob?.cancel()
         heroJob = viewModelScope.launch {
             val bucket = heroBucket()   // 0 点 / 12 点两档，桶内不变
-            // 各库并行取，结果汇总到一个池子里
+            /**
+             * 用户口径（2026-11-23）：轮播图 = 把所有媒体库的片子全部汇总 → 整体打乱 → 随机取 8 个。
+             *
+             * 明确不要分层抽样（不按库轮流取、不给每个库配额）。就是全量池打乱。
+             * 桶内种子固定（0 点/12 点各一批），12 小时内不变。
+             */
             val pool = coroutineScope {
-                val jobs = data.latest.map { shelfData ->
+                data.latest.map { shelfData ->
                     async {
                         val types = when (shelfData.library.collectionType) {
                             "movies" -> "Movie"
@@ -168,17 +173,14 @@ class HomeViewModel(private val graph: AppGraph) : ViewModel() {
                         runCatching { api.latest(shelfData.library.id, types, HERO_POOL_PER_LIBRARY) }
                             .getOrDefault(emptyList())
                     }
-                }
-                jobs.awaitAll().flatten()
+                }.awaitAll().flatten()
             }
-            // 只有带背景图的才能上轮播；并且排除「已经看完」的
             val candidates = pool.asSequence()
                 .filter(::hasBackdrop)
                 .filter { !isFinished(it) }
                 .distinctBy { it.id }
                 .toList()
             if (candidates.isNotEmpty()) {
-                // 同一个 12 小时桶内种子固定 → 抽出来的一批 12 小时不变
                 publishHero(candidates.shuffled(Random(bucket)).take(HERO_SIZE))
                 return@launch
             }

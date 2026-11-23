@@ -82,6 +82,8 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 
 @Composable
 fun MeScreen() {
@@ -256,7 +258,29 @@ fun AccountsScreen() {
                                 if (account.sealedToken == null && !active) " · 需要密码" else "",
                         )
                     },
-                    leadingContent = { Icon(Icons.Rounded.Person, null) },
+                    /**
+                     * 用户口径（2026-11-23）：账号前面的小图标换成 ETKN 服务器里给这个账号设的头像。
+                     * 只换图标，弹窗尺寸/行高/布局一律不动；头像做小一点（28dp 圆角方框）。
+                     * 没有设置头像（imageTag 为空）时退回原来的通用用户图标。
+                     */
+                    leadingContent = {
+                        val avatar = remember(account.serverUrl, account.userId, account.imageTag) {
+                            runCatching {
+                                xyz.etkn.mobile.data.api.ImageUrls(account.serverUrl, account.userId)
+                                    .user(account.userId, account.imageTag, 96)
+                            }.getOrNull()
+                        }
+                        if (avatar != null) {
+                            xyz.etkn.mobile.ui.components.Artwork(
+                                avatar,
+                                Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)),
+                                account.userName,
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            )
+                        } else {
+                            Icon(Icons.Rounded.Person, null, modifier = Modifier.size(24.dp))
+                        }
+                    },
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (isDefault) Text("默认", color = MaterialTheme.colorScheme.primary)
