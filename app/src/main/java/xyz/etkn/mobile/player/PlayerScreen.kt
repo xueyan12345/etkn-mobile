@@ -135,6 +135,11 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      */
     var forceRotate by remember { mutableStateOf(false) }
     /**
+     * 用户口径（2026-11-23）：只有确认需要兜底的机型才允许画布旋转。
+     * 手机 / 普通平板系统方向正常，误开就会把画面压成中央小方块。
+     */
+    val needsCanvasRotation = remember { CanvasRotationSupport.enabled }
+    /**
      * 用户口径（2026-11-23）OPPO Pad Mini 专项：这台平板上「旋转屏幕」按钮完全无效，
      * 只能跟随系统方向。SenPlayer / AfuseKit 同样如此 → 不是我们独有的 bug，
      * 是这台设备（Android 16 大屏 + ColorOS）的取向限制。
@@ -184,7 +189,6 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         }
         val apply = {
             runCatching { act?.requestedOrientation = target }
-            // 部分 ROM 需要再碰一次 window 属性才会重新评估方向
             runCatching {
                 act?.window?.attributes = act.window.attributes.apply {
                     screenOrientation = target
@@ -194,18 +198,31 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         apply()
         val want = if (wantPortrait) android.content.res.Configuration.ORIENTATION_PORTRAIT
         else android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        // 300ms 后校验真实方向，没成再强推一次（最多三次）
         fun verify(round: Int) {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                val real = localConfig.orientation
+                /**
+                 * 用户口径（2026-11-23）**这里之前用 localConfig 读方向，是错的**。
+                 *
+                 * localConfig（LocalConfiguration.current）是 Compose 组合期的快照，
+                 * 在 postDelayed 回调里不会刷新 —— 日志里出现
+                 * `real=L ok=false`（真实是横屏却判失败）就是它读到了旧值，
+                 * 于是错误地打开了画布旋转，把本该正常的手机画面压成小方块。
+                 *
+                 * 改成读 Activity 的实时配置：那是系统当前真实方向。
+                 */
+                val real = act?.resources?.configuration?.orientation
                 val ok = real == want
-                // 用户口径（2026-11-23）：系统真转过去了 -> 不需要旋转画面；
-                // 系统不认（大屏设备）-> 打开整层 90° 旋转，配合 TextureView 真正生效。
-                forceRotate = !ok
+                /**
+                 * 只有【需要兜底的机型】才允许开画布旋转。
+                 * 手机 / 其他平板系统方向本来就正常，一旦误开就会把画面压成小方块
+                 * （用户实测：手机播放变成中央小窗）。所以这里必须机型门控。
+                 */
+                forceRotate = !ok && needsCanvasRotation
                 android.util.Log.i(
                     "ETKN-Rotate",
                     "round=$round want=${if (wantPortrait) "P" else "L"} " +
-                        "real=${if (ok) "P" else "L"} ok=$ok canvasRotate=$forceRotate",
+                        "real=${if (ok) "P" else "L"} ok=$ok " +
+                        "gate=$needsCanvasRotation canvasRotate=$forceRotate",
                 )
                 if (!ok && round < 3) {
                     apply()
@@ -458,7 +475,8 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         // 正好铺满整屏，一个平移都不需要。
         contentAlignment = Alignment.Center,
     ) {
-        val rotated = forceRotate
+        // 双重门控：机型允许 + 系统确实没转成功
+        val rotated = forceRotate && needsCanvasRotation
         /**
          * 用户口径（2026-11-23）平板尺寸专门适配。
          *
@@ -498,10 +516,21 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             else -> key(core) {
                 AndroidView(
                     factory = { ctx ->
-                        // 用户口径（2026-11-23）：用 XML 版 PlayerView，surface_type=texture_view
-                        // （SurfaceView 转不动，TextureView 才能被 Compose 旋转）
-                        (android.view.LayoutInflater.from(ctx)
-                            .inflate(xyz.etkn.mobile.R.layout.view_texture_player, null) as PlayerView).apply {
+                        /**
+                         * 用户口径（2026-11-23）渲染方式也按机型分：
+                         *  · 需要画布旋转的设备（OPPO Pad Mini）→ TextureView
+                         *    只有 TextureView 参与界面树变换，能被旋转；
+                         *  · 其他设备（手机/普通平板）→ 保持 SurfaceView
+                         *    性能更好、HDR 直出更稳，且系统方向本来就正常，
+                         *    完全不需要旋转能力。
+                         */
+                        val pv = if (needsCanvasRotation) {
+                            android.view.LayoutInflater.from(ctx)
+                                .inflate(xyz.etkn.mobile.R.layout.view_texture_player, null) as PlayerView
+                        } else {
+                            PlayerView(ctx)
+                        }
+                        pv.apply {
                             useController = false
                             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                             setShutterBackgroundColor(android.graphics.Color.BLACK)
