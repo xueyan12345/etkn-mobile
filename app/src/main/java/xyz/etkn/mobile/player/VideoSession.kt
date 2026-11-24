@@ -169,6 +169,12 @@ class VideoSession(
     private var forcedEngine: Engine? = null
 
     /**
+     * 用户口径（2026-11-26）：下次创建的 mpv 是否是杜比视界源。
+     * mpv 必须在 load 之前知道这件事，才能按 IPTPQc2 解析颜色。
+     */
+    private var pendingDvSource = false
+
+    /**
      * 用户口径（2026-11-26）**设置里的内核选择优先级最高**。
      *
      * 实测问题：设置改成 Exo / mpv 后「完全没感觉」——因为
@@ -360,6 +366,11 @@ class VideoSession(
                      */
                     if (dv5 && engine == Engine.Exo && forcedEngine == null && autoSwitchAllowed) {
                         android.util.Log.i(TAG, "DV profile5 → 切 mpv（避免偏绿）")
+                        /**
+                         * 先把这个标记挂到「下次创建的 mpv 实例」上，
+                         * 否则 mpv 起来时不知道这是 DV 源，会按普通 HEVC 解释 → 偏绿。
+                         */
+                        pendingDvSource = true
                         forcedEngine = Engine.Mpv
                         val cur = source
                         val pos = player?.currentPosition ?: 0L
@@ -460,17 +471,26 @@ class VideoSession(
                      * 避免覆盖用户自己的引擎设置。
                      */
                     /**
-                     * 用户口径（2026-11-26）**不再自动切 mpv**。
+                     * 用户口径（2026-11-26）**HDR 片源切 mpv 做 tone-map**。
                      *
-                     * v1.4.5 为了给 HDR 做 tone-map，识别到 HDR 就切 mpv。
-                     * 实测后果：
-                     *  · mpv 在这台平板的「TextureView + 画布旋转」组合下渲染不出画面 → 黑屏
-                     *  · 而且切内核会让磁盘缓存全部失效 → 越播越卡
+                     * 走马上任是 HDR10（日志实证 color=BT2020/Limited range/ST2084 PQ）。
+                     * 平板上走 Exo + 纹理视图时 HDR 元数据丢失，PQ 编码值被当 SDR 显示 → 画面发黑。
                      *
-                     * 现在只记录日志、不切内核。
-                     * HDR 发暗问题改用「Exo + 系统合成器」路径解决（见 MpvPlayer 之外的方案）。
+                     * 之前 v1.4.5 切 mpv 失败是因为 mpv 的 SurfaceView 不参与外层画布旋转，
+                     * 画面虽然出来了但方向不对。**现在 mpv 自己能旋转（video-rotate）**，
+                     * 所以这条路径可以重新启用。
+                     *
+                     * 仍然只在「自动」模式下切；手动选了 Exo 就不切。
                      */
-                    // if (hdr && !dv) switchToHdrEngine()
+                    if (hdr && !dv && autoSwitchAllowed && engine == Engine.Exo && forcedEngine == null) {
+                        android.util.Log.i(TAG, "HDR → 切 mpv 做 tone-map（画面旋转由 mpv 自己处理）")
+                        forcedEngine = Engine.Mpv
+                        val cur = source
+                        val pos = player?.currentPosition ?: 0L
+                        if (cur != null) {
+                            main.post { if (!released && source === cur) playSource(cur, pos) }
+                        }
+                    }
                 }
             }
             applyServerTracks(tracks)
@@ -581,7 +601,15 @@ class VideoSession(
             existing.release()
         }
         val created: Pair<Engine, Player> = if (wanted == Engine.Mpv) {
-            runCatching { Engine.Mpv to MpvPlayer(context, graph.identity.userAgent, settings.decoder, PlayerFactory.preferredLanguages().toList()) }
+            runCatching {
+                /**
+                 * 用户口径（2026-11-26）：创建 mpv 时立刻告诉它「这个源是不是杜比视界」。
+                 * mpv 必须在 load 之前知道，否则会按普通 HEVC 解释 → 偏绿。
+                 */
+                val mpv = MpvPlayer(context, graph.identity.userAgent, settings.decoder, PlayerFactory.preferredLanguages().toList())
+                mpv.isDolbyVisionSource = pendingDvSource
+                Engine.Mpv to (mpv as Player)
+            }
                 .onFailure { Log.e(TAG, "mpv unavailable", it) }
                 .getOrNull()
                 ?: (Engine.Exo to PlayerFactory.video(context, graph.http.media, graph.identity.userAgent, settings.decoder, settings))

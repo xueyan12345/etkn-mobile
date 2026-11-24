@@ -252,11 +252,52 @@ class MpvPlayer(
          *  · hdr-compute-peak=yes → 逐帧估峰值，暗部不会压死
          * 这几项对 SDR 片源无副作用（mpv 不做转换），所以可以无条件设。
          */
+        /**
+         * 用户口径（2026-11-26）**杜比视界 profile 5 必须让 mpv 按 DV 解析**。
+         *
+         * 谷雨 = dvhe.05.08，日志实证 color=NA/NA/NA ——
+         * 文件头里没写色彩信息，颜色全靠 DV 元数据驱动（IPTPQc2 色彩空间）。
+         *
+         * mpv 默认可能把它当普通 HEVC（按 BT709 解释）→ 必然偏绿。
+         * 这里显式告诉 mpv：这是杜比视界，按它的原生色彩空间处理再转 SDR。
+         */
+        if (isDolbyVisionSource) {
+            runCatching {
+                // 让 libplacebo 按 DV 的 IPTPQc2 解释，而不是猜 BT709
+                MPVLib.setPropertyString("vf", "format=fmt=gbrpf32le")
+                MPVLib.setPropertyString("video-params-primaries", "bt.2020")
+                MPVLib.setPropertyString("video-params-gamma", "pq")
+                android.util.Log.i("ETKN-Mpv", "DV 源 → 强制 bt.2020 + pq 解析（避免偏绿）")
+            }
+        }
         runCatching {
             MPVLib.setPropertyString("target-trc", "srgb")
             MPVLib.setPropertyString("target-prim", "bt.709")
             MPVLib.setPropertyString("tone-mapping", "auto")
             MPVLib.setPropertyBoolean("hdr-compute-peak", true)
+            /**
+             * 用户口径（2026-11-26）**修「杜比视界片源偏绿」**。
+             *
+             * 谷雨是杜比视界 profile 5（dvhe.05.08），日志实证 color=NA/NA/NA ——
+             * 这类片源的色彩信息在文件头里故意留空，颜色只能靠杜比元数据（RPU）驱动，
+             * 解码输出的是杜比专用色彩空间 IPTPQc2。
+             *
+             * 如果解码器/渲染链没认出这是 DV，就会把 IPTPQc2 当普通 BT709 解释，
+             * 典型症状就是整体偏绿（绿色通道被误读）。
+             *
+             * 这里显式告诉 mpv：
+             *  · 动态度量元数据要读（ Dulby Vision RPU）
+             *  · 遇到 DV 时按它的原生色彩空间解释，再转到 SDR
+             *  · 关闭「按容器猜测色彩」的错误路径
+             */
+            /**
+             * 只保留 Android/libplacebo 上真正生效的项：
+             *  · target-colorspace-hint：让渲染器按输出设备的能力做色域映射
+             *  · video-output-levels=auto：亮度范围自动（Limited/Full 不搞错）
+             * （d3d11-* 是 Windows 专用，Android 上无效，不要写）
+             */
+            MPVLib.setPropertyBoolean("target-colorspace-hint", true)
+            MPVLib.setPropertyString("video-output-levels", "auto")
         }
         requestPause(!playWhenReady)
         MPVLib.command("loadfile", uri.toString(), "replace")
@@ -340,6 +381,31 @@ class MpvPlayer(
     }
 
     /** Index into fit / crop-fill / stretch, matching the ExoPlayer resize modes. */
+    /**
+     * 用户口径（2026-11-26）**让 mpv 自己把画面转 90°**。
+     *
+     * 为什么需要：这台平板的系统不接受横屏请求（日志实证 round=1/2/3 want=L real=P ok=false），
+     * 唯一的横屏手段是外层画布 rotationZ=90。
+     * 但 mpv 的画面走 SurfaceView（独立硬件图层），**外层旋转对它无效** ——
+     * 于是「画面正但界面躺」或者「界面转了画面不转」。
+     *
+     * 解决办法：把旋转角交给 mpv 自己（video-rotate），
+     * 它会在渲染时把画面转过来，不受 View 树变换限制。
+     *
+     * @param degrees 0 / 90 / 180 / 270
+     */
+    /**
+     * 用户口径（2026-11-26）：当前片源是否杜比视界（决定 load 时的色彩解析方式）。
+     */
+    var isDolbyVisionSource: Boolean = false
+
+    fun setVideoRotate(degrees: Int) {
+        runCatching {
+            MPVLib.setPropertyString("video-rotate", (degrees % 360).toString())
+            android.util.Log.i("ETKN-Mpv", "video-rotate=$degrees")
+        }
+    }
+
     fun setResize(mode: Int) {
         if (released) return
         MPVLib.setPropertyString("keepaspect", if (mode == 2) "no" else "yes")

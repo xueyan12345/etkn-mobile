@@ -700,9 +700,26 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             null -> Unit
             // mpv draws video and subtitles into its own SurfaceView.
             is MpvPlayer -> key(core) {
+                /**
+                 * 用户口径（2026-11-26）**mpv 的画面旋转由它自己做**。
+                 *
+                 * 这台平板系统不给横屏，靠外层画布 rotationZ=90 才能横过来。
+                 * 但 mpv 的画面是 SurfaceView 独立图层，外层旋转对它完全无效
+                 * （日志实证：canvasRotate=true 时 mpv 画面依然不对）。
+                 *
+                 * 所以把旋转交给 mpv 的 video-rotate：
+                 * 需要横屏时转 90°，竖屏视频时不转。
+                 */
+                /**
+                 * `portrait` 为 null 时按「横屏视频」处理（起播默认横屏）。
+                 */
+                val mpvRotate = if (canvasCapable && forceRotate && portrait != true) 90 else 0
                 AndroidView(
                     factory = { (core.view.parent as? ViewGroup)?.removeView(core.view); core.view },
-                    update = { core.setResize(resize) },
+                    update = {
+                        core.setResize(resize)
+                        core.setVideoRotate(mpvRotate)
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
