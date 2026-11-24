@@ -98,7 +98,13 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 之前改设置完全没反应，因为 engineFor 只在起播时读设置。
      */
     val settingsFlow = remember { session.settingsEngineFlow() }
-    val enginePref by settingsFlow.collectAsStateWithLifecycle()
+    /**
+     * 普通 Flow（不是 StateFlow）必须传初值 + 生命周期，
+     * 否则 collectAsStateWithLifecycle 编译不过。
+     */
+    val enginePref by settingsFlow.collectAsStateWithLifecycle(
+        initialValue = xyz.etkn.mobile.data.settings.PlayerEngine.Auto,
+    )
     var lastEnginePref by remember { mutableStateOf(enginePref) }
     androidx.compose.runtime.LaunchedEffect(enginePref) {
         if (enginePref != lastEnginePref) {
