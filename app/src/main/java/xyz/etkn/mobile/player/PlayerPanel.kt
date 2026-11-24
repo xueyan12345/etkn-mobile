@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.wrapContentHeight
 
 /**
  * 用户口径（2026-11-23）播放器右侧菜单 —— 照参考图逐项对齐（实测数值）。
@@ -80,6 +81,17 @@ fun PlayerSidePanel(
     val currentDismiss by rememberUpdatedState(onDismiss)
     val surface = MaterialTheme.colorScheme.surface
     val onPanel = MaterialTheme.colorScheme.onSurface
+    /**
+     * 用户口径（2026-11-24）**这就是「浮层没跟着转」的根因**。
+     *
+     * dialog 是 `remember(host)` 创建的，setContent 的 lambda 只跑一次，
+     * 里面直接引用外部的 `rotated` 会被固化成【第一次组合时的值】——
+     * 那时 forceRotate 还是 false（还没判定），所以浮层永远不旋转。
+     *
+     * 用 rememberUpdatedState 包一层：lambda 里读的是 State，
+     * rotated 变化时弹窗内容会跟着重组，和播放器同步。
+     */
+    val currentRotated by rememberUpdatedState(rotated)
 
     val dialog = remember(host) {
         ComponentDialog(host.context).apply {
@@ -105,29 +117,45 @@ fun PlayerSidePanel(
                          *  · 面板贴在这块画布的右侧（视觉上仍是屏幕右侧）
                          */
                         BoxWithConstraints(Modifier.fillMaxSize()) {
-                            val availableW = if (rotated) maxHeight else maxWidth
+                            val availableW = if (currentRotated) maxHeight else maxWidth
                             val panelWidth = (availableW * 0.51f).coerceIn(260.dp, 420.dp)
                             // 右侧留白：屏宽 5.4%（参考图实测）；旋转画布下已在画布内，无需再留
-                            val panelGap = if (rotated) 0.dp else (availableW * 0.054f)
-                            val canvas = if (rotated) {
+                            val panelGap = if (currentRotated) 0.dp else (availableW * 0.054f)
+                            val canvas = if (currentRotated) {
                                 Modifier.requiredSize(maxHeight, maxWidth).graphicsLayer { rotationZ = 90f }
                             } else {
                                 Modifier.fillMaxSize()
                             }
-                            Box(canvas) {
+                            /**
+                             * 画布必须居中！否则 requiredSize(2520,1680) 的画布
+                             * 会摆在窗口左上角，转 90° 后超出窗口被裁掉上下两条。
+                             */
+                            Box(canvas, contentAlignment = Alignment.Center) {
+                                /**
+                                 * 用户口径（2026-11-24）**别把面板撑满全高**。
+                                 *
+                                 * 之前写 fillMaxHeight()，面板被拉成整屏高，
+                                 * 内容超出就被上下边缘裁掉（截图里第 21 集和最后一集都截断了）。
+                                 * 参考图是「按内容包裹 + 垂直居中」的浮动卡片。
+                                 */
                                 Box(
                                     Modifier
-                                        .align(Alignment.CenterEnd)
-                                        .fillMaxHeight()
-                                        .width(panelWidth)
-                                        .padding(end = panelGap)
-                                        .background(
-                                            surface.copy(alpha = 0.88f),
-                                            RoundedCornerShape(12.dp),
-                                        ),
+                                        .fillMaxSize()
+                                        .padding(end = panelGap),
+                                    contentAlignment = Alignment.CenterEnd,
                                 ) {
-                                    Column(Modifier.fillMaxSize().padding(vertical = 30.dp)) {
-                                        currentContent()
+                                    Box(
+                                        Modifier
+                                            .width(panelWidth)
+                                            .wrapContentHeight()
+                                            .background(
+                                                surface.copy(alpha = 0.88f),
+                                                RoundedCornerShape(12.dp),
+                                            ),
+                                    ) {
+                                        Column(Modifier.padding(vertical = 24.dp)) {
+                                            currentContent()
+                                        }
                                     }
                                 }
                             }

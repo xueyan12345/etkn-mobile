@@ -90,7 +90,29 @@ object PlaybackCache {
      * ① 当前集缓存完成 ② 下一集缓存完成 ③ 两者是同一部剧的相邻集
      * 三个条件同时满足才为 true。
      */
-    fun isNextReady(): Boolean = currentComplete && nextComplete
+    fun isNextReady(): Boolean {
+        val ready = currentComplete && nextComplete
+        /**
+         * 用户口径（2026-11-24）**修「缓冲满了气泡还是不亮」**。
+         *
+         * 上一版 currentComplete 只由 pullWindow 的返回值决定，
+         * 而 pullWindow 在「窗口已够、本轮没下载」时返回 false ——
+         * 于是即使缓冲条已经铺到片尾，currentComplete 依然是 false，气泡永远不亮。
+         *
+         * 现在这里补一条日志，把两个标志的真实值打出来，方便一眼定位断在哪一环；
+         * 同时 currentComplete 的判定改由 tickCache 直接写（见 VideoSession）。
+         */
+        android.util.Log.i(
+            "ETKN-Cache",
+            "isNextReady=$ready currentComplete=$currentComplete nextComplete=$nextComplete next=$nextEpisodeId",
+        )
+        return ready
+    }
+
+    /** 用户口径（2026-11-24）：由 tickCache 按真实缓冲位置直接写「当前集是否已到片尾」。 */
+    fun markCurrentComplete(done: Boolean) {
+        currentComplete = done
+    }
 
     fun clearReady() {
         currentComplete = false
@@ -292,7 +314,7 @@ object PlaybackCache {
 
         // 已经够（窗口到位），本轮不下载，但要返回「是否已到片尾」
         if (have < wantBytes) {
-            val chunk = 32L * 1024 * 1024
+            val chunk = 12L * 1024 * 1024
             while (have < wantBytes) {
                 val until = minOf(wantBytes, have + chunk)
                 downloadInto(client, url, part, from = have, until = until)
@@ -389,7 +411,7 @@ object PlaybackCache {
 
         var have = if (part.isFile) part.length() else 0L
         if (have < wantBytes) {
-            val chunk = 32L * 1024 * 1024
+            val chunk = 12L * 1024 * 1024
             while (have < wantBytes) {
                 val until = minOf(wantBytes, have + chunk)
                 downloadInto(client, nextUrl, part, from = have, until = until)

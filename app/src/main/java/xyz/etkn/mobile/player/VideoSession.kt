@@ -686,6 +686,20 @@ class VideoSession(
                 durationMs = durationMs,
                 totalBytes = currentLength,
             )
+            /**
+             * 用户口径（2026-11-24）**气泡不亮的根因就在这里**。
+             *
+             * currentComplete 原来只由 pullWindow 的返回值决定，
+             * 而 pullWindow 在「窗口已够、本轮没下载」时返回 false ——
+             * 缓冲条都铺到片尾了，currentComplete 还是 false，气泡永远不亮。
+             *
+             * 现在按真实缓冲位置直接判定：
+             * 当前集已缓冲到的毫秒数，是否已经到（或非常接近）片尾。
+             * 阈值 2 秒：留一点余量，避免因字节换算误差永远差几百毫秒。
+             */
+            if (durationMs > 0 && cachedMs >= durationMs - 2_000) {
+                PlaybackCache.markCurrentComplete(true)
+            }
             _ui.update {
                 it.copy(
                     cachedPosition = cachedMs,

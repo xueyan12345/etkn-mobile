@@ -70,6 +70,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 
 internal val Speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
 private val ResizeModes = listOf(
@@ -89,6 +91,15 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     val player by session.players.collectAsStateWithLifecycle()
     var controls by remember { mutableStateOf(true) }
     var locked by remember { mutableStateOf(false) }
+    /**
+     * 用户口径（2026-11-24）**锁定后的解锁按钮要自动消失**。
+     *
+     * 之前是 `if (locked)` 无条件常驻 —— 锁上之后那颗锁头一直挂在屏幕上，
+     * 用户原话「播放界面的小锁头锁定以后不会自动消失」。
+     *
+     * 现在：锁定后先显示 3 秒，然后淡出；点屏幕任意位置再短暂出现 3 秒。
+     */
+    var lockShown by remember { mutableStateOf(false) }
     /** 用户口径（2026-11-23）：剧集简介浮层是否打开；打开时控制条不自动隐藏。 */
     var infoOpen by remember { mutableStateOf(false) }
     var resize by remember { mutableIntStateOf(0) }
@@ -303,7 +314,31 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
          *    （它们会正确设置 portrait 并调 applyOrientation）
          *  · 不再在没有真实尺寸的时候覆盖 portrait
          */
-        if (!manualOrientation && needsCanvasRotation) forceRotate = true
+        /**
+         * 用户口径（2026-11-24 第二次修正）**手机起播也要立刻横屏**。
+         *
+         * 上一版我只给兜底机型（平板）设了 forceRotate，手机什么都没做：
+         *  · 平板上「画布旋转」立刻生效 → 一进就是横屏 ✓
+         *  · 手机上系统方向还没转 → 第一眼看到的是竖屏，之后才慢慢转过去 ✗
+         *    用户原话：「打开看到的第一眼是竖的，然后才恢复横屏」
+         *
+         * 所以这里必须对【所有机型】都立刻请求横屏：
+         *  · 现在就用 applyOrientation(false) 发方向请求
+         *    → 手机系统立刻转到横屏，第一帧就是横的
+         *  · 但绝不能让它覆盖 portrait 状态（上一版的错）：
+         *    所以调用前把 portrait 记成「未定」，让服务端尺寸/播放器回调
+         *    拿到真实尺寸后可以无条件重新应用
+         */
+        if (!manualOrientation) {
+            // 先请求横屏（手机系统立刻转；平板系统不认，由画布旋转兜底）
+            act?.let {
+                runCatching {
+                    it.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+                }
+            }
+            // 兜底机型：画布也立刻按横屏布局，避免「先竖后横」的一帧
+            if (needsCanvasRotation) forceRotate = true
+        }
     }
 
     /**
@@ -405,12 +440,18 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             duration = current.duration.takeIf { it > 0 } ?: 0
             buffered = current.bufferedPosition
             /**
-             * 用户口径（2026-11-23）：缓存窗口跟着播放进度往前推。
-             * 每 5 秒驱动一次（不必每 250ms 一次，避免频繁开 Range 请求），
-             * 由 VideoSession 决定「当前集窗口是否到位 / 是否该启动下一集流水线」。
+             * 用户口径（2026-11-24）**缓冲条更新滞后的根因在这里**。
+             *
+             * 之前每 5 秒才驱动一次缓存窗口。网速 69 MB/s 时，
+             * 一个 32MB 分片 0.5 秒就下完了，但界面要等 5 秒才更新一次 ——
+             * 用户看到的就是「网速很高、缓冲条半天不动，然后突然蹦一大截」。
+             *
+             * 现在：
+             *  · 驱动间隔 5s → 1s（更跟手）
+             *  · 而且每次都顺便把 cachedPosition 刷到 UI（下面 tickCache 内部会算）
              */
             val now = android.os.SystemClock.elapsedRealtime()
-            if (now - lastCacheTick > 5_000L) {
+            if (now - lastCacheTick > 1_000L) {
                 lastCacheTick = now
                 session.tickCache(position, duration)
             }
@@ -667,6 +708,23 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 onFeedback = { gesture = it },
             )
         }
+        /**
+         * 用户口径（2026-11-24）：**锁定状态下点屏幕** → 解锁按钮短暂出现 3 秒。
+         *
+         * GestureLayer 在锁定时是禁用的（enabled = !locked），所以锁屏时点屏幕
+         * 什么都不会发生，用户又找不到解锁入口。这里补一个透明点击层：
+         * 锁定时接住单击 → 让锁头重现，再 3 秒自动淡出。
+         * 只消费单击，其他手势（双击、拖动）都透传给下面的层。
+         */
+        if (locked) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = { lockShown = !lockShown })
+                    },
+            )
+        }
 
         if (ui.loading && ui.error == null) {
             LoadingIndicator(Modifier.align(Alignment.Center).size(72.dp), color = Color.White)
@@ -724,7 +782,11 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     resizeLabel = ResizeModes[resize].second,
                     onRotate = { manualOrientation = true; applyOrientation(!(portrait ?: true)); touch() },
                     rotateLabel = if (portrait == true) "竖屏" else "横屏",
-                    onLock = { locked = true; controls = false },
+                    onLock = {
+            locked = true
+            controls = false
+            lockShown = true   // 先显示 3 秒再自动淡出
+        },
                     onNext = { session.playNext() },
                     onPrevious = { session.playPrevious() },
                     onSpeed = { session.setSpeed(it) },
@@ -739,10 +801,24 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     },
                 )
             }
-            if (locked) {
+            /**
+             * 用户口径（2026-11-24）：锁定后解锁按钮 3 秒后自动淡出，
+             * 点屏幕再短暂出现（见下方共同层的 tap 处理）。
+             */
+            LaunchedEffect(locked, lockShown) {
+                if (locked && lockShown) {
+                    kotlinx.coroutines.delay(3000)
+                    lockShown = false
+                }
+            }
+            androidx.compose.animation.AnimatedVisibility(
+                visible = locked && lockShown,
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut(),
+                modifier = Modifier.align(Alignment.CenterStart).padding(16.dp),
+            ) {
                 FilledIconButton(
                     onClick = { locked = false; controls = true },
-                    modifier = Modifier.align(Alignment.CenterStart).padding(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White),
                 ) { Icon(Icons.Rounded.Lock, "解锁") }
             }

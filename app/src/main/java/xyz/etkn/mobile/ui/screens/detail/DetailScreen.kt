@@ -133,6 +133,15 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.ui.unit.sp
 import xyz.etkn.mobile.data.model.Chapter
+import androidx.compose.material.icons.rounded.Tv
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material3.Divider
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.Tune
 
 @Composable
 fun DetailScreen(id: String) {
@@ -258,6 +267,37 @@ private fun DetailContent(
                     item(key = "versions") { VersionRow(item.mediaSources, data.selectedSource, vm::selectSource) }
                 }
                 item(key = "info", contentType = "info") { Swap(data) { InfoBlock(it.item, centered) } }
+                /**
+                 * 用户口径（2026-11-24）**新增「季」横排卡区（照参考图）**。
+                 *
+                 * 参考图结构：
+                 *  · 区块标题「季」（一个字，左对齐）
+                 *  · 横向一行排列竖版季卡，可左右滑
+                 *  · 单卡：竖版海报，右上角集数角标、右下角评分，海报下方一行季名
+                 *  · 卡片尺寸 = 演职人员卡（104dp 宽、0.78 竖版比例）
+                 *
+                 * 只在剧集层（series）且有多季时显示；
+                 * 单集页（episode）不显示，避免和「剧集」条重复。
+                 */
+                if (item.isSeries && data.seasons.size > 1) {
+                    item(key = "seasons", contentType = "seasons") {
+                        Column(Modifier.padding(top = Etkn.space.section)) {
+                            SectionHeader("季", showChevron = false)
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = Etkn.space.screen),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                items(data.seasons, key = { it.id }) { season ->
+                                    SeasonCard(
+                                        season = season,
+                                        selected = season.id == episodes.seasonId,
+                                        onClick = { vm.selectSeason(seriesId, season.id) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 if (seriesId != null && (item.isSeries || item.isSeason || item.isEpisode)) {
                     item(key = "episodes", contentType = "episodes") {
                         EpisodeShelf(
@@ -705,6 +745,38 @@ private fun ActionRow(
             }
         }
         /**
+         * 用户口径（2026-11-24）**影片信息 / 音频 / 字幕 入口**。
+         *
+         * 单集页才显示（参考图就是单集页的右侧浮层）。
+         * 点开后在页面右侧浮出设置面板，可切换版本 / 音轨 / 字幕。
+         */
+        if (item.isEpisode) {
+            var settingsOpen by remember { mutableStateOf(false) }
+            Row(
+                Modifier.padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = { settingsOpen = true },
+                    modifier = Modifier.height(SmallAction),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) {
+                    Icon(Icons.Rounded.Tune, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("影片信息", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            if (settingsOpen) {
+                MediaSettingsPanel(
+                    item = item,
+                    source = item.mediaSources.getOrNull(data.selectedSource) ?: item.mediaSources.firstOrNull(),
+                    onDismiss = { settingsOpen = false },
+                )
+            }
+        }
+
+        /**
          * 用户口径（2026-11-24）**「S1:E8 - 集名」放到这里**：
          * 播放按钮下面、简介上面。
          *
@@ -1009,4 +1081,314 @@ internal fun formatRuntime(ms: Long): String? {
     val m = (totalSec % 3600) / 60
     val s = totalSec % 60
     return if (h > 0) "${h}小时${m}分" else "${m}分${s}秒"
+}
+
+/**
+ * 用户口径（2026-11-24）**季卡片（照参考图）**。
+ *
+ * 构图：
+ *  · 竖版海报（宽 104dp，比例 0.78 —— 和演职人员卡的尺寸/比例一致）
+ *  · 海报右上角：集数角标（深色半透明圆角小块）
+ *  · 海报右下角：评分（金色星 + 数值）
+ *  · 海报下方：一行季名，居中
+ *  · 选中态：海报描一圈主题色边框
+ */
+@Composable
+private fun SeasonCard(
+    season: Item,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val urls = images()
+    val width = 104.dp
+    val count = season.recursiveItemCount.takeIf { it > 0 } ?: season.childCount
+    val rating = season.communityRating
+    Column(
+        Modifier.width(width).clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier
+                .width(width)
+                .aspectRatio(0.78f)
+                .clip(Corner.card)
+                .then(
+                    if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, Corner.card)
+                    else Modifier,
+                ),
+        ) {
+            Artwork(
+                urls.poster(season, width.px()),
+                Modifier.fillMaxSize(),
+                season.name,
+                placeholder = Icons.Rounded.Tv,
+                contentScale = ContentScale.Crop,
+            )
+            // 右上角：集数
+            if (count > 0) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color.Black.copy(alpha = 0.62f))
+                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                ) {
+                    Text(
+                        count.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            // 右下角：评分
+            if (rating != null && rating > 0) {
+                Row(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color.Black.copy(alpha = 0.62f))
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.Star, null, Modifier.size(10.dp), tint = Etkn.tokens.rating)
+                    Text(
+                        String.format(java.util.Locale.US, "%.1f", rating),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                    )
+                }
+            }
+        }
+        Text(
+            season.name,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        )
+    }
+}
+
+/**
+ * 用户口径（2026-11-24）**单集页右侧「影片信息 / 音频 / 字幕」设置浮层**。
+ *
+ * 照参考图逐项对齐（实测规格）：
+ *  · 位置：屏幕右侧浮层，右侧留约 3% 边距，垂直居中，不贴边
+ *  · 外观：浅色半透明毛玻璃卡片，圆角 12dp，行间极细分割线
+ *  · 三个主行，**没有分组小标题**，每行「图标 + 当前值」：
+ *      ① 视频：主标题「4K HEVC」+ 副标题「4K HEVC / 2.2 GB / 13.2 Mbps」
+ *         副标题 11-12sp 浅灰；有多个版本时右侧带 ▼ 可展开
+ *      ② 音频：音轨名 + 「(默认)」后缀，右侧 ▼ 可展开
+ *      ③ 字幕：当前字幕名，右侧 ▼/▲ 可展开
+ *  · 展开列表：纯文本行，选中项左侧勾选，不可用项极浅灰不可点
+ */
+@Composable
+private fun MediaSettingsPanel(
+    item: Item,
+    source: MediaSource?,
+    onDismiss: () -> Unit,
+) {
+    val surface = MaterialTheme.colorScheme.surface
+    val onPanel = MaterialTheme.colorScheme.onSurface
+    val muted = onPanel.copy(alpha = 0.62f)
+    var expanded by remember { mutableStateOf(0) }   // 0 无 / 1 视频 / 2 音频 / 3 字幕
+
+    // 视频信息（主标题 + 副标题）
+    val video = source?.video
+    val resLabel = video?.let { resolutionLabel(it.width, it.height) }
+    val codecLabel = video?.codec?.takeIf { it.isNotEmpty() }?.uppercase()
+    val videoMain = listOfNotNull(resLabel, codecLabel).joinToString(" ").ifBlank { "视频" }
+    val videoSub = buildList {
+        if (resLabel != null) add(resLabel)
+        if (codecLabel != null) add(codecLabel)
+        source?.size?.takeIf { it > 0 }?.let { add(formatBytes(it)) }
+        source?.bitrate?.takeIf { it > 0 }?.let { add("${it / 1_000_000} Mbps") }
+    }.joinToString(" / ")
+
+    val audios = source?.audio.orEmpty()
+    val subs = source?.subtitles.orEmpty()
+    val defaultAudio = audios.firstOrNull { it.isDefault } ?: audios.firstOrNull()
+    val defaultSub = subs.firstOrNull { it.isDefault } ?: subs.firstOrNull()
+    val audioLabel = defaultAudio?.let { a ->
+        val name = a.displayTitle.ifBlank { a.codec.uppercase() }
+        if (a.isDefault) "$name (默认)" else name
+    } ?: "无音轨"
+    val subLabel = defaultSub?.displayTitle?.ifBlank { null } ?: (if (subs.isEmpty()) "无字幕" else subs.size.toString() + " 条字幕")
+
+    Box(Modifier.fillMaxSize().clickable(onClick = onDismiss)) {
+        Box(
+            Modifier
+                .align(Alignment.CenterEnd)
+                .width(300.dp)
+                .padding(end = 12.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(surface.copy(alpha = 0.94f))
+                .clickable(enabled = false) {}
+                .padding(vertical = 6.dp),
+        ) {
+            Column {
+                // ① 视频行
+                SettingsRow(
+                    icon = Icons.Rounded.Movie,
+                    main = videoMain,
+                    sub = videoSub.takeIf { it.isNotBlank() },
+                    onPanel = onPanel,
+                    muted = muted,
+                    trailing = if (item.mediaSources.size > 1) {
+                        if (expanded == 1) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore
+                    } else null,
+                    onClick = if (item.mediaSources.size > 1) {
+                        { expanded = if (expanded == 1) 0 else 1 }
+                    } else null,
+                )
+                if (expanded == 1) {
+                    item.mediaSources.forEachIndexed { i, src ->
+                        SettingsOption(
+                            label = src.name.ifBlank { "版本 ${i + 1}" },
+                            selected = i == 0,
+                            enabled = true,
+                            onPanel = onPanel,
+                            onClick = onDismiss,
+                        )
+                    }
+                }
+                Divider(color = onPanel.copy(alpha = 0.12f))
+                // ② 音频行
+                SettingsRow(
+                    icon = Icons.Rounded.VolumeUp,
+                    main = audioLabel,
+                    sub = null,
+                    onPanel = onPanel,
+                    muted = muted,
+                    trailing = if (audios.size > 1) {
+                        if (expanded == 2) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore
+                    } else null,
+                    onClick = if (audios.size > 1) {
+                        { expanded = if (expanded == 2) 0 else 2 }
+                    } else null,
+                )
+                if (expanded == 2) {
+                    audios.forEach { a ->
+                        SettingsOption(
+                            label = a.displayTitle.ifBlank { a.codec.uppercase() } + if (a.isDefault) " (默认)" else "",
+                            selected = a.isDefault,
+                            enabled = true,
+                            onPanel = onPanel,
+                            onClick = onDismiss,
+                        )
+                    }
+                }
+                Divider(color = onPanel.copy(alpha = 0.12f))
+                // ③ 字幕行
+                SettingsRow(
+                    icon = Icons.Rounded.Subtitles,
+                    main = subLabel,
+                    sub = null,
+                    onPanel = onPanel,
+                    muted = muted,
+                    trailing = if (expanded == 3) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    onClick = { expanded = if (expanded == 3) 0 else 3 },
+                )
+                if (expanded == 3) {
+                    SettingsOption(
+                        label = "关闭",
+                        selected = subs.isEmpty(),
+                        enabled = true,
+                        onPanel = onPanel,
+                        onClick = onDismiss,
+                    )
+                    subs.forEach { sub ->
+                        SettingsOption(
+                            label = sub.displayTitle.ifBlank { sub.codec.uppercase() },
+                            selected = sub.isDefault,
+                            enabled = true,
+                            onPanel = onPanel,
+                            onClick = onDismiss,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    main: String,
+    sub: String?,
+    onPanel: Color,
+    muted: Color,
+    trailing: androidx.compose.ui.graphics.vector.ImageVector?,
+    onClick: (() -> Unit)?,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, Modifier.size(20.dp), tint = onPanel.copy(alpha = 0.75f))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                main,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = onPanel,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (sub != null) {
+                Text(
+                    sub,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 1.dp),
+                )
+            }
+        }
+        if (trailing != null) {
+            Icon(trailing, null, Modifier.size(18.dp), tint = muted)
+        }
+    }
+}
+
+@Composable
+private fun SettingsOption(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onPanel: Color,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(start = 46.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (!enabled) onPanel.copy(alpha = 0.3f)
+                    else if (selected) onPanel else onPanel.copy(alpha = 0.85f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (selected) {
+            Icon(Icons.Rounded.Check, null, Modifier.size(16.dp), tint = onPanel)
+        }
+    }
 }
