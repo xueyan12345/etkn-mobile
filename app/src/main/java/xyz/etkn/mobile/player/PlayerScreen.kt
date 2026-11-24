@@ -920,15 +920,6 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
         }
     }
 
-    if (sheet != Sheet.None) {
-        PlayerSheet(
-            sheet, ui, session,
-            onSheet = { sheet = it },
-            onDismiss = { sheet = Sheet.None },
-            onRotate = { manualOrientation = true; applyOrientation(!(portrait ?: true)); touch() },
-            portrait = portrait ?: false,
-        )
-    }
 }
 
 /** 沿 ContextWrapper 链往上找到真正的 Activity（LocalContext 不一定是 Activity）。 */

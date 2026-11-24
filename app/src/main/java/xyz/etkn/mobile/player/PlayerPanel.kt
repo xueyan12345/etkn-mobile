@@ -138,11 +138,27 @@ fun PlayerSidePanel(
                                  * 内容超出就被上下边缘裁掉（截图里第 21 集和最后一集都截断了）。
                                  * 参考图是「按内容包裹 + 垂直居中」的浮动卡片。
                                  */
+                                /**
+                                 * 用户口径（2026-11-24）**旋转画布下「右侧」要换算成画布坐标系**。
+                                 *
+                                 * 画布是绕中心逆时针 90°（rotationZ = 90f）画出来的，
+                                 * 所以要出现在【用户看到的屏幕右侧】，在画布坐标系里必须是【底部】：
+                                 *   画布 x 轴 ↗ 屏幕 −y（上）
+                                 *   画布 y 轴 ↗ 屏幕 +x（右）
+                                 * 之前写 CenterEnd（画布右端）→ 转完跑到屏幕底部，用户说「位置不对」。
+                                 *
+                                 * 所以：旋转时贴画布底部（需要再补一段安全边距），
+                                 * 不旋转时贴右端（保持原样）。
+                                 */
                                 Box(
                                     Modifier
                                         .fillMaxSize()
-                                        .padding(end = panelGap),
-                                    contentAlignment = Alignment.CenterEnd,
+                                        .padding(
+                                            end = panelGap,
+                                            bottom = if (currentRotated) panelGap else 0.dp,
+                                        ),
+                                    contentAlignment = if (currentRotated) Alignment.BottomCenter
+                                                       else Alignment.CenterEnd,
                                 ) {
                                     Box(
                                         Modifier
