@@ -111,22 +111,52 @@ internal fun EpisodeShelf(
      *  · 滚的触发条件绑定「数据里已经有这一集」，数据没到就不滚（避免滚到 0）
      *  · chip 高亮 = 当前集所在区间（setSelection），与滚动解耦
      */
-    var pendingNumber by remember { mutableIntStateOf(-1) }
+    /**
+     * 用户口径（2026-11-26）**修「点区间 chip 完全没反应」（第五次，这次是状态机问题）**。
+     *
+     * 之前用 `pendingNumber` 一个 int 兼做三件事：
+     *  ① 记录目标集号 ② 表示「有待处理跳转」 ③ 用 -1 表示空闲
+     *
+     * 坏在这里：`LaunchedEffect(pendingNumber, ...)` 里执行完把 pendingNumber 设回 -1，
+     * 这个赋值本身又会触发同一个 LaunchedEffect 重启一次；
+     * 重启后 pendingNumber 已是 -1，就退回用 `currentNumber`（当前播放的集）去滚
+     * → 刚滚过去又被滚回当前集，用户看到的就是「点了没反应」。
+     *
+     * 而且 effect ②（切集跟随）用 `if (pendingNumber > 0) return` 判断要不要让位，
+     * 两者互相抢，谁最后跑谁生效。
+     *
+     * 现在改成**一个独立的一次性请求对象**：
+     *  · `target` 记录「用户想去第几集」，null 表示没有请求
+     *  · 消费它的地方（effect）先读、再清空，且清空不会触发它自己重启
+     *    （用 sealed 的 token 做 key，只在「有新请求」时才启动）
+     */
+    /**
+     * 用户口径（2026-11-26）**修「点区间 chip 只抖一下就回原处」**。
+     *
+     * 现象：点 421-440，下面横条抖一下，又回到当前播放集所在区间。
+     *
+     * 根因是两个 effect 抢同一个滚动位置：
+     *  ① 「执行用户请求」滚到 421
+     *  ② 「跟随当前播放集」也在监听 `state.items`，紧接着又把位置滚回 417 所在的 401-420
+     * 一次抖动 = ① 滚过去 + ② 滚回来。
+     *
+     * 修法：点 chip 时**钉住**（`pinRange`），钉住期间 ② 完全不参与滚动；
+     * 只有用户真的切了集（`currentId` 变了）才解除钉住，跟随逻辑恢复。
+     * 这样「点区间看那一区间」和「切集自动跟随」两个需求不再互相打断。
+     */
+    var jumpRequest by remember { mutableStateOf<Int?>(null) }
+    var pinRange by remember { mutableStateOf<Int?>(null) }
+
     val ranges = if (state.total > RANGE + RANGE / 2) (state.total + RANGE - 1) / RANGE else 0
 
+    /** 当前播放集所在区间。 */
+    val currentRange = ((currentNumber ?: 1) - 1).coerceAtLeast(0) / RANGE
+
     /**
-     * 用户口径（2026-11-26）**修「点了区间没反应还会跳回来」**。
-     *
-     * 上一版把高亮绑在「当前播放的集」上（currentRange = currentNumber / 20）。
-     * 点区间按钮时只是把横条滚过去了，高亮判据没变 → 阴影留在原地，
-     * 看起来就是「点了没反应」，而且横条一回到当前集附近又「跳回来」。
-     *
-     * 现在高亮 **跟随横条的第一格**：
-     *  · 点区间 → 横条滚过去 → 第一格变了 → 高亮自然落到你点的区间
-     *  · 手动滑动横条 → 高亮跟着走（这才是区间按钮该有的行为）
-     *  · 切集 → 横条滚到该集 → 高亮跟着到它所在区间
+     * 区间 chip 的高亮 = 横条第一格所在区间。
+     * 点 chip 后由 ① 立刻 `scrollToItem` 到位（瞬时，无动画），
+     * 横条第一格一变，高亮自然落到点的那一格，不需要额外的「钉住高亮」。
      */
-    val currentRange = (currentNumber ?: 1).let { ((it - 1).coerceAtLeast(0)) / RANGE }
     val visibleRange by remember(state.items, currentRange) {
         derivedStateOf {
             val idx = row.firstVisibleItemIndex
@@ -140,59 +170,45 @@ internal fun EpisodeShelf(
         }
     }
 
-    /**
-     * 用户点 chip / 跳首尾时记录的「想去的集号」。
-     * 只有当这一集真的进了列表、且能算出下标时，才执行滚动。
-     */
     fun jumpToNumber(number: Int) {
-        pendingNumber = number.coerceAtLeast(1)
-        list.ensureNumber(number)
+        val n = number.coerceAtLeast(1)
+        jumpRequest = n
+        pinRange = (n - 1) / RANGE      // 钉住：跟随逻辑让位
+        list.ensureNumber(n)
     }
 
-    /**
-     * ① 数据到位后滚动到目标集。
-     * 以 `state.items` 和 `pendingNumber` 为 key：任何一边变了都重新判断，
-     * 但只要那一集还没进列表就什么都不做（关键：不会像以前那样滚到 0）。
-     */
-    LaunchedEffect(pendingNumber, state.items, currentId) {
-        val number = if (pendingNumber > 0) pendingNumber else currentNumber ?: return@LaunchedEffect
+    /** ① 执行用户请求的跳转。请求为 null 时直接退出，绝不退回「滚回当前集」。 */
+    LaunchedEffect(jumpRequest, state.items) {
+        val number = jumpRequest ?: return@LaunchedEffect
         val at = list.positionOfNumber(number)
         if (at >= 0) {
-            /**
-             * 用户口径（2026-11-26）**修「先跳到最前面再跳到目标集」**。
-             * `animateScrollToItem` 跨几百集会有一段很长的动画，经过中间所有集，
-             * 视觉上就是「先跑到最前面再回来」。这里改成瞬时就位。
-             * 目标集放在左起第 2 格（左边留一集，右边露出下一集，方便连续点）。
-             */
             row.scrollToItem((at - 1).coerceAtLeast(0))
-            pendingNumber = -1
+            jumpRequest = null
         } else {
-            // 还没加载到 → 继续补（幂等，加载完会再次进入本 effect）
             list.ensureNumber(number)
         }
     }
 
-    /**
-     * ② 切集（单集页原地换集）时让选集跟随当前集。
-     *
-     * 只在没有待处理的跳转时执行，避免和 ① 抢滚动位置。
-     */
+    /** ② 切集跟随当前集。钉住期间（用户刚点了 chip）不参与。 */
     LaunchedEffect(currentId, currentNumber, state.items) {
-        if (pendingNumber > 0) return@LaunchedEffect
+        if (jumpRequest != null || pinRange != null) return@LaunchedEffect
         val number = currentNumber ?: return@LaunchedEffect
         val at = list.positionOfNumber(number)
         if (at < 0) {
             list.ensureNumber(number)
             return@LaunchedEffect
         }
-        /**
-         * 用户口径（2026-11-26）：切集时也瞬时就位，不做长距离动画
-         * （动画穿过几百集同样会出现「先跳到最前面」的观感）。
-         */
         row.scrollToItem((at - 1).coerceAtLeast(0))
     }
 
-    /** ③ 区间 chip 栏跟着当前区间走。 */
+    /**
+     * ③ 用户真的切集了（换了播放的集）→ 解除钉住，恢复「切集自动跟随」。
+     */
+    LaunchedEffect(currentId) {
+        pinRange = null
+    }
+
+    /** ④ 区间 chip 栏跟着高亮走。 */
     LaunchedEffect(visibleRange, ranges) {
         if (ranges > 0) chips.animateScrollToItem((visibleRange - 1).coerceAtLeast(0))
     }
