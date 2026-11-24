@@ -380,7 +380,27 @@ class VideoSession(
                      * 偏色的正确解法是「让解码器输出 SDR」，
                      * 见下面 maybeDisableDvForSdr()。
                      */
-                    if (dv5) android.util.Log.i(TAG, "DV profile5：保留当前内核（切核不解决偏色）")
+                    /**
+                     * 用户口径（2026-11-26）**DV profile 5 必须切 mpv（软解）**。
+                     *
+                     * 1.4.9 我判断「切核不解决偏色」是错的 ——
+                     * 当时的 log 证明：Exo 走 c2.qti.dv.decoder，硬解拿不到 RPU → 偏色；
+                     * 而 mpv 当时也是硬解（mediacodec-copy），同样丢元数据 → 也偏色。
+                     * 两者都偏色不代表「内核无所谓」，而是「两者都在硬解」。
+                     *
+                     * 现在 mpv 对 DV 源走**软件解码**（FFmpeg 能解析杜比 RPU，
+                     * libplacebo 按 IPTPQc2 正确还原），所以必须切过去。
+                     */
+                    if (dv5 && engine == Engine.Exo && forcedEngine == null && autoSwitchAllowed) {
+                        android.util.Log.i(TAG, "DV profile5 → 切 mpv（软解拿 RPU，修偏色）")
+                        pendingDvSource = true
+                        forcedEngine = Engine.Mpv
+                        val cur = source
+                        val pos = player?.currentPosition ?: 0L
+                        if (cur != null) {
+                            main.post { if (!released && source === cur) playSource(cur, pos) }
+                        }
+                    }
                 }
                 if (dv != _isDolbyVision.value) {
                     android.util.Log.i(TAG, "dolby-vision detected=$dv → ${if (dv) "SurfaceView（放弃画布旋转，优先出画）" else "TextureView"}")
@@ -606,12 +626,21 @@ class VideoSession(
         val created: Pair<Engine, Player> = if (wanted == Engine.Mpv) {
             runCatching {
                 /**
-                 * 用户口径（2026-11-26）：创建 mpv 时立刻告诉它「这个源是不是杜比视界」。
-                 * mpv 必须在 load 之前知道，否则会按普通 HEVC 解释 → 偏绿。
+                 * 用户口径（2026-11-26）：**DV 标记必须走构造参数**。
+                 *
+                 * mpv 的 init 里会立刻 configure() 设置 hwdec，
+                 * 而 DV 源必须软解（硬解拿不到杜比 RPU 元数据 → 偏色）。
+                 * 事后赋值的话 configure 早就跑完，软解设置无效。
                  */
-                val mpv = MpvPlayer(context, graph.identity.userAgent, settings.decoder, PlayerFactory.preferredLanguages().toList())
-                mpv.isDolbyVisionSource = pendingDvSource
-                Engine.Mpv to (mpv as Player)
+                Engine.Mpv to (
+                    MpvPlayer(
+                        context = context,
+                        userAgent = graph.identity.userAgent,
+                        decoder = settings.decoder,
+                        languages = PlayerFactory.preferredLanguages().toList(),
+                        isDolbyVisionSource = pendingDvSource,
+                    ) as Player
+                    )
             }
                 .onFailure { Log.e(TAG, "mpv unavailable", it) }
                 .getOrNull()

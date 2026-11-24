@@ -49,6 +49,14 @@ class MpvPlayer(
     private val userAgent: String,
     private val decoder: DecoderPreference,
     private val languages: List<String>,
+    /**
+     * 用户口径（2026-11-26）**构造时就要知道是不是杜比视界源**。
+     *
+     * 原因：`init` 里会立刻调用 `configure()` 设置 hwdec，
+     * 而 DV 源必须走软解（硬解拿不到 RPU 元数据 → 偏色）。
+     * 如果靠事后赋值，configure 早就跑完了，设置无效。
+     */
+    private val isDolbyVisionSource: Boolean = false,
 ) : SimpleBasePlayer(Looper.getMainLooper()), MPVLib.EventObserver {
 
     private val app = context.applicationContext
@@ -137,12 +145,33 @@ class MpvPlayer(
          * 这也解释了为什么 Exo 和 mpv 都偏色 ——
          * 两条路都在「解码后回拷」这一环丢了元数据。
          */
-        set("hwdec", when (decoder) {
-            DecoderPreference.Auto -> "mediacodec,mediacodec-copy,no"
-            DecoderPreference.Hardware -> "mediacodec,mediacodec-copy"
-            DecoderPreference.Software -> "no"
+        /**
+         * 用户口径（2026-11-26）**杜比视界 profile 5 必须软件解码**。
+         *
+         * 实测链条（三版都在这一环失败）：
+         *  · mediacodec-copy：硬解后回拷，DV 动态元数据丢失 → 偏绿
+         *  · mediacodec：直通不拷，但高通 DV 解码器在非 DV 屏上输出仍是 IPTPQc2
+         *  · Exo（含尝试降级 HEVC）：日志实证仍是 c2.qti.dv.decoder + dolby-vision，没降级
+         * 三者在解码环节都拿不到可见的元数据，颜色就错。
+         *
+         * 软件解码（FFmpeg lavc）是唯一能拿到完整 RPU 元数据的路径：
+         *  · 它解析码流里的杜比 RPU，交给 libplacebo（vo=gpu-next）
+         *  · libplacebo 按 IPTPQc2 正确还原，再 tone-map 到 SDR
+         *
+         * 代价：4K 软解可能掉帧。这是「颜色正确 vs 流畅」的取舍，
+         * 对偏色到无法观看的片源，颜色正确优先。
+         */
+        set("hwdec", when {
+            isDolbyVisionSource -> "no"
+            decoder == DecoderPreference.Software -> "no"
+            decoder == DecoderPreference.Hardware -> "mediacodec,mediacodec-copy"
+            else -> "mediacodec,mediacodec-copy,no"
         })
         set("hwdec-codecs", "h264,hevc,mpeg2video,vc1,vp8,vp9,av1")
+        if (isDolbyVisionSource) {
+            // 软解 4K 需要足够线程；auto-safe 让 mpv 按核数分配
+            set("vd-lavc-threads", "0")
+        }
         set("vd-lavc-dr", "yes")
         set("vd-lavc-film-grain", "gpu")
         set("keep-open", "yes")
@@ -438,11 +467,6 @@ class MpvPlayer(
      *
      * @param degrees 0 / 90 / 180 / 270
      */
-    /**
-     * 用户口径（2026-11-26）：当前片源是否杜比视界（决定 load 时的色彩解析方式）。
-     */
-    var isDolbyVisionSource: Boolean = false
-
     fun setVideoRotate(degrees: Int) {
         runCatching {
             MPVLib.setPropertyString("video-rotate", (degrees % 360).toString())
