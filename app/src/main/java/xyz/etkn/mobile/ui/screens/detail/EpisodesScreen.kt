@@ -8,12 +8,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
 
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -48,9 +46,9 @@ import xyz.etkn.mobile.ui.nav.LocalBottomInset
 import xyz.etkn.mobile.ui.nav.LocalNav
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.components.images
-import xyz.etkn.mobile.ui.components.Corner
+import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.ui.components.Artwork
-import xyz.etkn.mobile.ui.common.px
+import xyz.etkn.mobile.ui.components.px
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
@@ -70,6 +68,8 @@ import androidx.compose.foundation.layout.size
 import xyz.etkn.mobile.ui.components.px
 import xyz.etkn.mobile.ui.theme.Corner
 import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
 
 class EpisodesViewModel(graph: AppGraph, private val seriesId: String, seasonId: String?) : ViewModel() {
     private val api = graph.api
@@ -200,8 +200,8 @@ private fun EpisodesContent(route: EpisodesRoute) {
                 SeasonEpisodeRow(episode, onOpen = { nav.open(episode) })
             }
             when {
-                state.loading -> item(key = "loading", span = { GridItemSpan(maxLineSpan) }) { InlineLoading() }
-                state.error != null -> item(key = "error", span = { GridItemSpan(maxLineSpan) }) {
+                state.loading -> item(key = "loading") { InlineLoading() }
+                state.error != null -> item(key = "error") {
                     Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                         FilledTonalButton(onClick = vm.episodes::retry) { Text("剧集加载失败，重试") }
                     }
