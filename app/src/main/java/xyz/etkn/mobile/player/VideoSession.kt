@@ -167,6 +167,32 @@ class VideoSession(
     private var discTried = false
     /** Set after a core failed on the current source; the other core plays it. */
     private var forcedEngine: Engine? = null
+
+    /**
+     * 用户口径（2026-11-26）**设置里的内核选择优先级最高**。
+     *
+     * 实测问题：设置改成 Exo / mpv 后「完全没感觉」——因为
+     *  ① engineFor 只在起播/换集时读设置，正在播的这一集不会重选
+     *  ② forcedEngine（自动换核）一旦被设上会一直覆盖设置
+     *  ③ 新加的「DV5 自动切 mpv」「无解码器自动切 mpv」会把手动选的 Exo 盖掉
+     *
+     * 现在的规则：
+     *  · 设置 = Exo  → 永远 Exo，禁止任何自动换核
+     *  · 设置 = Mpv  → 永远 mpv
+     *  · 设置 = 自动 → 才允许「不支持的解码 / DV profile5」时自动切 mpv
+     */
+    private val autoSwitchAllowed: Boolean
+        get() = settings.engine == PlayerEngine.Auto
+
+    /**
+     * 用户口径（2026-11-26）：把「播放内核」设置暴露成 Flow，供播放页监听。
+     * 设置一变就能重选内核，不用退出播放器。
+     */
+    fun settingsEngineFlow(): kotlinx.coroutines.flow.Flow<PlayerEngine> =
+        runCatching {
+            graph.settings.flow.map { it.engine }
+        }.getOrElse { kotlinx.coroutines.flow.flowOf(PlayerEngine.Auto) }
+
     private var loadStartedAt = 0L
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     /** Tracks of the current source as last reported (the player clears them on an error). */
@@ -216,6 +242,23 @@ class VideoSession(
      * 渲染路径不兼容。遇到 DV 必须换回 SurfaceView ——
      * 代价是不能再画布旋转，但至少画面能出来（这类片源本身就是宽画幅）。
      */
+    /**
+     * 用户口径（2026-11-26）**DV profile 5 单独标记**。
+     *
+     * 谷雨 = dvhe.05.08 = profile 5（单层、无 HDR10 基础层、纯 DV）。
+     * 这类片源的 SPS/VUI 里**故意不写色彩信息**（规范如此），
+     * 日志实证 color=NA/NA/NA/8/8。
+     * 颜色完全由 DV RPU 驱动，解码器输出 IPTPQc2 色彩空间。
+     *
+     * 关键：IPTPQc2 一旦被当成普通 BT709 解释 → 画面偏绿。
+     * 平板上为了画布旋转走 TextureView（GPU 纹理上传），
+     * 元数据在这一层丢失 → 偏绿。
+     *
+     * 所以 profile 5 必须走「Surface 直通」，不能用 TextureView 中间层。
+     */
+    private val _isDvProfile5 = MutableStateFlow(false)
+    val isDvProfile5: StateFlow<Boolean> = _isDvProfile5.asStateFlow()
+
     private val _isDolbyVision = MutableStateFlow(false)
 
     /** 供 UI 读取：当前源是否为 DV（决定用 SurfaceView 还是 TextureView）。 */
@@ -292,6 +335,39 @@ class VideoSession(
                             codec.startsWith("dvh1", ignoreCase = true)
                     }
                 }
+                /**
+                 * 用户口径（2026-11-26）：单独识别 DV profile 5（dvhe.05 / dvh1.05）。
+                 */
+                val dv5 = tracks.groups.any { group ->
+                    if (group.type != C.TRACK_TYPE_VIDEO) return@any false
+                    (0 until group.length).any { i ->
+                        val codec = group.getTrackFormat(i).codecs.orEmpty().lowercase()
+                        codec.startsWith("dvhe.05") || codec.startsWith("dvh1.05")
+                    }
+                }
+                if (dv5 != _isDvProfile5.value) {
+                    android.util.Log.i(TAG, "DV profile5 detected=$dv5（IPTPQc2，需 Surface 直通否则偏绿）")
+                    _isDvProfile5.value = dv5
+                    /**
+                     * 用户口径（2026-11-26）**DV profile 5 自动切 mpv**。
+                     *
+                     * 原因：profile 5 的颜色只能靠 DV RPU 驱动（IPTPQc2），
+                     * Exo 在平板上走 TextureView 时元数据丢失 → 被当 BT709 解释 → 偏绿。
+                     * mpv 的画面是 SurfaceView 直通，元数据不经过 GPU 纹理层，
+                     * 能正确按 IPTPQc2 解释（或自行 tone-map 到 SDR）。
+                     *
+                     * 实测依据：mpv 在这台平板上能正常出画（ready 1569ms）。
+                     */
+                    if (dv5 && engine == Engine.Exo && forcedEngine == null && autoSwitchAllowed) {
+                        android.util.Log.i(TAG, "DV profile5 → 切 mpv（避免偏绿）")
+                        forcedEngine = Engine.Mpv
+                        val cur = source
+                        val pos = player?.currentPosition ?: 0L
+                        if (cur != null) {
+                            main.post { if (!released && source === cur) playSource(cur, pos) }
+                        }
+                    }
+                }
                 if (dv != _isDolbyVision.value) {
                     android.util.Log.i(TAG, "dolby-vision detected=$dv → ${if (dv) "SurfaceView（放弃画布旋转，优先出画）" else "TextureView"}")
                     _isDolbyVision.value = dv
@@ -326,9 +402,29 @@ class VideoSession(
                  * 视频轨道一个都解不了（isTrackSupported 全 false）→ 当场换 mpv。
                  * mpv 内置 FFmpeg，这类老编码能解。
                  */
+                /**
+                 * 用户口径（2026-11-26）**黑屏兜底：编码不被 Exo 支持时自动换 mpv**。
+                 *
+                 * 日志实证（热成像仪的合格证礼）：
+                 *   streams=Video:msmpeg4v2:
+                 *   video/mp42 本机无可用解码器（画面会黑）
+                 * msmpeg4v2 / MPEG-4 Part 2 是 2000 年代的老编码，
+                 * ExoPlayer 的 MediaCodec 路径完全不支持。
+                 * 表现：不报错、不崩溃、进度照走、音频正常，只是画面全黑
+                 * （所以 onPlayerError 那条换核逻辑根本不会触发）。
+                 *
+                 * 实测依据（另一份日志）：
+                 *   21:54:04 HDR 片源 → 切 mpv
+                 *   21:54:05 ready on mpv after 1569 ms   ← mpv 能正常出画
+                 * 所以这台平板上的 mpv 是可用的。
+                 *
+                 * 切换到 mpv 后 mpv 自己把画面铺满屏幕（SurfaceView 独立图层，
+                 * 不依赖外层画布旋转），所以要把画布旋转让出来（见 PlayerScreen
+                 * 的 mpvActive 判断）。
+                 */
                 runCatching {
                     val videoGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
-                    if (videoGroups.isNotEmpty()) {
+                    if (videoGroups.isNotEmpty() && engine == Engine.Exo && forcedEngine == null && autoSwitchAllowed) {
                         val anyPlayable = videoGroups.any { g ->
                             (0 until g.length).any { i -> g.isTrackSupported(i) }
                         }
@@ -336,7 +432,14 @@ class VideoSession(
                             val mime = (0 until videoGroups.first().length)
                                 .map { videoGroups.first().getTrackFormat(it).sampleMimeType.orEmpty() }
                                 .firstOrNull { it.isNotEmpty() }.orEmpty()
-                            android.util.Log.w(TAG, "视频编码 $mime 本机无可用解码器（画面会黑）")
+                            android.util.Log.w(TAG, "视频编码 $mime 本机无解码器 → 自动换 mpv")
+                            showNotice("该片编码本机解码器不支持，已切换到兼容内核")
+                            forcedEngine = Engine.Mpv
+                            val cur = source
+                            val pos = player?.currentPosition ?: 0L
+                            if (cur != null) {
+                                main.post { if (!released && source === cur) playSource(cur, pos) }
+                            }
                         }
                     }
                 }
@@ -390,7 +493,11 @@ class VideoSession(
             if (engine == Engine.Exo && recoverAudio(error)) return
             // One core gave up: the other plays the same source from the same place.
             val failed = engine
-            if (current != null && forcedEngine == null && failed != null && !discTried) {
+            /**
+             * 用户口径（2026-11-26）：手动选了内核就不许自动换。
+             * 之前这里无条件换，会把用户选的 Exo/mpv 覆盖掉。
+             */
+            if (current != null && forcedEngine == null && failed != null && !discTried && autoSwitchAllowed) {
                 val other = if (failed == Engine.Exo) Engine.Mpv else Engine.Exo
                 forcedEngine = other
                 showNotice("已切换到 ${other.label} 内核")
@@ -430,6 +537,26 @@ class VideoSession(
      */
     private fun switchToHdrEngine() {
         android.util.Log.i(TAG, "switchToHdrEngine: 已停用（v1.4.6 起不再切内核）")
+    }
+
+    /**
+     * 用户口径（2026-11-26）**在设置里换内核后立刻生效**。
+     *
+     * 之前 engineFor() 只在起播/换集时调用，设置改了当前这一集不会重选内核，
+     * 用户改完回来看还是老样子 → 判定「设置压根不生效」。
+     *
+     * 这个方法供设置页在改完 engine 后调用：重选内核、从当前位置续播。
+     */
+    fun reloadEngineFromSettings() {
+        if (released) return
+        val cur = source ?: return
+        val pos = player?.currentPosition ?: 0L
+        forcedEngine = null          // 清掉自动切换留下的锁定，回到设置优先
+        val wanted = engineFor(cur, disc = false)
+        android.util.Log.i(TAG, "设置变更 → 重选内核=${wanted.label}（从 ${pos / 1000}s 续播）")
+        main.post {
+            if (!released && source === cur) playSource(cur, pos)
+        }
     }
 
     private fun engineFor(chosen: MediaSource, disc: Boolean): Engine {

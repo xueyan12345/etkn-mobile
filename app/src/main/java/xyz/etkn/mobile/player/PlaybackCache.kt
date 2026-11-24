@@ -347,8 +347,30 @@ object PlaybackCache {
          */
         val probed = if (knownLength > 0) knownLength else probeLength(client, url)
         val total = if (probed > 0) probed else Long.MAX_VALUE
+        /**
+         * 用户口径（2026-11-26）**修「时长 dur=0 时窗口还是算不出来」**。
+         *
+         * 日志实证：tickCache 首次驱动 pos=293668ms dur=0ms len=5771688235
+         * 上一版只修了「总长为 0」，没修「时长为 0」：
+         *   bpm = if (durationMs > 0 && probed > 0) ... else 0.0
+         * 时长 0 → bpm 还是 0 → posBytes 还是 0 → 窗口还是算不出来。
+         *
+         * 时长从哪来？播放器还没准备好时 duration 就是 0。
+         * 现在两种退化：
+         *  · 有时长 → 按时长/大小两个窗口取小（正常路径）
+         *  · 无时长 → 只用「大小窗口」，且**从已下载位置往后推**
+         *    （不知道时间对应多少字节，就按字节算，这也是用户设的第二个条件）
+         */
         val bpm = if (durationMs > 0 && probed > 0) probed.toDouble() / durationMs else 0.0
-        val posBytes = if (bpm > 0) (positionMs * bpm).toLong() else 0L
+
+        /**
+         * 时长未知时：位置对应的字节偏移无法换算，
+         * 直接用「已缓存的 .part 长度」作为起点（已经下过的部分不重下）。
+         */
+        val posBytes = when {
+            bpm > 0 -> (positionMs * bpm).toLong()
+            else -> if (part.isFile) part.length() else 0L
+        }
 
         /**
          * 用户口径（2026-11-26）**真正的滑动窗口：从播放位置开始往后下**。
@@ -366,7 +388,8 @@ object PlaybackCache {
          * 窗口始终跟着位置平移，而不是越攒越长。
          */
         // 回看余量：当前位置往前留 30 秒，方便小幅拖动回退
-        val lookBackBytes = if (bpm > 0) (30_000.0 * bpm).toLong() else 0L
+        // 回看余量：有时长就按 30 秒换算，没时长就按 8MB 兜底
+        val lookBackBytes = if (bpm > 0) (30_000.0 * bpm).toLong() else (8L * 1024 * 1024)
         val windowStart = (posBytes - lookBackBytes).coerceAtLeast(0L)
 
         // 窗口长度：两个条件取小者（任一条达成就不再扩，这是用户口径）

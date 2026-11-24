@@ -89,6 +89,23 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
     val danmakuCues by session.danmakuCues.collectAsStateWithLifecycle()
     val themeArgb = MaterialTheme.colorScheme.primary.toArgb()
     val player by session.players.collectAsStateWithLifecycle()
+    /**
+     * 用户口径（2026-11-26）**设置里换内核后立刻生效**。
+     *
+     * 监听「播放内核」设置项，值一变就让 session 按新设置重选内核、
+     * 从当前位置续播（不退出播放器、不重新进片）。
+     *
+     * 之前改设置完全没反应，因为 engineFor 只在起播时读设置。
+     */
+    val settingsFlow = remember { session.settingsEngineFlow() }
+    val enginePref by settingsFlow.collectAsStateWithLifecycle()
+    var lastEnginePref by remember { mutableStateOf(enginePref) }
+    androidx.compose.runtime.LaunchedEffect(enginePref) {
+        if (enginePref != lastEnginePref) {
+            lastEnginePref = enginePref
+            session.reloadEngineFromSettings()
+        }
+    }
     var controls by remember { mutableStateOf(true) }
     var locked by remember { mutableStateOf(false) }
     /**
@@ -178,7 +195,20 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 不能靠关掉画布旋转来绕。
      */
     val canvasCapable = remember { CanvasRotationSupport.enabled }
-    val needsCanvasRotation = canvasCapable
+    /**
+     * 用户口径（2026-11-26）**mpv 内核不用画布旋转**。
+     *
+     * 实测日志：
+     *   21:54:04 HDR → 切 mpv
+     *   21:54:01 round=1 want=P real=P ok=true gate=false canvasRotate=false  ← 此时没旋转
+     *   21:54:05 ready on mpv after 1569 ms                                    ← 正常出画
+     *
+     * mpv 的画面走它自己的 SurfaceView（独立硬件图层，不参与 View 树变换），
+     * 外层再 rotationZ=90 只会让 UI 转、画面不转 → 更乱。
+     * 所以 mpv 激活时把画布旋转让出来，由 mpv 自己把画面铺满屏幕。
+     */
+    val mpvActive = player is MpvPlayer
+    val needsCanvasRotation = canvasCapable && !mpvActive
     /**
      * 用户口径（2026-11-23）**起播方向必须一开始就是横屏**。
      *
