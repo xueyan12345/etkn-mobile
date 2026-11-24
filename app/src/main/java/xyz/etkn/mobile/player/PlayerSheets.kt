@@ -268,13 +268,26 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
      * 修法：用服务端的 `AnchorId` 以当前集为锚点请求，
      * 拿到的是「当前集前后各若干集」，当前集一定在结果里，定位就准了。
      */
+    /**
+     * 用户口径（2026-11-26）**修「播放器选集只能看到当前集和后面的集，前面的看不到」**。
+     *
+     * 上一版为了「能定位到当前集」，用了服务端的 `AnchorId` 以当前集为锚点请求。
+     * 但那个参数返回的是「从当前集开始往后」的一段 ——
+     * 当前集之前的集根本不在列表里，所以无论怎么往上滑都看不到前面的集。
+     * 用户看到的正是：第 29 集打开，列表从 29 开始，28 及以前全没有。
+     *
+     * 现在改成**取整季**（和详情页同一套做法）：
+     *  · 一次请求拿全这一季，前面后面的集都在
+     *  · 当前集只是「滚到那个位置」，不再影响列表内容
+     *  · 和详情页保持一致，两边行为也就不会互相矛盾
+     */
     var episodes by remember(current.seasonId, current.id) { mutableStateOf<List<Item>?>(null) }
     LaunchedEffect(current.seasonId, current.id) {
         episodes = runCatching {
             graph.api.episodePage(
                 seriesId, current.seasonId,
-                anchorId = current.id,
-                limit = 200,
+                start = 0,
+                limit = SEASON_EPISODE_LIMIT,
             ).items
         }.getOrDefault(emptyList())
     }
@@ -345,3 +358,10 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
         }
     }
 }
+
+/**
+ * 用户口径（2026-11-26）：播放器选集一次取整季。
+ * 一季通常 1000～2000 集（实测《蜡笔小新》1200+），一次拿全最省心，
+ * 也不会出现「只拿到当前集往后一段」的情况。
+ */
+private const val SEASON_EPISODE_LIMIT = 2000

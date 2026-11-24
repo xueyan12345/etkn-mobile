@@ -346,9 +346,19 @@ internal fun EpisodeCard(
 ) {
     val urls = images()
     val progress = episode.progress
+    /**
+     * 用户口径（2026-11-26）**修「剧集卡下面的文字被方框圆角压住」**。
+     *
+     * 原因：外层 Column 加了 `clip(CardShape)`（16dp 圆角），
+     * 这个裁剪作用在**整个卡片**上，包括图片下方的文字。
+     * 文字贴着卡片底部两角，正好被那两个圆角切掉一部分，看起来像被压住。
+     *
+     * 现在把裁剪只放在图片那一块（Box 已有 `clip(Corner.card)`），
+     * 外层 Column 不再裁剪 —— 文字因此可以完整显示，
+     * 而图片仍然是圆角的（视觉不变）。
+     */
     Column(
         modifier
-            .clip(CardShape)
             .then(if (current) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, CardShape) else Modifier)
             .clickable(onClick = onOpen),
     ) {
