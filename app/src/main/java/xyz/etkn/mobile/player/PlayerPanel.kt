@@ -107,6 +107,8 @@ fun PlayerSidePanel(
                         BoxWithConstraints(Modifier.fillMaxSize()) {
                             val availableW = if (rotated) maxHeight else maxWidth
                             val panelWidth = (availableW * 0.51f).coerceIn(260.dp, 420.dp)
+                            // 右侧留白：屏宽 5.4%（参考图实测）；旋转画布下已在画布内，无需再留
+                            val panelGap = if (rotated) 0.dp else (availableW * 0.054f)
                             val canvas = if (rotated) {
                                 Modifier.requiredSize(maxHeight, maxWidth).graphicsLayer { rotationZ = 90f }
                             } else {
@@ -118,10 +120,7 @@ fun PlayerSidePanel(
                                         .align(Alignment.CenterEnd)
                                         .fillMaxHeight()
                                         .width(panelWidth)
-                                        .padding(
-                                            end = if (rotated) 0.dp
-                                            else (maxWidth.value * 0.054f).dp,
-                                        )
+                                        .padding(end = panelGap)
                                         .background(
                                             surface.copy(alpha = 0.88f),
                                             RoundedCornerShape(12.dp),
