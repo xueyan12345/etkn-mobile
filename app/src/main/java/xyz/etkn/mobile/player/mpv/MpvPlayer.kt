@@ -119,10 +119,27 @@ class MpvPlayer(
     private fun configure() {
         val lowRam = app.getSystemService(ActivityManager::class.java)?.isLowRamDevice == true
         val set = MPVLib::setOptionString
-        set("profile", "fast")
+        /**
+         * 用户口径（2026-11-26）：**不要用 profile=fast**。
+         * fast 档会简化渲染管线（跳过部分色彩管理），对 DV/HDR 片源可能导致偏色。
+         * 保持默认档位，让 libplacebo 走完整色彩流程。
+         */
+        /**
+         * 用户口径（2026-11-26）**改用 mediacodec（不是 mediacodec-copy）修偏色**。
+         *
+         * `mediacodec-copy` 的路径是：硬解 → 把帧**拷回系统内存** → 交给渲染器。
+         * 这一步拷贝只传像素数据，**丢掉了杜比视界的动态元数据（RPU）**，
+         * 于是 IPTPQc2 色彩空间被当普通 YUV 解释 → 必然偏色。
+         *
+         * `mediacodec` 是「硬解 → 直接渲染到 Surface」，不解码后回拷，
+         * 元数据随帧一起交给显示层，DV 片源才能正确解释。
+         *
+         * 这也解释了为什么 Exo 和 mpv 都偏色 ——
+         * 两条路都在「解码后回拷」这一环丢了元数据。
+         */
         set("hwdec", when (decoder) {
-            DecoderPreference.Auto -> "mediacodec-copy,no"
-            DecoderPreference.Hardware -> "mediacodec-copy"
+            DecoderPreference.Auto -> "mediacodec,mediacodec-copy,no"
+            DecoderPreference.Hardware -> "mediacodec,mediacodec-copy"
             DecoderPreference.Software -> "no"
         })
         set("hwdec-codecs", "h264,hevc,mpeg2video,vc1,vp8,vp9,av1")
