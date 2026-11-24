@@ -174,7 +174,18 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                 )
             }
             }  // end if (!hideLibraries)
-            shelf("resume", "继续观看", data.resume) { item ->
+            /**
+             * 用户口径（2026-11-26）：**续播刷新后横条回到最左端**。
+             *
+             * resetKey 用「第一条的 id + 列表长度」：
+             * 新记录同步过来 → 第一位变了 → 横条自动滚回位置 0，
+             * 刚播的那部直接出现在最左边，不用往右划。
+             * 只是上下滚动首页不会触发（值没变）。
+             */
+            shelf(
+                "resume", "继续观看", data.resume,
+                resetKey = data.resume.firstOrNull()?.id to data.resume.size,
+            ) { item ->
                 // 用户口径（2026-11-23）：继续观看里点「四周」直接进这一集的单集详情页（第二层），
                 // 不再走 openTitle（那样会先落到剧集详情页 = 第一层）。中间播放按钮仍然直接播。
                 WideCard(item, onClick = { nav.open(item) }, resume = true, onPlay = { nav.play(item) })

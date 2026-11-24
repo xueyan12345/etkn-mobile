@@ -364,7 +364,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.ChaptersSection(
     item: Item,
     nav: AppNav,
 ) {
-    val chapters = item.chapters.filter { it.name.isNotBlank() }
+    /**
+     * 用户口径（2026-11-26）**章节区只显示片头 / 片头结束 / 片尾三类**。
+     *
+     * 规则：
+     *  · 只保留 markerType ∈ {IntroStart, IntroEnd, CreditsStart}
+     *  · 正片章节（普通分段）全部过滤掉
+     *  · 三类一个都没有 → 整块「章节」不渲染（标题也不出现），电影通常就是这种情况
+     *  · 有一部分的显示那一部分（有啥显示啥）
+     */
+    val chapters = item.chapters.filter { c ->
+        c.name.isNotBlank() && c.markerType in SKIP_MARKERS
+    }
     if (chapters.isEmpty()) return
     item(key = "chapters") {
         Column(Modifier.padding(top = Etkn.space.section)) {
@@ -1436,3 +1447,11 @@ private fun MediaTechOption(
         if (selected) Icon(Icons.Rounded.Check, null, Modifier.size(14.dp), tint = onPanel)
     }
 }
+
+/**
+ * 用户口径（2026-11-26）：章节区只显示这三类标记章节。
+ *
+ * 服务器把这些标记也放在 Chapters 里（markerType 字段），
+ * 正片分段没有 markerType 或为其它值，一律过滤。
+ */
+private val SKIP_MARKERS = setOf("IntroStart", "IntroEnd", "CreditsStart")

@@ -114,8 +114,31 @@ internal fun EpisodeShelf(
     var pendingNumber by remember { mutableIntStateOf(-1) }
     val ranges = if (state.total > RANGE + RANGE / 2) (state.total + RANGE - 1) / RANGE else 0
 
-    /** 当前集所在区间（1-based）。 */
-    val currentRange = ((currentNumber ?: 1) - 1).coerceAtLeast(0) / RANGE
+    /**
+     * 用户口径（2026-11-26）**修「点了区间没反应还会跳回来」**。
+     *
+     * 上一版把高亮绑在「当前播放的集」上（currentRange = currentNumber / 20）。
+     * 点区间按钮时只是把横条滚过去了，高亮判据没变 → 阴影留在原地，
+     * 看起来就是「点了没反应」，而且横条一回到当前集附近又「跳回来」。
+     *
+     * 现在高亮 **跟随横条的第一格**：
+     *  · 点区间 → 横条滚过去 → 第一格变了 → 高亮自然落到你点的区间
+     *  · 手动滑动横条 → 高亮跟着走（这才是区间按钮该有的行为）
+     *  · 切集 → 横条滚到该集 → 高亮跟着到它所在区间
+     */
+    val currentRange = (currentNumber ?: 1).let { ((it - 1).coerceAtLeast(0)) / RANGE }
+    val visibleRange by remember(state.items, currentRange) {
+        derivedStateOf {
+            val idx = row.firstVisibleItemIndex
+            val items = state.items
+            if (idx in items.indices) {
+                val n = items[idx].indexNumber ?: (idx + 1)
+                ((n - 1).coerceAtLeast(0)) / RANGE
+            } else {
+                currentRange
+            }
+        }
+    }
 
     /**
      * 用户点 chip / 跳首尾时记录的「想去的集号」。
@@ -135,8 +158,13 @@ internal fun EpisodeShelf(
         val number = if (pendingNumber > 0) pendingNumber else currentNumber ?: return@LaunchedEffect
         val at = list.positionOfNumber(number)
         if (at >= 0) {
-            // 目标集放在左起第 2 格（左边留一集，右边露出下一集，方便连续点）
-            row.animateScrollToItem((at - 1).coerceAtLeast(0))
+            /**
+             * 用户口径（2026-11-26）**修「先跳到最前面再跳到目标集」**。
+             * `animateScrollToItem` 跨几百集会有一段很长的动画，经过中间所有集，
+             * 视觉上就是「先跑到最前面再回来」。这里改成瞬时就位。
+             * 目标集放在左起第 2 格（左边留一集，右边露出下一集，方便连续点）。
+             */
+            row.scrollToItem((at - 1).coerceAtLeast(0))
             pendingNumber = -1
         } else {
             // 还没加载到 → 继续补（幂等，加载完会再次进入本 effect）
@@ -157,13 +185,16 @@ internal fun EpisodeShelf(
             list.ensureNumber(number)
             return@LaunchedEffect
         }
-        // 目标集在第 2 格位置（与 ① 一致，切集手感统一）
-        row.animateScrollToItem((at - 1).coerceAtLeast(0))
+        /**
+         * 用户口径（2026-11-26）：切集时也瞬时就位，不做长距离动画
+         * （动画穿过几百集同样会出现「先跳到最前面」的观感）。
+         */
+        row.scrollToItem((at - 1).coerceAtLeast(0))
     }
 
     /** ③ 区间 chip 栏跟着当前区间走。 */
-    LaunchedEffect(currentRange, ranges) {
-        if (ranges > 0) chips.animateScrollToItem((currentRange - 1).coerceAtLeast(0))
+    LaunchedEffect(visibleRange, ranges) {
+        if (ranges > 0) chips.animateScrollToItem((visibleRange - 1).coerceAtLeast(0))
     }
 
     val nearEnd by remember { derivedStateOf { (row.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= row.layoutInfo.totalItemsCount - 6 } }
@@ -189,7 +220,7 @@ internal fun EpisodeShelf(
                      * 「点了 421-440 但阴影没落上去」。
                      */
                     PillToggle(
-                        checked = index == currentRange,
+                        checked = index == visibleRange,
                         onClick = { jumpToNumber(rangeStart) },
                     ) {
                         Text("$rangeStart-${minOf(rangeStart + RANGE - 1, state.total)}")

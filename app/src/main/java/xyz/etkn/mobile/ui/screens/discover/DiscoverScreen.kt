@@ -151,7 +151,39 @@ fun DiscoverScreen() {
     var filtering by remember { mutableStateOf(false) }
     val text = rememberTextFieldState(filter.query)
 
-    LaunchedEffect(kind) { grid.scrollToItem(0) }
+    /**
+     * 用户口径（2026-11-26）**探索页返回必回顶部的真正根因（第三次修）**。
+     *
+     * 前两次都在「怎么存位置 / 怎么恢复位置」上打补丁，都没用 ——
+     * 真正的原因是这一行：
+     *     LaunchedEffect(kind) { grid.scrollToItem(0) }
+     *
+     * 它本意是「切换分类（电影/剧集）时回到顶部」，
+     * 但 `LaunchedEffect` 在每次**组合进入**时都会跑一次，
+     * 从详情页返回 → 页面重新组合 → 这个 effect 重新执行 → 强制滚回 0。
+     * 所以无论前面存位置做得多么正确，最后都被这一行覆盖掉。
+     *
+     * 现在改成「只在分类真的发生变化时」才回顶：
+     * 用 remember 记住上一次的分类，相同就不动。
+     */
+    var lastKind by remember { mutableStateOf(kind) }
+    LaunchedEffect(kind) {
+        if (kind != lastKind) {
+            lastKind = kind
+            // 换分类：数据会重新拉，位置回到顶部是对的
+            grid.scrollToItem(0)
+            vm.gridIndex = 0
+            vm.gridOffset = 0
+        } else {
+            /**
+             * 同一个分类重新进入（从详情页返回）：
+             * 保持在 ViewModel 里记着的位置，不做任何滚动。
+             */
+            val i = vm.gridIndex
+            val o = vm.gridOffset
+            if (i > 0 || o > 0) grid.scrollToItem(i, o)
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().glassSource(haze)) {

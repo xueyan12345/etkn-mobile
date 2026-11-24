@@ -66,6 +66,7 @@ import xyz.etkn.mobile.ui.components.glassSource
 import xyz.etkn.mobile.ui.screens.music.MiniPlayer
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.LocalSettings
+import xyz.etkn.mobile.ui.common.isTabletDevice
 
 /** Space screens must leave at the bottom for the floating dock / mini player. */
 val LocalBottomInset = staticCompositionLocalOf { 0.dp }
@@ -91,7 +92,11 @@ fun MainShell(session: ActiveSession) {
     val nowPlaying by music.state.collectAsStateWithLifecycle()
     val showMini = nowPlaying.current != null && !isNowPlaying
     val layout = currentWindowLayout()
-    val wide = layout.wide
+    /**
+     * 用户口径（2026-11-26）：**手机横屏不再被当成宽屏**。
+     * 必须同时是「宽窗口」且「确实是平板设备」，才启用侧栏 Dock 那套布局。
+     */
+    val wide = layout.wide && isTabletDevice()
     val canDiscover by context.graph.discover.allowed.collectAsStateWithLifecycle()
     val settings = LocalSettings.current
     // Phones always use the bottom dock; wide windows use the side dock unless the user prefers the bottom one.

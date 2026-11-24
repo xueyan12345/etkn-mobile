@@ -11,10 +11,34 @@ import androidx.compose.ui.unit.dp
 enum class WindowLayout {
     Compact, Medium, Expanded;
 
+    /**
+     * 用户口径（2026-11-26）：宽屏判定必须同时满足「窗口够宽」和「确实是平板设备」。
+     *
+     * 只看宽度会让手机横屏被当成平板（侧栏 Dock、内容压窄、分页半页错乱）。
+     * 设备形态用 `smallestScreenWidthDp >= 600` 判断：
+     * 手机横屏这个值仍是手机的值（通常 360-420），平板恒 ≥ 600。
+     */
     val wide: Boolean get() = this != Compact
 }
 
 val LocalWindowLayout = staticCompositionLocalOf { WindowLayout.Compact }
+
+/**
+ * 用户口径（2026-11-26）**手机永远不按「宽屏」处理**。
+ *
+ * 原来 `wide` 只看宽度（≥600dp）：
+ * 手机横过来宽度就超过 600dp，于是被当成平板 → 出现侧栏 Dock、
+ * 内容被压窄、pager 更容易停在半页状态（就是「两个页面并排」那种错乱）。
+ *
+ * 现在加一层「最小宽度」门槛：只有真正的平板才可能进入宽屏分支。
+ * 手机横屏宽度通常 780-900dp 但 **shortestScreenWidthDp < 600**，
+ * 平板（含 OPPO Pad Mini）的 shortestScreenWidthDp ≥ 600。
+ */
+@Composable
+fun isTabletDevice(): Boolean {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    return ctx.resources.configuration.smallestScreenWidthDp >= 600
+}
 
 /**
  * The window in dp at the density the app actually draws with. Derived from pixels rather than

@@ -25,6 +25,8 @@ import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.ui.nav.LocalStartInset
 import xyz.etkn.mobile.ui.theme.Etkn
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.lazy.rememberLazyListState
 
 /**
  * 区块标题。
@@ -77,12 +79,30 @@ fun Shelf(
     modifier: Modifier = Modifier,
     onMore: (() -> Unit)? = null,
     showChevron: Boolean = true,
+    /**
+     * 用户口径（2026-11-26）**「继续观看」刷新后要回到最左端**。
+     *
+     * 传一个「数据版本号」进来：值一变就把横条滚回位置 0，
+     * 这样刚播完同步过来的那部一定出现在最左边、直接可见，
+     * 不用再往右划才能看到。
+     *
+     * 其它 shelf 不传（null）→ 行为完全不变，用户手动滚到哪就停在哪。
+     */
+    resetKey: Any? = null,
     itemContent: @Composable (Item) -> Unit,
 ) {
     // 用户口径（2026-11-23）：模块之间的竖向间距 18dp，紧凑（参考图那密度）。
     Column(modifier.fillMaxWidth().padding(top = 18.dp)) {
         SectionHeader(title, onMore = onMore, showChevron = showChevron)
+        val listState = rememberLazyListState()
+        if (resetKey != null) {
+            LaunchedEffect(resetKey) {
+                // 回到最左端；没有动画，避免看到横条「划回去」的过程。
+                listState.scrollToItem(0)
+            }
+        }
         LazyRow(
+            state = listState,
             // Starts clear of the side dock but scrolls on under its glass.
             contentPadding = PaddingValues(start = LocalStartInset.current + Etkn.space.screen, end = Etkn.space.screen),
             horizontalArrangement = Arrangement.spacedBy(Etkn.space.item),
@@ -99,10 +119,12 @@ fun LazyListScope.shelf(
     items: List<Item>,
     onMore: (() -> Unit)? = null,
     showChevron: Boolean = true,
+    /** 见 [Shelf]：非空时数据一变就滚回最左端。 */
+    resetKey: Any? = null,
     itemContent: @Composable (Item) -> Unit,
 ) {
     if (items.isEmpty()) return
     item(key = key, contentType = "shelf") {
-        Shelf(title, items, onMore = onMore, showChevron = showChevron, itemContent = itemContent)
+        Shelf(title, items, onMore = onMore, showChevron = showChevron, resetKey = resetKey, itemContent = itemContent)
     }
 }

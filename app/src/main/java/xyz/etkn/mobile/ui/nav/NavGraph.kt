@@ -54,6 +54,8 @@ import xyz.etkn.mobile.ui.screens.search.SearchScreen
 import xyz.etkn.mobile.ui.theme.Motion
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import kotlin.math.abs
+import androidx.compose.runtime.snapshotFlow
 
 /**
  * False while a tab sits in the pager without being the page shown: the neighbours are composed
@@ -117,7 +119,31 @@ internal fun AppNavHost(controller: NavHostController, tabs: List<TopLevel>, pag
 private fun TabPager(tabs: List<TopLevel>, pager: PagerState, vertical: Boolean) {
     val scope = rememberCoroutineScope()
     val spring = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
+    /** 归位保护用的动画（很短，用户几乎察觉不到）。 */
+    val settle = androidx.compose.animation.core.tween<Float>(durationMillis = 120)
     BackHandler(enabled = pager.currentPage != 0) { scope.launch { pager.animateScrollToPage(0, animationSpec = spring) } }
+    /**
+     * 用户口径（2026-11-26）**分页归位保护**。
+     *
+     * 只要 `currentPageOffsetFraction` 是非零、且状态稳定（不再被手势拖动），
+     * 就立刻把它滚回最近的整数页。
+     *
+     * 这样即使某个瞬间被外力带到 0.5（手势打断 / 转屏 / 动画取消），
+     * 也不会停在「两个页面各占一半」的状态 —— 那个状态就是用户看到的
+     * 「两页并排、中间一条线能左右拖」。
+     *
+     * 注意：`userScrollEnabled = false`，所以不存在「用户正在拖」的合法中间态，
+     * 任何非零偏移都是异常，归位是安全的。
+     */
+    LaunchedEffect(pager) {
+        snapshotFlow { pager.currentPageOffsetFraction to pager.isScrollInProgress }
+            .collect { (fraction, inProgress) ->
+                if (!inProgress && abs(fraction) > 0.02f) {
+                    val target = if (fraction > 0f) pager.currentPage + 1 else pager.currentPage - 1
+                    pager.animateScrollToPage(target.coerceIn(0, (pager.pageCount - 1).coerceAtLeast(0)), animationSpec = settle)
+                }
+            }
+    }
     val key = { page: Int -> tabs.getOrNull(page)?.name ?: page }
     val content: @Composable PagerScope.(Int) -> Unit = { page -> TabPage(tabs.getOrNull(page), pager.settledPage == page) }
     // Pages run the way the dock does. Beside a side dock they slide vertically and only the dock
@@ -165,10 +191,26 @@ private fun TabPager(tabs: List<TopLevel>, pager: PagerState, vertical: Boolean)
          * 阻止「滑页面切标签」—— 它本身就不接收横滑手势了。
          * 不需要额外拦截，让内层所有横向滚动组件正常工作。
          */
+        /**
+         * 用户口径（2026-11-26）**修「偶现两页并排 + 中间一条线可以拖动切换标签」**。
+         *
+         * 两个来源叠加：
+         *  ① `beyondViewportPageCount = 1` 会预构建并**保留相邻页**。
+         *     一旦 pager 的 `currentPageOffsetFraction` 停在 0.5 附近
+         *     （手势中途被系统打断、转屏重新测量、动画被取消后没补偿），
+         *     两页就会各占一半同时画出来 —— 中间那条「可以左右拖的线」就是两页交界。
+         *  ② 宽屏/横屏判定只看窗口宽度，手机横过来也可能被当成宽屏，
+         *     于是侧栏 Dock 出现、内容被压窄，更容易触发上面那种半页状态。
+         *
+         * 这里先做两件能从根上收口的事：
+         *  · `beyondViewportPageCount = 0`：只构建当前页，
+         *    即使 offset 异常也不会两页同时可见。
+         *  · 加一个「归位」保护：offset 一旦非 0 且稳定下来，立刻滚回整数页。
+         */
         HorizontalPager(
             pager,
             Modifier.fillMaxSize(),
-            beyondViewportPageCount = 1,
+            beyondViewportPageCount = 0,
             userScrollEnabled = false,
             key = key,
             pageContent = content,
