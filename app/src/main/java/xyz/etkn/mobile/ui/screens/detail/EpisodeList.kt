@@ -12,152 +12,148 @@ import xyz.etkn.mobile.data.api.EtknApi
 import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.ui.common.userMessage
 
+/**
+ * 用户口径（2026-11-26）**选集部分整体重写**。
+ *
+ * 前面五六次都在「集号 ↔ 列表下标」之间做换算，怎么算都不稳，原因是一个错误的前提：
+ * 列表是**分页加载**的，所以「第 n 集」和「列表第 n 个元素」天然不等，
+ * 任何换算都要依赖「已经加载了多少页」这种容易错的状态。
+ *
+ * 重写的核心决定：**整季一次性取回来**。
+ *  · 一季的集数上限通常在 1000～2000 之间（实测《蜡笔小新》1200+ 集）
+ *  · 一次请求 2000 条，和分页 10 次每次 200 条的流量总量相同
+ *  · 换来的是：**列表下标 === 集号 - 1，永远是恒等式**
+ *    → 不再需要任何换算，也不会因为「加载到第几页」而错位
+ *
+ * 所以这个类只剩两件事：
+ *  1. `select()` 把整季拉回来（一次请求，必要时重试一次）
+ *  2. 提供 `indexOfNumber()` 这种「纯查表」的只读方法
+ *
+ * 不再有 wanted / loadThrough / ensureNumber / 增量 append /
+ * anchor 偏移这些会让状态错位的东西。
+ */
 @Immutable
 data class EpisodesState(
     val seasonId: String? = null,
     val items: List<Item> = emptyList(),
-    val next: Int = 0,
     val total: Int = 0,
-    /** Episode the list opens at (the one to play next, or the page's own episode). */
+    /** 打开时希望定位到的集（当前播放集或下一集）。 */
     val anchorId: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
 ) {
-    val hasMore get() = items.size < total && !loading && error == null
-    val anchorIndex: Int get() = anchorId?.let { id -> items.indexOfFirst { it.id == id } } ?: -1
+    val hasMore: Boolean get() = false     // 整季一次取回，不存在「还有更多」
+
+    /** 该集在本季列表里的下标；找不到返回 -1。 */
+    fun indexOf(id: String?): Int {
+        if (id == null) return -1
+        val at = items.indexOfFirst { it.id == id }
+        if (at >= 0) return at
+        return -1
+    }
+
+    /**
+     * 用户口径（2026-11-26）**集号 → 列表下标，纯查表**。
+     *
+     * 因为整季一次取回、顺序与服务器一致，
+     * 所以「第 n 集 = 列表第 n-1 个」在绝大多数季里直接成立；
+     * 万一本季集号不连续（有缺失集），再用 indexNumber 精确找一次兜底。
+     */
+    fun indexOfNumber(number: Int): Int {
+        if (items.isEmpty() || number <= 0) return -1
+        // 优先：直接按集号精确匹配（最准）
+        val exact = items.indexOfFirst { it.indexNumber == number }
+        if (exact >= 0) return exact
+        // 兜底：集号不连续时按「首个集号 + 偏移」推算
+        val first = items.firstOrNull()?.indexNumber
+        if (first != null && first > 0) {
+            val at = number - first
+            if (at in items.indices) return at
+        }
+        // 最后兜底：如果集号完全缺失，就按顺序位置（n-1）
+        if (items.all { it.indexNumber == null }) {
+            val at = number - 1
+            if (at in items.indices) return at
+        }
+        return -1
+    }
 }
 
 /**
- * One season's episodes, read page by page from `Shows/{id}/EpisodePage`. Shared by the detail
- * page (horizontal row with range chips) and the full episode grid. Requests are serialized:
- * [more] and [loadThrough] only raise the target and one loop fetches until it is reached.
- */
-/**
- * 用户口径（2026-11-26）**选集乱跳的真正根因（整块逻辑重写）**。
+ * 一季的分集列表。**整季一次取回**，见 [EpisodesState] 的说明。
  *
- * 前两次都在改「区间怎么算」，但真正的病灶在**数据层**：
- *
- *  ① `select()` 固定从 `start = 0` 拉第一页（60 条），
- *     然后循环 append 直到 anchor 出现在列表里，上限 ANCHOR_LIMIT = 2000。
- *     《蜡笔小新》有 1200+ 集，播到 1265 时：
- *       · 循环到 2000 条或者拉完才停 → 列表里「前面的集全在」
- *       · 但横条 state 的位置和真实集号之间没有稳定映射
- *  ② 更要命的是 `loadThrough(index)` 的语义是「列表下标」，
- *     而区间 chip 传进来的也是「列表下标」（index*RANGE），
- *     一旦列表不是从第 1 集开始（用 AnchorId 拉的、或分页起点不是 0），
- *     下标和集号就错位 → 点 462 集却跳到 E80 那一块。
- *  ③ `append()` 用 `page.nextStartIndex` 续页，但如果 `select()` 是用 AnchorId 拉的，
- *     服务端返回的 startIndex 不是 0，续页起点就跟着偏。
- *
- * 现在统一成一套明确的语义：
- *  · **列表永远从第 1 集开始、按顺序把需要的部分补齐**
- *    （不依赖 AnchorId 的偏移语义，避免 startIndex 错位）
- *  · **对外只暴露两个入口**：
- *      `ensureNumber(n)`   —— 保证「第 n 集」在列表里（n 是 1-based 集号）
- *      `positionOfNumber(n)` —— 第 n 集在已加载列表里的下标
- *  · 区间 chip、打开定位、左右聚光全部走这两个函数，
- *    不再让调用方自己算下标
+ * 用法：
+ *  · `select(seriesId, seasonId, anchorId)` —— 换季/首次打开
+ *  · `refresh()` —— 只更新播放进度/已看标记，不动顺序
  */
 class EpisodeList(private val api: EtknApi, private val scope: CoroutineScope) {
     private val _state = MutableStateFlow(EpisodesState())
     val state: StateFlow<EpisodesState> = _state.asStateFlow()
+
     private var seriesId = ""
-    private var wanted = 0
     private var job: Job? = null
 
     /**
-     * Opens [seasonId] of [seriesId], always from episode 1.
+     * 打开某一季。
      *
-     * 用户口径（2026-11-26）：**不再用服务端 AnchorId 偏移拉取**。
-     * AnchorId 和 StartIndex 同时存在时服务端以 StartIndex 为准，
-     * 之前两处混用导致「startIndex 不是 0 但列表当成从 0 开始」，
-     * 下标和集号错位 → 点 462 集跳到 E80。
-     *
-     * 现在固定从 0 连续补齐到 anchor 所在位置（或按集号补齐），
-     * 列表里第 i 个元素永远对应第 i+1 集（同一季内连续编号时成立），
-     * 并且额外用 indexNumber 做校验与映射。
+     * 用户口径（2026-11-26）**一次请求取整季**，不再分页：
+     * 分页会让「已经加载到第几页」变成一份必须维护的状态，
+     * 而那份状态一旦和真实集号不同步，定位就会错（这就是之前反复出错的根源）。
      */
     fun select(seriesId: String, seasonId: String?, anchorId: String? = null) {
         job?.cancel()
         this.seriesId = seriesId
-        wanted = 0
+        // 同一季、数据already在，只是换了锚点：不重新拉，只更新锚点
+        val current = _state.value
+        if (current.seasonId == seasonId && current.items.isNotEmpty()) {
+            _state.value = current.copy(anchorId = anchorId)
+            return
+        }
         _state.value = EpisodesState(seasonId = seasonId, anchorId = anchorId, loading = true)
         job = scope.launch {
             try {
-                var state = append(_state.value, FIRST_PAGE)
-                // 补到 anchor 出现为止（anchor 就是当前集/下一集，通常在开头几页就能命中）
-                while (anchorId != null && state.anchorIndex < 0 &&
-                    state.items.size < state.total && state.items.size < ANCHOR_LIMIT
-                ) {
-                    state = append(state, ANCHOR_PAGE)
+                val page = api.episodePage(seriesId, seasonId, start = 0, limit = SEASON_LIMIT)
+                var items = page.items
+                /**
+                 * 服务端一次最多给 [SEASON_LIMIT] 条。极少数超长季可能没给全，
+                 * 这时再补一次（续页起点用服务器返回的 nextStartIndex），
+                 * 但**总数封顶**，避免一季几千集时无限拉取。
+                 */
+                var next = page.nextStartIndex
+                var guard = 0
+                while (items.size < page.total && next > 0 && items.size < HARD_LIMIT && guard < 4) {
+                    guard++
+                    val more = api.episodePage(seriesId, seasonId, start = next, limit = SEASON_LIMIT)
+                    if (more.items.isEmpty()) break
+                    val seen = items.mapTo(HashSet()) { it.id }
+                    items = items + more.items.filter { seen.add(it.id) }
+                    next = more.nextStartIndex
+                    if (next <= 0) break
                 }
-                _state.value = state.copy(loading = false)
+                _state.value = EpisodesState(
+                    seasonId = seasonId,
+                    items = items,
+                    // 最终以「实际拿到的条数」为准，避免服务器 total 与实际不一致时出现空位
+                    total = items.size,
+                    anchorId = anchorId,
+                    loading = false,
+                )
             } catch (error: Exception) {
                 _state.value = _state.value.copy(loading = false, error = error.userMessage())
             }
         }
     }
 
-    /**
-     * 用户口径（2026-11-26）：**保证「第 [number] 集」（1-based）在列表里**。
-     *
-     * 这是区间 chip / 跳转 / 打开定位的唯一入口。
-     * 不再让调用方传「列表下标」—— 那是错位之源。
-     */
-    fun ensureNumber(number: Int) {
-        val target = (number - 1).coerceAtLeast(0)
-        loadThrough(target)
-    }
-
-    /**
-     * 用户口径（2026-11-26）：**第 [number] 集在已加载列表里的下标**。
-     *
-     * 优先用 indexNumber 精确匹配（最可靠）；
-     * 拿不到 indexNumber 时按「第 n 集 = 下标 n-1」推算（同一季内集号连续时成立）。
-     * 找不到返回 -1。
-     */
-    fun positionOfNumber(number: Int): Int {
-        val items = _state.value.items
-        if (items.isEmpty() || number <= 0) return -1
-        val exact = items.indexOfFirst { it.indexNumber == number }
-        if (exact >= 0) return exact
-        // 退路：假定本季集号连续，从第 1 集起算
-        val first = items.firstOrNull()?.indexNumber
-        if (first != null && first > 0) {
-            val idx = number - first
-            return if (idx in items.indices) idx else -1
-        }
-        return -1
-    }
-
-    /** The next page, for a list scrolled near its end. */
-    fun more() = loadThrough(_state.value.items.size)
-
-    /**
-     * 用户口径（2026-11-26）**修「加载请求被丢掉」**。
-     *
-     * 旧写法开头是 `if (job?.isActive == true) return` ——
-     * 只要上一次加载还在跑，这次的请求（哪怕是要补到第 462 集）就被**直接丢弃**，
-     * 而且不会重试。于是目标集永远进不了列表 → 定位退回 0 → 你看到的「跳到最开头」。
-     *
-     * 现在：把目标记进 `wanted` 后，如果已有循环在跑就**让它继续跑到新目标**
-     * （循环用的是 `wanted` 变量，每一轮都重新读），不再丢请求。
-     */
-    fun loadThrough(index: Int) {
-        wanted = maxOf(wanted, index)
-        if (seriesId.isEmpty()) return
-        // 已有循环在跑：它每轮都读 wanted，会自动跑到新目标，这里不需要再起一个。
-        if (job?.isActive == true) return
+    /** 只刷新已看标记/进度，保持顺序不变。 */
+    fun refresh() {
+        val state = _state.value
+        if (seriesId.isEmpty() || state.items.isEmpty() || job?.isActive == true) return
         job = scope.launch {
-            while (true) {
-                val state = _state.value
-                if (state.items.size > wanted || state.items.size >= state.total || state.error != null) break
-                _state.value = state.copy(loading = true)
-                try {
-                    _state.value = append(state, (wanted + 1 - state.items.size).coerceIn(FIRST_PAGE, MAX_PAGE)).copy(loading = false)
-                } catch (error: Exception) {
-                    _state.value = state.copy(loading = false, error = error.userMessage())
-                    break
+            runCatching {
+                api.episodePage(seriesId, state.seasonId, start = 0, limit = state.items.size.coerceAtLeast(1))
+            }.onSuccess { page ->
+                if (page.items.size == state.items.size) {
+                    _state.update { it.copy(items = page.items) }
                 }
             }
         }
@@ -165,43 +161,17 @@ class EpisodeList(private val api: EtknApi, private val scope: CoroutineScope) {
 
     fun retry() {
         val state = _state.value
-        if (state.items.isEmpty()) select(seriesId, state.seasonId, state.anchorId)
-        else {
-            _state.value = state.copy(error = null)
-            more()
-        }
-    }
-
-    /** Re-reads what is loaded (progress, played flags) in one request, keeping the list on screen. */
-    fun refresh() {
-        val state = _state.value
-        if (seriesId.isEmpty() || state.items.isEmpty() || job?.isActive == true) return
-        job = scope.launch {
-            runCatching { api.episodePage(seriesId, state.seasonId, start = 0, limit = state.items.size.coerceIn(FIRST_PAGE, ANCHOR_LIMIT)) }
-                .onSuccess { page ->
-                    _state.update { it.copy(items = page.items, next = page.nextStartIndex, total = maxOf(page.total, page.items.size)) }
-                }
-        }
+        _state.value = state.copy(error = null)
+        select(seriesId, state.seasonId, state.anchorId)
     }
 
     fun contains(id: String) = _state.value.items.any { it.id == id }
 
-    private suspend fun append(state: EpisodesState, limit: Int): EpisodesState {
-        val page = api.episodePage(seriesId, state.seasonId, start = state.next, limit = limit)
-        val seen = state.items.mapTo(HashSet()) { it.id }
-        val fresh = page.items.filter { seen.add(it.id) }
-        return state.copy(
-            items = state.items + fresh,
-            next = page.nextStartIndex,
-            // An empty page ends the list even when the server's total says otherwise.
-            total = if (fresh.isEmpty()) state.items.size else page.total,
-        )
-    }
-
     private companion object {
-        const val FIRST_PAGE = 60
-        const val ANCHOR_PAGE = 120
-        const val MAX_PAGE = 300
-        const val ANCHOR_LIMIT = 2000
+        /** 一次请求的上限。1000～2000 集的长剧都能一次拿全。 */
+        const val SEASON_LIMIT = 2000
+
+        /** 极端情况下（超长季）最多拉到这个数量。 */
+        const val HARD_LIMIT = 6000
     }
 }

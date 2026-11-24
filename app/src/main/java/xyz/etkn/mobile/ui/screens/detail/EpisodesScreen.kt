@@ -17,7 +17,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -100,8 +99,11 @@ private fun EpisodesContent(route: EpisodesRoute) {
     val nav = LocalNav.current
     val haze = rememberHazeState()
     val grid = rememberLazyListState()
-    val nearEnd by remember { derivedStateOf { (grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= grid.layoutInfo.totalItemsCount - 8 } }
-    LaunchedEffect(nearEnd, state.hasMore) { if (nearEnd && state.hasMore) vm.episodes.more() }
+    /**
+     * 用户口径（2026-11-26）：选集改成**整季一次取回**，不再有「滚到底加载更多」，
+     * 这里的分页触发逻辑随之删除（`hasMore` 恒 false，留着只会永远不触发）。
+     * 换季仍然回到顶部。
+     */
     LaunchedEffect(state.seasonId) { grid.scrollToItem(0) }
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
