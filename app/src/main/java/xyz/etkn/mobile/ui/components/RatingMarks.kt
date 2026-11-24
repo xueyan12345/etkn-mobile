@@ -34,10 +34,24 @@ import xyz.etkn.mobile.data.model.RatingSource
  * each source's own colours (brand colours, not theme colours, so they stay out of Tokens.kt).
  */
 @Composable
-fun RatingScore(rating: Rating, modifier: Modifier = Modifier) {
+fun RatingScore(
+    rating: Rating,
+    modifier: Modifier = Modifier,
+    /**
+     * 用户口径（2026-11-26）：详情页信息区垫了深色底板，
+     * 分数文字需要浅色才能看清。默认 null = 跟主题（其它页面不受影响）。
+     */
+    textColor: androidx.compose.ui.graphics.Color? = null,
+) {
     Row(modifier.semantics(mergeDescendants = true) { contentDescription = "${rating.source.label} ${rating.text}" }, verticalAlignment = Alignment.CenterVertically) {
         RatingMark(rating, MARK_HEIGHT)
-        Text(rating.text, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 5.dp))
+        Text(
+            rating.text,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = textColor ?: Color.Unspecified,
+            modifier = Modifier.padding(start = 5.dp),
+        )
     }
 }
 

@@ -549,13 +549,29 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                 // 没有艺术字图时不在这里画白字——留给下方信息区的纯黑剧名，
                 // 避免出现「白字压图 + 黑字重复」两层剧名（上一版的问题）
             }
-            // 海报底部：剧名（纯黑）+ 元数据，都在渐隐区上
+            /**
+             * 用户口径（2026-11-26）**剧名区域加独立底板（修「白字/深字压在亮色海报上看不清」）**。
+             *
+             * 旧方案的毛病：文字直接压在「海报 + 半透明渐变」上，
+             * 深色海报没问题，但遇到亮色海报（鬼灭那部：夜景 + 亮橙角色）
+             * 对比度就不够，字被背景吃掉。
+             * 单纯加深渐变会把海报压得过暗，影响观感。
+             *
+             * 现在改成**独立底板**：整块信息区（剧名 + 评分/日期/时长/类型 + 右侧三条技术信息）
+             * 垫在一块半透明深色圆角底板上。
+             *  · 底板不透明度够高（0.78），任何海报都不会影响可读性
+             *  · 底板是圆角 + 左右留边距，不会显得像「贴在图上的一块黑条」
+             *  · 文字颜色跟着底板走（固定浅色），不再依赖海报明暗
+             */
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(horizontal = Etkn.space.screen)
-                    .padding(bottom = 4.dp),
+                    .padding(bottom = 8.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.Black.copy(alpha = 0.78f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
                 horizontalAlignment = align,
             ) {
                 /**
@@ -573,7 +589,8 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                     Text(
                         item.seriesName?.takeIf { item.isEpisode || item.isSeason } ?: item.name,
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface,
+                        // 底板是深色，文字固定浅色（不跟主题走，否则浅色主题会出现深字压深底）
+                        color = Color.White,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
@@ -609,7 +626,20 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                 val showTech = item.isSeries || item.isMovie || item.isEpisode
                 val techSrc = techSource(data)
                 if (showTech && techSrc != null) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    /**
+                     * 用户口径（2026-11-26）**两栏底部对齐**。
+                     *
+                     * 问题：左栏（评分/日期时长/类型）和右栏（视频/音频/字幕）
+                     * 行数不一样，用 Top 对齐时左边矮一截，类型那行和右边的字幕行错开，
+                     * 中间留出一块大空白，看着很散。
+                     *
+                     * 现在用 **Bottom 对齐**：两栏最底下一行（类型 / 字幕）落在同一条基线上，
+                     * 中间的空白被吸收到上方，视觉上两栏是一个整体。
+                     */
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Bottom,
+                    ) {
                         Box(Modifier.weight(1f)) {
                             MetaLines(item, techSrc, align)
                         }
@@ -642,23 +672,27 @@ private fun techSource(data: DetailData): MediaSource? = with(data) {
 /** Scores by source; year, rating badge and status; then runtime and file; then genres. */
 @Composable
 private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizontal) {
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    /**
+     * 用户口径（2026-11-26）：**底板是深色，文字固定浅色**。
+     * 用主题色（onSurface/onSurfaceVariant）在浅色主题下会是深字压深底，看不见。
+     */
+    val muted = Color.White.copy(alpha = 0.72f)
     val ratings = item.ratings
     // 用户口径（2026-11-24）：集号行移出头部后，行距 6dp → 8dp 让信息区更饱满
-    Column(horizontalAlignment = align, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(horizontalAlignment = align, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (ratings.isNotEmpty()) {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(14.dp, align),
                 itemVerticalAlignment = Alignment.CenterVertically,
             ) {
-                ratings.forEach { RatingScore(it) }
+                ratings.forEach { RatingScore(it, textColor = Color.White) }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             formatRating(item.bestRating)?.takeIf { ratings.isEmpty() }?.let {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Star, null, Modifier.size(16.dp), tint = Etkn.tokens.rating)
-                    Text(it, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 2.dp))
+                    Text(it, style = MaterialTheme.typography.labelLarge, color = Color.White, modifier = Modifier.padding(start = 2.dp))
                 }
             }
             /**
@@ -675,9 +709,9 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
              */
             val dateText = item.premiereDate?.take(10)?.replace("-", "/")
             if (dateText != null) {
-                Text(dateText, style = MaterialTheme.typography.labelLarge)
+                Text(dateText, style = MaterialTheme.typography.labelLarge, color = Color.White)
             } else {
-                item.productionYear?.let { Text(it.toString(), style = MaterialTheme.typography.labelLarge) }
+                item.productionYear?.let { Text(it.toString(), style = MaterialTheme.typography.labelLarge, color = Color.White) }
             }
             // 时长：单集显示本集时长，电影显示总时长
             formatRuntime(item.runtimeMs)?.let {
@@ -705,7 +739,8 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
 
 @Composable
 private fun RatingBadge(text: String) {
-    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    // 用户口径（2026-11-26）：分级徽章现在画在深色底板上，固定用浅色
+    val color = Color.White.copy(alpha = 0.78f)
     Text(
         text,
         style = MaterialTheme.typography.labelMedium,
@@ -1257,8 +1292,12 @@ private fun MediaTechRows(
     /** 右栏紧凑样式：字号更小、行距更紧、图标更小。 */
     compact: Boolean = false,
 ) {
-    val onPanel = MaterialTheme.colorScheme.onSurface
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    /**
+     * 用户口径（2026-11-26）：信息区已垫深色底板，文字固定浅色，
+     * 不跟主题走（浅色主题下 onSurface 会是深字压深底）。
+     */
+    val onPanel = Color.White
+    val muted = Color.White.copy(alpha = 0.72f)
     var expanded by remember { mutableStateOf(0) }   // 0 无 / 1 视频 / 2 音频 / 3 字幕
 
     if (source == null) return
