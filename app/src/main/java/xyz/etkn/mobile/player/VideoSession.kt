@@ -200,6 +200,23 @@ class VideoSession(
     private var nextIntroEndMs: Long = -1L
     /** 正在取下一集直链（避免 tick 每 5 秒重复发起）。 */
     private var nextFetching = false
+
+    /**
+     * 用户口径（2026-11-26）**当前源是否 Dolby Vision（DV profile 5 等）**。
+     *
+     * 平板日志实证：
+     *  · 正常集：mimeType=video/hevc, codecs=hvc1.2.4.L150.90 → TextureView 正常出画
+     *  · 黑屏集：mimeType=video/dolby-vision, codecs=dvhe.05.08, color=NA/NA/NA
+     *            解码器 c2.qti.dv.decoder 初始化成功、进度照走，但画面出不来
+     *
+     * 结论：TextureView（画布旋转的必要条件）与 DV profile 5 在这台高通车机上
+     * 渲染路径不兼容。遇到 DV 必须换回 SurfaceView ——
+     * 代价是不能再画布旋转，但至少画面能出来（这类片源本身就是宽画幅）。
+     */
+    private val _isDolbyVision = MutableStateFlow(false)
+
+    /** 供 UI 读取：当前源是否为 DV（决定用 SurfaceView 还是 TextureView）。 */
+    val isDolbyVision: StateFlow<Boolean> = _isDolbyVision.asStateFlow()
     private var nextDurationMs: Long = 0L
     private var autoSkippedIntro = false
     private var autoSkippedCredits = false
@@ -240,6 +257,29 @@ class VideoSession(
 
         override fun onTracksChanged(tracks: Tracks) {
             if (!tracks.isEmpty) lastTracks = tracks
+            /**
+             * 用户口径（2026-11-26）：识别 Dolby Vision 片源。
+             * 判据（两者任一成立即算 DV）：
+             *  · MIME 为 video/dolby-vision
+             *  · codec 字符串以 dvhe / dvh1 开头（DV profile 5/8 都在此列）
+             */
+            runCatching {
+                val dv = tracks.groups.any { group ->
+                    if (group.type != C.TRACK_TYPE_VIDEO) return@any false
+                    (0 until group.length).any { i ->
+                        val f = group.getTrackFormat(i)
+                        val mime = f.sampleMimeType.orEmpty()
+                        val codec = f.codecs.orEmpty()
+                        mime.equals("video/dolby-vision", ignoreCase = true) ||
+                            codec.startsWith("dvhe", ignoreCase = true) ||
+                            codec.startsWith("dvh1", ignoreCase = true)
+                    }
+                }
+                if (dv != _isDolbyVision.value) {
+                    android.util.Log.i(TAG, "dolby-vision detected=$dv → ${if (dv) "SurfaceView（放弃画布旋转，优先出画）" else "TextureView"}")
+                    _isDolbyVision.value = dv
+                }
+            }
             applyServerTracks(tracks)
             publishTracks(tracks)
         }
@@ -488,6 +528,11 @@ class VideoSession(
         currentLength = chosen.size ?: -1L
         nextUrl = null
         PlaybackCache.clearReady()
+        /**
+         * 用户口径（2026-11-26）：换集时清掉上一集的窗口记录。
+         * 窗口是「滑动区间」，换集后必须重算，否则缓冲条会沿用上一集的区间。
+         */
+        PlaybackCache.clearWindow(current.id)
         /**
          * 用户口径（2026-11-23）：**部分缓存也要立刻用上，别再请求服务器**。
          *

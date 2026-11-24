@@ -151,6 +151,11 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      */
     val needsCanvasRotation = remember { CanvasRotationSupport.enabled }
     /**
+     * 用户口径（2026-11-26）：当前源是否 Dolby Vision。
+     * DV 源不用 TextureView（会黑屏），因此也不做画布旋转。
+     */
+    val isDv by session.isDolbyVision.collectAsStateWithLifecycle()
+    /**
      * 用户口径（2026-11-23）**起播方向必须一开始就是横屏**。
      *
      * 之前初值恒为 false：起播先按竖屏渲染 → 300ms 后校验失败才置 true
@@ -637,7 +642,15 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     modifier = Modifier.fillMaxSize(),
                 )
             }
-            else -> key(core) {
+            /**
+             * 用户口径（2026-11-26）：把 `isDv` 也纳入 key。
+             *
+             * DV 是在播放开始后才从 Tracks 里识别出来的（先有数据才有轨道信息）。
+             * `AndroidView` 的 factory 只在创建时执行一次，
+             * 所以不把它放进 key 的话，识别到 DV 也不会重建视图 → 仍然黑屏。
+             * 放进 key 后：识别到 DV → 重建为 SurfaceView → 画面出来。
+             */
+            else -> key(core, isDv) {
                 AndroidView(
                     factory = { ctx ->
                         /**
@@ -648,7 +661,16 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                          *    性能更好、HDR 直出更稳，且系统方向本来就正常，
                          *    完全不需要旋转能力。
                          */
-                        val pv = if (needsCanvasRotation) {
+                        /**
+                         * 用户口径（2026-11-26）**Dolby Vision 片源必须用 SurfaceView**。
+                         *
+                         * 平板日志实证：DV profile 5（dvhe.05.08）在 TextureView 下
+                         * 解码器能初始化、进度能走，但画面出不来（黑屏无声）。
+                         * 所以一旦识别为 DV，就放弃 TextureView（也就放弃画布旋转），
+                         * 换回 SurfaceView 保证出画 —— 画面可见优先于旋转。
+                         */
+                        val useTexture = needsCanvasRotation && !isDv
+                        val pv = if (useTexture) {
                             android.view.LayoutInflater.from(ctx)
                                 .inflate(xyz.etkn.mobile.R.layout.view_texture_player, null) as PlayerView
                         } else {

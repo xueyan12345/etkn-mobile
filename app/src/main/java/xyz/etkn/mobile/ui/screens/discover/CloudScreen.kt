@@ -58,6 +58,12 @@ import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.ui.components.PillGap
 import xyz.etkn.mobile.ui.components.PillToggle
+import xyz.etkn.mobile.ui.components.InlineLoading
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.heightIn
 
 @Composable
 fun CloudScreen(route: CloudRoute) {
@@ -143,7 +149,24 @@ fun CloudScreen(route: CloudRoute) {
                             }
                         }
                         itemsIndexed(rows, key = { index, _ -> "${provider.wire}-$number-$index" }) { _, row ->
-                            ResourceCard(row, submitted = row in submitted) { confirm = row }
+                            /**
+                         * 用户口径（2026-11-26）：点资源卡先拉分集清单，
+                         * 有分集就弹集号网格（可单集转存），没有就弹原来的整季确认框。
+                         */
+                        ResourceCard(row, submitted = row in submitted) {
+                            picking = row
+                            pickingChildren = null
+                            scope.launch {
+                                val kids = vm.children(row)
+                                if (kids.isEmpty()) {
+                                    // 没有分集信息（电影 / 无权限）→ 原整季确认
+                                    picking = null
+                                    confirm = row
+                                } else {
+                                    pickingChildren = kids
+                                }
+                            }
+                        }
                         }
                     }
                 }
@@ -152,6 +175,121 @@ fun CloudScreen(route: CloudRoute) {
         GlassBackBar(title, collapsed = true, haze = haze, onBack = nav::back)
     }
 
+    /**
+     * 用户口径（2026-11-26）**选集弹窗**（集号网格，对应 ETKN 网页端）。
+     *
+     *  · 顶部：资源标题 + 版本信息
+     *  · 中部：集号网格（每格一个集号，可多选）
+     *  · 底部：全选 / 整季全转 / 只转选中
+     *
+     * 转存时把选中集的 sha1/size/source_id 逐个提交，
+     * 服务端按 sha1 精确匹配到单文件（实证见 EtknApi.acquire 注释）。
+     */
+    picking?.let { row ->
+        val kids = pickingChildren
+        var chosen by remember(row) { mutableStateOf<Set<Int>>(emptySet()) }
+        GlassDialog(
+            onDismissRequest = { picking = null; pickingChildren = null },
+            title = { Text("选择要转存的集") },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        CloudResources.label(row),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    when {
+                        kids == null -> {
+                            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { InlineLoading() }
+                        }
+                        kids.isEmpty() -> {
+                            Text("这个资源没有分集信息，只能整季转存。", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        else -> {
+                            Text(
+                                "共 ${kids.size} 集，点集号多选；不选 = 整季全转",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            // 集号网格：每行 6 个
+                            kids.chunked(6).forEach { line ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    line.forEach { ep ->
+                                        val n = ep.source.int("episode_number")
+                                        val on = n > 0 && n in chosen
+                                        Surface(
+                                            onClick = {
+                                                if (n > 0) chosen = if (on) chosen - n else chosen + n
+                                            },
+                                            shape = Corner.small,
+                                            color = if (on) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                            contentColor = if (on) MaterialTheme.colorScheme.onPrimary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f).height(40.dp),
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    if (n > 0) n.toString().padStart(2, '0') else "?",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                )
+                                            }
+                                        }
+                                    }
+                                    // 补齐空位，保证每行宽度一致
+                                    repeat(6 - line.size) { Spacer(Modifier.weight(1f)) }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = kids != null,
+                    onClick = {
+                        val picked = kids.orEmpty().filter { ep ->
+                            val n = ep.source.int("episode_number")
+                            n > 0 && n in chosen
+                        }
+                        picking = null
+                        pickingChildren = null
+                        scope.launch {
+                            val result = if (picked.isEmpty()) {
+                                // 没选 = 整季全转
+                                vm.acquire(row)
+                            } else {
+                                // 逐个提交选中的集
+                                var ok = 0
+                                var fail = 0
+                                var lastRun = 0L
+                                picked.forEach { ep ->
+                                    vm.acquire(row, ep).fold(
+                                        { runId -> ok++; if (runId > 0) lastRun = runId },
+                                        { fail++ },
+                                    )
+                                }
+                                if (fail == 0) Result.success(lastRun)
+                                else if (ok > 0) Result.success(lastRun).also {
+                                    message = "部分提交失败" to "成功 $ok 集，失败 $fail 集。"
+                                } else Result.failure(IllegalStateException("全部提交失败"))
+                            }
+                            message = result.fold(
+                                { runId -> "获取任务已提交" to ((if (runId > 0) "任务 #$runId 已创建，" else "获取任务已创建，") + "入库完成或失败时服务端会发送通知。") },
+                                { "获取提交失败" to it.userMessage() },
+                            )
+                        }
+                    },
+                ) { Text(if (chosen.isEmpty()) "整季全转" else "转存选中 ${chosen.size} 集") }
+            },
+            dismissButton = { TextButton(onClick = { picking = null; pickingChildren = null }) { Text("取消") } },
+        )
+    }
     confirm?.let { row ->
         GlassDialog(
             onDismissRequest = { confirm = null },

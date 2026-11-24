@@ -331,7 +331,17 @@ internal fun Controls(
                     // 用户口径（2026-11-23）：缓冲段 = 按设置真正落盘的进度（ui.cachedPosition），
     // 不再用 player.bufferedPosition（那只是内核几秒的前向缓冲，和缓存设置无关，
     // 会让用户以为「设了 10GB 缓存怎么只有一小条」）。
-    val shownBuffered = if (ui.cachedPosition > 0) maxOf(ui.cachedPosition, buffered) else buffered
+    /**
+     * 用户口径（2026-11-26）**缓冲条只认「我们自己的缓存进度」**。
+     *
+     * 旧写法 `maxOf(ui.cachedPosition, buffered)` 把播放器内核那几秒前向缓冲混进来，
+     * 于是缓冲条位置一会儿是内核缓冲、一会儿是磁盘缓存，两者混着取最大值 → 忽长忽短。
+     *
+     * 现在：
+     *  · cachedPosition > 0（有本地缓存）→ 只用它，内核缓冲不参与
+     *  · cachedPosition == 0（没开缓存）→ 才退回内核缓冲
+     */
+    val shownBuffered = if (ui.cachedPosition > 0) ui.cachedPosition else buffered
     val bufferedFrac = if (duration > 0) (shownBuffered.toFloat() / duration).coerceIn(0f, 1f) else 0f
                     // 整条高度 26dp，里面自绘：轨道 3dp、缓冲 3dp、播放头直径 14dp
                     Canvas(

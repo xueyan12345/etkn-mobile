@@ -182,20 +182,58 @@ object PlaybackCache {
     fun knownUrlFor(itemId: String): String? = knownUrls[itemId]
 
     /**
-     * 用户口径（2026-11-23）：磁盘缓存已覆盖到第几毫秒（画进度条缓冲段）。
+     * 用户口径（2026-11-26）**缓冲条算法重写（这是「缓冲条不跟播放进度」的根因）**。
      *
-     * 进度条原来画的是 player.bufferedPosition —— 那是播放器内核几秒的前向缓冲，
-     * 和设置里的「最大缓存大小/时长」完全是两套东西，所以永远只有细细一小条。
-     * 这里按 itemId 直接读缓存文件大小换算。
+     * ── 旧实现错在哪 ──
+     *     frac = 已下载字节 / 整集总字节
+     *     return durationMs * frac
+     *
+     * 它假定「已下载量 = 从文件开头连续下载的量」。但这是**滑动窗口**：
+     * 播放到 30 分钟时，窗口下的是「30~50 分钟那一段」的字节，
+     * 前面 0~30 分钟可能根本没下过。
+     * 于是 have/total 这个比例和「播放位置之后的缓冲范围」毫无关系，
+     * 缓冲条画出来的位置是乱的 —— 要么很短、要么直接顶到片尾。
+     *
+     * ── 正确做法 ──
+     * 必须记录**窗口覆盖的字节区间** [windowStart, windowEnd]，然后：
+     *     缓冲条位置 = windowEnd / totalBytes * durationMs
+     * 这才是「已缓冲到第几分钟」。
+     *
+     * 窗口区间由 [pullWindow] 在每次下载后写入。
      */
     fun cachedPositionMs(context: Context, itemId: String, durationMs: Long, totalBytes: Long): Long {
+        // 整集完整落盘 → 直接算作缓冲到片尾
         val full = fileForId(context, itemId)
         if (full.isFile && full.length() > 0) return if (durationMs > 0) durationMs else 0L
-        val part = partFileById(context, itemId)
-        val have = if (part.isFile) part.length() else 0L
-        if (have <= 0 || totalBytes <= 0 || durationMs <= 0) return 0L
-        val frac = (have.toDouble() / totalBytes).coerceIn(0.0, 1.0)
+        if (durationMs <= 0 || totalBytes <= 0) return 0L
+        // 用真实记录的窗口右边界（字节），而不是「文件里有多少字节」
+        val end = windowEndBytes(itemId)
+        if (end <= 0) return 0L
+        val frac = (end.toDouble() / totalBytes.toDouble()).coerceIn(0.0, 1.0)
         return (durationMs * frac).toLong()
+    }
+
+    /**
+     * 窗口已覆盖到第几个字节（右边界）。
+     *
+     * 用户口径（2026-11-26）：这是缓冲条的唯一数据源。
+     *  · 下载时由 [pullWindow] 写入真实值
+     *  · 磁盘上已有的 .part 长度只作为兜底（重启后窗口信息丢失时）
+     */
+    private fun windowEndBytes(itemId: String): Long {
+        windows[itemId]?.let { w -> if (w.end > 0) return w.end }
+        return 0L
+    }
+
+    /** 一集缓存窗口的字节区间（滑动窗口）。 */
+    private data class Window(val start: Long, val end: Long)
+
+    /** itemId → 当前窗口。下载时更新，切集时清理。 */
+    private val windows = java.util.concurrent.ConcurrentHashMap<String, Window>()
+
+    /** 切集/退出时清掉窗口记录（下次进这一集重新算）。 */
+    fun clearWindow(itemId: String) {
+        windows.remove(itemId)
     }
 
     /** 稳定 key：丢掉 token/UserId 等查询参数。按 URL 查的场景（预加载）仍需要它。 */
@@ -298,59 +336,86 @@ object PlaybackCache {
         val posBytes = if (bytesPerMs > 0) (positionMs * bytesPerMs).toLong() else 0L
 
         /**
-         * 目标覆盖到哪：
-         *   byTime = 当前位置 + 时间窗口
-         *   bySize = 当前位置 + 大小窗口
-         *   取小者（任一条达成就不扩）—— 这就是用户说的「两个达成一个就不再缓存」
+         * 用户口径（2026-11-26）**真正的滑动窗口：从播放位置开始往后下**。
+         *
+         * 旧实现从字节 0 顺序下载（`have = part.length()`，`downloadInto(from = have)`），
+         * 所以文件里永远只有「开头那一截」，缓冲条自然跟不上播放位置。
+         *
+         * 现在：
+         *  · 窗口左边界 = 当前位置对应字节（减去一点回看余量，便于拖动回退）
+         *  · 窗口右边界 = 左边界 + min(时间窗口, 大小窗口)
+         *  · 只保证「左边界到右边界」这段在本地；超出的部分不重复下载
+         *  · 记录窗口区间，供缓冲条按真实右边界换算时间点
+         *
+         * 说明：为了让「单集内缓冲条恒长」这个观感成立，
+         * 窗口始终跟着位置平移，而不是越攒越长。
          */
-        val byTime = if (bytesPerMs > 0) posBytes + (windowMs * bytesPerMs).toLong() else Long.MAX_VALUE
-        val bySize = if (windowBytes > 0) posBytes + windowBytes else Long.MAX_VALUE
-        var wantBytes = minOf(byTime, bySize)
-        // 两个阈值都没配（都为 0）时不做上限，直接拉满
-        if (wantBytes == Long.MAX_VALUE) wantBytes = total
-        if (total != Long.MAX_VALUE) wantBytes = wantBytes.coerceAtMost(total)
+        // 回看余量：当前位置往前留 30 秒，方便小幅拖动回退
+        val lookBackBytes = if (bytesPerMs > 0) (30_000.0 * bytesPerMs).toLong() else 0L
+        val windowStart = (posBytes - lookBackBytes).coerceAtLeast(0L)
 
-        var have = if (part.isFile) part.length() else 0L
+        // 窗口长度：两个条件取小者（任一条达成就不再扩，这是用户口径）
+        val byTime = if (bytesPerMs > 0) (windowMs * bytesPerMs).toLong() else Long.MAX_VALUE
+        val bySize = if (windowBytes > 0) windowBytes else Long.MAX_VALUE
+        var windowLen = minOf(byTime, bySize)
+        if (windowLen == Long.MAX_VALUE) windowLen = total - windowStart   // 没配阈值就按整集
+        var windowEnd = (windowStart + windowLen).coerceAtLeast(windowStart)
+        if (total != Long.MAX_VALUE) windowEnd = windowEnd.coerceAtMost(total)
 
-        // 已经够（窗口到位），本轮不下载，但要返回「是否已到片尾」
-        if (have < wantBytes) {
-            val chunk = 12L * 1024 * 1024
-            while (have < wantBytes) {
-                val until = minOf(wantBytes, have + chunk)
-                downloadInto(client, url, part, from = have, until = until)
-                val after = if (part.isFile) part.length() else 0L
-                if (after <= have) break   // 没进展，避免死循环
-                have = after
-            }
+        /**
+         * 当前本地已有的连续覆盖区间。
+         *
+         * 记在内存里（[windows]），重启后丢失 → 从磁盘 .part 长度兜底，
+         * 但兜底只用于「别重复下载已经有的部分」，不影响缓冲条显示（缓冲条只认 windows）。
+         */
+        val already = windows[itemId]
+        // 需要下载的区间：与已有窗口求差；没有记录时整段都算缺
+        val hasCover = already != null && already.start <= windowStart && already.end >= windowEnd
+
+        /**
+         * 从「已覆盖到的位置」开始往后补，直到窗口右边界。
+         *
+         * 注意：滑动窗口下 .part 文件可能是稀疏的（跳区下载），
+         * 所以「已覆盖到哪」只能靠内存里的 [windows] 记录，不能靠文件长度。
+         */
+        var cur = when {
+            hasCover -> windowEnd
+            already != null -> already.end.coerceIn(windowStart, windowEnd)
+            else -> windowStart
+        }
+        val chunk = 12L * 1024 * 1024
+        while (cur < windowEnd) {
+            val until = minOf(windowEnd, cur + chunk)
+            val ok = downloadInto(client, url, part, from = cur, until = until)
+            if (!ok) break          // 这一段没下到 → 停止，已下部分仍然有效
+            cur = until
         }
 
         /**
-         * 用户口径（2026-11-26）**修「缓冲条已经到最后了，下一集还是没预加载」**。
+         * 记录窗口：即使本轮只下了一部分，也要把「实际到达的右边界」记下来，
+         * 这样缓冲条才能跟着走。
+         */
+        val coveredEnd = cur.coerceAtMost(windowEnd)
+        windows[itemId] = Window(start = windowStart, end = coveredEnd)
+
+        /**
+         * 用户口径（2026-11-26）**「本集缓冲完成」的正确判定**。
          *
-         * 旧判定：`reachedEnd = have >= total` —— 要求**整集字节数全部下载完**。
-         * 但这是滑动窗口：窗口大小 = min(时间窗口, 大小窗口)，
-         * 正常情况下永远不会把整集拉满（用户设的是 400MB / 1200 秒，不是「整集」）。
-         * 于是 `reachedEnd` 永远 false → 预加载永远不触发。
-         *
-         * 用户的口径是：**从当前播放位置往后，已经没有可以缓冲的地方了**，
-         * 就算这一集缓冲完成。这等价于「窗口右边界已经顶到片尾」。
-         *
-         * 现在按这个判定：
-         *  · 已经能确定总长（total 有效）且窗口右边界 wantBytes 顶到 total → 完成
-         *  · 或者实际已下载量 have 顶到 total（真拉满）→ 完成
-         *  · 总长未知（total == MAX_VALUE）且无法判断 → 用「当前位置已是末尾附近」兜底
-         *    （positionMs 距片尾 < 5 秒且这一轮没有新的可下载量）
+         * 从当前播放位置往后已经无处可缓冲，就是完成：
+         *  · 窗口右边界顶到片尾（coveredEnd >= total）
+         *  · 或者整集完整落盘
+         * 这与「窗口恒长、跟着位置走」的口径一致。
          */
         val reachedEnd = when {
-            total != Long.MAX_VALUE && wantBytes >= total -> true
-            total != Long.MAX_VALUE && have >= total -> true
-            // 总长未知时：播放位置已经很靠后，且这一轮没再下到东西 → 认为无可缓冲
-            total == Long.MAX_VALUE && durationMs > 0 && positionMs >= durationMs - 5_000 && have == 0L -> true
+            total != Long.MAX_VALUE && coveredEnd >= total -> true
+            total != Long.MAX_VALUE && part.isFile && part.length() >= total -> true
+            // 总长未知：位置已在片尾附近且本轮没有进展 → 认为无可缓冲
+            total == Long.MAX_VALUE && durationMs > 0 && positionMs >= durationMs - 5_000 -> true
             else -> false
         }
         if (reachedEnd) {
-            // 真拉满了才转正；只是窗口顶到片尾时保留 .part（下次还要接着用）
-            if (total != Long.MAX_VALUE && have >= total) {
+            // 真拉满整集才转正；只是窗口顶到片尾时保留 .part
+            if (total != Long.MAX_VALUE && part.isFile && part.length() >= total) {
                 runCatching { part.renameTo(target) }
                 runCatching { trim(context, settings, protect = target) }
             } else {
@@ -496,8 +561,16 @@ object PlaybackCache {
      *  ① 用 OkHttpDataSource + 和播放器同一套 client（带同源 X-Emby-Token 拦截器）
      *  ② 整段包 runCatching —— 403/超时/断网一律只记日志，绝不许崩进程
      */
-    private suspend fun downloadInto(client: OkHttpClient, url: String, target: File, from: Long, until: Long) {
-        runCatching {
+    /**
+     * 用户口径（2026-11-26）：返回**是否成功读到数据**。
+     *
+     * 滑动窗口必须知道「这一段到底下没下到」，
+     * 否则窗口区间记错、缓冲条又会失真。
+     * 返回 true 表示真的从 [from] 读到并写入了数据。
+     */
+    private suspend fun downloadInto(client: OkHttpClient, url: String, target: File, from: Long, until: Long): Boolean {
+        var wrote = 0L
+        val result = runCatching {
             // 复用播放器的 OkHttp client（同源请求自动带 X-Emby-Token + UA）
             val factory = androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(client).setUserAgent(UA)
             val source = factory.createDataSource()
@@ -518,6 +591,7 @@ object PlaybackCache {
                         if (read < 0) break
                         raf.write(buffer, 0, read)
                         written += read
+                        wrote += read
                         if (until > from && written >= until) break
                     }
                 }
@@ -530,6 +604,7 @@ object PlaybackCache {
                 "download failed from=$from until=$until url=${url.take(90)} err=${it.message}",
             )
         }
+        return result.isSuccess && wrote > 0
     }
 
     // ---------------------------------------------------------------- 流水线（预加载）

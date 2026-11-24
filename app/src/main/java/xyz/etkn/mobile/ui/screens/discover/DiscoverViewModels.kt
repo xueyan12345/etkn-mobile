@@ -256,7 +256,22 @@ class CloudViewModel(private val graph: AppGraph, val item: DiscoverItem, val se
     }
 
     /** Submits one acquisition; its result is reported later by [xyz.etkn.mobile.data.events.IngestNotices]. */
-    suspend fun acquire(row: CloudResource): Result<Long> = runCatching { graph.api.acquire(row, item, season) }
-        .onSuccess { runId -> graph.sessions.current?.let { graph.ingest.track(it, runId) } }
-        .onSuccess { _submitted.update { it + row } }
+    /**
+     * 用户口径（2026-11-26）**按集转存**。
+     *
+     * @param episode 选中的单集（null = 整个资源全转）
+     */
+    suspend fun acquire(row: CloudResource, episode: CloudResource? = null): Result<Long> =
+        runCatching { graph.api.acquire(row, item, season, episode) }
+            .onSuccess { runId -> graph.sessions.current?.let { graph.ingest.track(it, runId) } }
+            .onSuccess { _submitted.update { it + row } }
+
+    /**
+     * 用户口径（2026-11-26）**拉取某资源的分集清单**（供集号网格）。
+     *
+     * 只有共享池且是整季资源才有；普通账号没有权限时返回空列表，
+     * 调用方退回「整季转存」。
+     */
+    suspend fun children(row: CloudResource): List<CloudResource> =
+        runCatching { graph.api.sharedResourceChildren(row) }.getOrDefault(emptyList())
 }

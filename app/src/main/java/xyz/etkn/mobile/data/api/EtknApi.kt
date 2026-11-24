@@ -641,11 +641,64 @@ class EtknApi(
         return CloudResources.parse(provider, get(path), season)
     }
 
-    /** Confirmed by the user before calling: may spend server-side points. Returns `workflow_run_id`. */
-    suspend fun acquire(row: CloudResource, item: DiscoverItem, season: Int?): Long {
+    /**
+     * 用户口径（2026-11-26）**拉取某个共享资源的分集清单**（供集号网格）。
+     *
+     * 服务端接口：`GET /api/shared-pool/resources/children`
+     *  · 参数：source_kind / source_id（或 hub_id）
+     *  · 返回 items[]，每项含 episode_number、sha1、size、source_ref_id、file_name 等
+     *  · 这是网页端集号网格的数据源
+     *
+     * 注意：这个接口需要管理员权限（普通账号 403）。
+     * 失败时返回空列表，调用方按「不支持选集」处理，退回整季转存。
+     */
+    suspend fun sharedResourceChildren(row: CloudResource): List<CloudResource> {
+        val kind = row.source.str("source_kind").ifBlank { row.source.str("resource_type") }
+        val id = row.source.str("source_ref_id").ifBlank { row.source.str("source_id") }
+        if (kind.isBlank() || id.isBlank()) return emptyList()
+        return runCatching {
+            val result = get(
+                query(
+                    "/api/shared-pool/resources/children",
+                    "source_kind" to kind,
+                    "source_id" to id,
+                ),
+            )
+            CloudResources.parseChildren(row.provider, result, row.source)
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * 用户口径（2026-11-26）**按集转存（共享池）**。
+     *
+     * 服务端实证（`acquisition.py` 的 `_select_manual_shared_version_files`）：
+     * 当 `source` 满足下面三条时，只转存**指定的那一集**：
+     *   ① `source_kind` ∈ {movie, episode, logical_episode}
+     *   ② `sha1` 是 40 位十六进制
+     *   ③ `size` > 0
+     * 然后按 sha1 + source_id 精确匹配到单个文件。
+     *
+     * 所以「选集」不需要服务端加参数，只要把该集的 sha1/size/source_id
+     * 塞进 source 即可。这正是网页端集号网格的做法。
+     *
+     * @param episode 选中的单集（来自 `/api/shared-pool/resources/children`）；
+     *                传 null = 整个资源全转（原行为）
+     */
+    suspend fun acquire(
+        row: CloudResource,
+        item: DiscoverItem,
+        season: Int?,
+        episode: CloudResource? = null,
+    ): Long {
         val watch = query("", "TmdbId" to item.id, "MediaType" to (if (item.kind == DiscoverKind.Movie) "movie" else "series"), "SeasonNumber" to season)
         val result = when (row.provider) {
-            CloudProvider.SharedPool -> post("$D/shared-resources/acquire$watch", buildJsonObject { put("source", CloudResources.sharedSource(row.source)) })
+            CloudProvider.SharedPool -> post("$D/shared-resources/acquire$watch", buildJsonObject {
+                /**
+                 * 选了某一集时，用该集自己的 source 覆盖（含 sha1/size/source_id），
+                 * 服务端就会只转这一集；没选就沿用整季的 source。
+                 */
+                put("source", CloudResources.sharedSource(episode?.source ?: row.source))
+            })
             CloudProvider.Channel -> post("$D/channel-resources/acquire$watch", buildJsonObject { put("resource", row.source) })
             CloudProvider.Re0 -> post(
                 "$D/re0-resources/acquire$watch",

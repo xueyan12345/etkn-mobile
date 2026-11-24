@@ -154,6 +154,45 @@ object CloudResources {
         return if (count > 1) "版本 $index/$count" else ""
     }
 
+    /**
+     * 用户口径（2026-11-26）**解析共享池的分集清单**（集号网格用）。
+     *
+     * 服务端 `GET /api/shared-pool/resources/children` 返回：
+     *   { items: [ {episode_number, sha1, size, source_ref_id, item_type:"Episode", ...} ], count }
+     *
+     * 每一项都补上「父资源的 source_kind/source_id/sha1/size」信息会污染父级，
+     * 所以这里**保持每项自己的字段**（服务端按 sha1+source_id 精确匹配），
+     * 只额外继承 `_shared_pool_parent_source_id` 之类做兜底不需要的字段一律不加。
+     */
+    fun parseChildren(provider: CloudProvider, result: JsonObject, parent: JsonObject): List<CloudResource> {
+        val rows = result.rows("items")
+        if (rows.isEmpty()) return emptyList()
+        return rows.mapNotNull { row ->
+            // 至少要能定位到单集：sha1 + source_id
+            val sha = row.str("sha1")
+            val srcId = row.str("source_ref_id").ifBlank { row.str("source_id") }
+            if (sha.isBlank() || srcId.isBlank()) return@mapNotNull null
+            val filled = JsonObject(
+                buildMap {
+                    putAll(row)
+                    // 服务端 _source_kind / _source_id 读的是这两个字段
+                    put("source_kind", JsonPrimitive(row.str("source_kind").ifBlank { "logical_episode" }))
+                    put("source_id", JsonPrimitive(srcId))
+                    // 单集必须带 item_type=Episode，服务端才走单文件分支
+                    put("item_type", JsonPrimitive(row.str("item_type").ifBlank { "Episode" }))
+                    // 补上剧集身份，便于服务端入库时归位
+                    row.str("tmdb_id").takeIf { it.isNotBlank() }?.let { put("tmdb_id", JsonPrimitive(it)) }
+                    if (!containsKey("season_number")) {
+                        parent.int("season_number").takeIf { it > 0 }?.let { put("season_number", JsonPrimitive(it)) }
+                    }
+                    row.str("title").takeIf { it.isNotBlank() }?.let { put("title", JsonPrimitive(it)) }
+                    parent.str("title").takeIf { it.isNotBlank() }?.let { if (!containsKey("title")) put("title", JsonPrimitive(it)) }
+                },
+            )
+            CloudResource(provider, filled)
+        }
+    }
+
     /** Shared pool: a valid share channel transfers, otherwise rapid upload. Empty for re0 / channel. */
     fun transferLabel(row: CloudResource): String {
         if (row.provider != CloudProvider.SharedPool) return ""
