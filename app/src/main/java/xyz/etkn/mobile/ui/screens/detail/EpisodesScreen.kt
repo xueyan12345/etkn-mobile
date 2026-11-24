@@ -65,8 +65,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.size
-import xyz.etkn.mobile.ui.components.px
-import xyz.etkn.mobile.ui.theme.Corner
 import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
