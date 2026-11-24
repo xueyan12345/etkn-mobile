@@ -264,7 +264,7 @@ private fun DetailContent(
 
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
             LazyColumn(state = list, modifier = Modifier.fillMaxSize().glassSource(haze)) {
-                item(key = "header", contentType = "header") { Swap(data) { DetailHeader(it, centered) } }
+                item(key = "header", contentType = "header") { Swap(data) { DetailHeader(it, centered, vm) } }
                 item(key = "actions", contentType = "actions") { Swap(data) { ActionRow(it, centered, vm, nav, press) } }
                 if (item.mediaSources.size > 1) {
                     item(key = "versions") { VersionRow(item.mediaSources, data.selectedSource, vm::selectSource) }
@@ -483,7 +483,7 @@ private fun ChapterCard(chapter: Chapter, item: Item, onPlay: () -> Unit) {
 }
 
 @Composable
-private fun DetailHeader(data: DetailData, centered: Boolean) {
+private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewModel) {
     val item = data.item
     val urls = images()
     val align = if (centered) Alignment.CenterHorizontally else Alignment.Start
