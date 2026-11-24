@@ -159,11 +159,33 @@ fun ArtworkBackButton(onBack: () -> Unit, modifier: Modifier = Modifier, onGlass
 
 /** Round button over artwork (dark veil, white icon) that goes flat once it sits on glass. */
 @Composable
-fun ArtworkIconButton(icon: ImageVector, description: String, onClick: () -> Unit, modifier: Modifier = Modifier, onGlass: Boolean = false) {
-    FilledTonalIconButton(
-        onClick = onClick,
-        modifier = modifier,
-        colors = if (onGlass) IconButtonDefaults.filledTonalIconButtonColors(containerColor = Color.Transparent)
-        else IconButtonDefaults.filledTonalIconButtonColors(containerColor = Color.Black.copy(alpha = 0.35f), contentColor = Color.White),
-    ) { Icon(icon, description) }
+fun ArtworkIconButton(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onGlass: Boolean = false,
+    /**
+     * 用户口径（2026-11-26）**状态高亮**。
+     *
+     * 有些图标按钮是「开关」语义（收藏、已播放）：光换图标形状不够，
+     * 小尺寸下空心/实心差别不明显。highlighted = true 时给一层主题色圆底 + 主题色图标，
+     * 一眼就能看出当前是「已开启」状态。
+     */
+    highlighted: Boolean = false,
+) {
+    val colors = when {
+        highlighted -> IconButtonDefaults.filledTonalIconButtonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+        )
+        onGlass -> IconButtonDefaults.filledTonalIconButtonColors(containerColor = Color.Transparent)
+        else -> IconButtonDefaults.filledTonalIconButtonColors(
+            containerColor = Color.Black.copy(alpha = 0.35f),
+            contentColor = Color.White,
+        )
+    }
+    FilledTonalIconButton(onClick = onClick, modifier = modifier, colors = colors) {
+        Icon(icon, description)
+    }
 }

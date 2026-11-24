@@ -100,6 +100,18 @@ class AppGraph(val app: Application) {
      */
     val itemChanges = MutableSharedFlow<ItemChange>(extraBufferCapacity = 16)
 
+    /**
+     * 用户口径（2026-11-26）**播放结束/退出后，首页续播要立刻更新**。
+     *
+     * 首页原来只在 onResume 里刷续播，而且带 60 秒节流 ——
+     * 播完一集回来时那个窗口经常还没过，于是「继续观看」还是旧的，
+     * 必须手动下拉整页才会变。
+     *
+     * 这个事件由播放器在退出/切集上报完成后发出，首页收到就**无条件**刷续播，
+     * 不再等节流窗口。
+     */
+    val playbackChanged = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+
     init {
         sessions.api = api
         /**

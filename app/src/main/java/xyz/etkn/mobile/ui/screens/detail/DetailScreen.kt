@@ -143,6 +143,8 @@ import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Tune
 import xyz.etkn.mobile.data.model.MediaStream
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.CheckCircle
 
 @Composable
 fun DetailScreen(id: String) {
@@ -305,6 +307,11 @@ private fun DetailContent(
                             state = episodes,
                             seasons = if (item.isEpisode) emptyList() else data.seasons,
                             currentId = item.id.takeIf { item.isEpisode },
+                            /**
+                             * 用户口径（2026-11-26）：把当前集的真实集号传进去，
+                             * 让选集分页区间能一次算对（不再依赖列表加载状态而乱跳）。
+                             */
+                            currentNumber = item.indexNumber,
                             list = vm.episodes,
                             onSeason = { vm.selectSeason(seriesId, it) },
                             // On an episode's page the others replace it in place; elsewhere they open.
@@ -563,22 +570,40 @@ private fun DetailHeader(data: DetailData, centered: Boolean) {
                  * 视觉上头部仍然饱满，不再出现「少一行显得空」。
                  */
                 Spacer(Modifier.height(16.dp))
-                MetaLines(item, techSource(data), align)
-            }            // 元数据（类型标签等）仍在海报底部，和播放按钮一起
-            Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = Etkn.space.screen).padding(bottom = 4.dp),
-                horizontalAlignment = align,
-            ) {
                 /**
-                 * 用户口径（2026-11-23）**这里原来有一行青绿色小字剧名，已删除**。
+                 * 用户口径（2026-11-26）**左右两栏：左边元数据，右边三条技术信息**。
                  *
-                 * 原因：同一屏剧名出现了三次 ——
-                 *  ① 海报上的白色艺术字（服务器 TMDB 图，保留）
-                 *  ② 上面 InfoColumn 里的纯黑粗体剧名（保留，参考图要求的那一行）
-                 *  ③ 这个青绿色小字（多余，删掉）
-                 * 参考图里图下只有一行剧名，所以这里直接进入元数据行。
+                 * 原来三条技术信息（视频/音频/字幕）是通栏堆在播放按钮上方，
+                 * 右侧一大片留白。现在改成：
+                 *   左栏：剧名下方那几行（评分 / 日期 / 时长 / 类型）
+                 *   右栏：4K HEVC（+ 小字）、音轨、字幕
+                 * 播放按钮仍然通栏在下方。
+                 *
+                 * 层级：series / movie / episode 显示右栏；season 不显示（右栏留空，左栏照旧）。
                  */
-                MetaLines(item, techSource(data), align)
+                val showTech = item.isSeries || item.isMovie || item.isEpisode
+                val techSrc = techSource(data)
+                if (showTech && techSrc != null) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                        Box(Modifier.weight(1f)) {
+                            MetaLines(item, techSrc, align)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Box(Modifier.weight(1f)) {
+                            MediaTechRows(
+                                item = item,
+                                source = techSrc,
+                                sourceCount = item.mediaSources.size,
+                                selectedIndex = data.selectedSource,
+                                onSelectSource = { vm.selectSource(it) },
+                                onSelected = { },
+                                compact = true,
+                            )
+                        }
+                    }
+                } else {
+                    MetaLines(item, techSource(data), align)
+                }
             }
         }
     }
@@ -723,30 +748,16 @@ private fun ActionRow(
      *  · movie / episode 层就是自己
      *  所以统一用 techSource(data)（它已经按「选中的版本或下一集」解析好了）。
      */
-    val showTechRows = item.isSeries || item.isMovie || item.isEpisode
-    val techSrc = techSource(data)
-    // 用户在「版本」里选了哪个源：techSource 已含这个逻辑，这里只用于多版本判断
-    val selectedIndex = data.selectedSource
+    // 用户口径（2026-11-26）：三条技术信息改到元数据区右侧渲染，这里不再需要这些变量。
 
     Column(
         Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen).padding(top = 14.dp),
         horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
     ) {
         /**
-         * 三条常驻信息（视频 / 音频 / 字幕）—— 在播放按钮行上方。
-         * 有多个选项时可点击展开切换；只有一个时只显示不展开。
+         * 用户口径（2026-11-26）：三条技术信息已移到元数据区右侧（见 DetailHeader），
+         * 这里不再通栏渲染。只保留播放按钮那一行。
          */
-        if (showTechRows && techSrc != null) {
-            MediaTechRows(
-                item = item,
-                source = techSrc,
-                sourceCount = item.mediaSources.size,
-                selectedIndex = selectedIndex,
-                onSelectSource = { vm.selectSource(it) },
-                onSelected = { /* 音轨/字幕切换在播放器里做，详情页只展示 */ },
-            )
-            Spacer(Modifier.height(12.dp))
-        }
 
         // 用户口径（2026-11-23）：三个点（更多）移到「继续播放」大按钮右边。
         // 收藏/已播放/下载已移到右上角，这里不再重复。
@@ -839,12 +850,23 @@ private fun DetailTopActions(
         { vm.toggleFavorite() },
         onGlass = onGlass,
     )
-    // 已播放
+    /**
+     * 用户口径（2026-11-26）**修「对号点了看不出状态」**。
+     *
+     * 之前不管已播放还是未播放，用的都是同一个 `Icons.Rounded.Done`，
+     * 状态切换后图标完全一样 —— 用户分不清现在是哪个状态。
+     *
+     * 现在照收藏那个心形的做法：
+     *  · 未播放 → 空心对号（DoneOutline / 描边）
+     *  · 已播放 → 实心对号 + 高亮圆底（主题色）
+     * 一眼就能看出当前是哪个状态。
+     */
     ArtworkIconButton(
-        Icons.Rounded.Done,
+        if (item.userData.played) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
         if (item.userData.played) "标记未看" else "标记已看",
         { vm.togglePlayed() },
         onGlass = onGlass,
+        highlighted = item.userData.played,
     )
     // 下载（私密账号不给）
     if (session != null && !session.privateAccount) {
@@ -1205,6 +1227,8 @@ private fun MediaTechRows(
     selectedIndex: Int,
     onSelectSource: (Int) -> Unit,
     onSelected: () -> Unit,
+    /** 右栏紧凑样式：字号更小、行距更紧、图标更小。 */
+    compact: Boolean = false,
 ) {
     val onPanel = MaterialTheme.colorScheme.onSurface
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1239,6 +1263,7 @@ private fun MediaTechRows(
             expandable = sourceCount > 1,
             expanded = expanded == 1,
             onClick = if (sourceCount > 1) { { expanded = if (expanded == 1) 0 else 1 } } else null,
+            compact = compact,
         )
         if (expanded == 1) {
             item.mediaSources.forEachIndexed { i, src ->
@@ -1262,6 +1287,7 @@ private fun MediaTechRows(
             expandable = audios.size > 1,
             expanded = expanded == 2,
             onClick = if (audios.size > 1) { { expanded = if (expanded == 2) 0 else 2 } } else null,
+            compact = compact,
         )
         if (expanded == 2) {
             audios.forEach { a ->
@@ -1289,6 +1315,7 @@ private fun MediaTechRows(
             expandable = subs.isNotEmpty(),
             expanded = expanded == 3,
             onClick = if (subs.isNotEmpty()) { { expanded = if (expanded == 3) 0 else 3 } } else null,
+            compact = compact,
         )
         if (expanded == 3) {
             MediaTechOption(label = "关闭", selected = currentSub == null, onPanel = onPanel, onClick = { expanded = 0; onSelected() })
@@ -1327,20 +1354,21 @@ private fun MediaTechRow(
     expandable: Boolean,
     expanded: Boolean,
     onClick: (() -> Unit)?,
+    compact: Boolean = false,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(vertical = 7.dp),
+            .padding(vertical = if (compact) 4.dp else 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, Modifier.size(18.dp), tint = muted)
+        Icon(icon, null, Modifier.size(if (compact) 15.dp else 18.dp), tint = muted)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 main,
-                style = MaterialTheme.typography.bodyMedium,
+                style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
                 color = onPanel,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

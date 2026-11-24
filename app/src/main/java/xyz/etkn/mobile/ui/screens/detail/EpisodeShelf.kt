@@ -73,6 +73,14 @@ internal fun EpisodeShelf(
     state: EpisodesState,
     seasons: List<Item>,
     currentId: String?,
+    /**
+     * 用户口径（2026-11-26）：**当前集在整季里的真实集号**（IndexNumber）。
+     *
+     * 分页区间必须用它来算，不能用「已加载列表里的下标」：
+     * 长剧（1000+ 集）是按需加载的，列表下标和集号不是一回事。
+     * 用下标算会出现「417 集点了 419 集、分页跳到 61-80」这种乱跳。
+     */
+    currentNumber: Int?,
     list: EpisodeList,
     onSeason: (String) -> Unit,
     onOpen: (Item) -> Unit,
@@ -103,15 +111,25 @@ internal fun EpisodeShelf(
      * 正确算法：用当前集在全集中的**集号**（IndexNumber）算区间，
      * 而不是已加载列表里的下标。
      */
-    val range by remember(state.items, currentId) {
+    /**
+     * 用户口径（2026-11-26）**第二次修「选集分页乱跳」**。
+     *
+     * 上一版改成用 `state.items` 里当前集的 indexNumber 算，仍然会闪：
+     * 切集瞬间 `state.items` 还是旧数据（新集所在页还没加载），
+     * 算出来就是旧集号 → 分页先跳到错误区间，等数据到了再跳回来。
+     * 录屏实测到的就是：「1261-1280 → 1081-1100 → 又回 1261-1280」。
+     *
+     * 现在改为**直接由传进来的 currentNumber 算**，完全不依赖列表加载状态：
+     *  · 切集瞬间 currentNumber 立刻就是新集的真实集号
+     *  · 一次就算对，不会先跳错误区间再纠正
+     *  · 拿不到 currentNumber 时才退回按滚动位置
+     */
+    val range by remember(currentNumber, currentId) {
         derivedStateOf {
-            val idx = currentId?.let { id -> state.items.indexOfFirst { it.id == id } } ?: -1
-            if (idx >= 0) {
-                // 用该集在整季里的真实序号（从 1 开始），算它属于第几个 20 集区间
-                val number = state.items[idx].indexNumber ?: (idx + 1)
+            val number = currentNumber
+            if (number != null && number > 0) {
                 ((number - 1) / RANGE).coerceAtLeast(0)
             } else {
-                // 找不到当前集时退回「按滚动位置」，保持原有行为不至于失效
                 row.firstVisibleItemIndex / RANGE
             }
         }

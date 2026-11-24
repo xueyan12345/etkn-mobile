@@ -1313,8 +1313,21 @@ class VideoSession(
         val expected = playSession
         // Application scope: the Stopped report must outlive the player screen.
         graph.scope.launch {
-            val reply = runCatching { api.report(event, payload, session) }.getOrNull() ?: return@launch
-            val state = reply.obj("Danmaku") ?: return@launch
+            /**
+             * 用户口径（2026-11-26）**上报成功后立刻通知首页刷新续播**。
+             *
+             * 首页原来只在 onResume 里刷续播，还有 60 秒节流 ——
+             * 播完一集马上回来时窗口经常没过，于是「继续观看」还是旧的，
+             * 必须手动下拉整页才变。
+             *
+             * 这里在 Stopped 真正发出去之后发一个事件，
+             * 首页收到就无条件刷续播（不再看节流窗口）。
+             */
+            val replied = runCatching { api.report(event, payload, session) }.getOrNull()
+            if (event == "Stopped" && replied != null) {
+                runCatching { graph.playbackChanged.tryEmit(Unit) }
+            }
+            val state = replied?.obj("Danmaku") ?: return@launch
             if (event != "Stopped" && expected == playSession && !released) {
                 danmakuAvailable = state.bool("Available")
                 applyDanmaku()

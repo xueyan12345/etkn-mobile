@@ -58,6 +58,16 @@ class HomeViewModel(
         load()
         // Changes from the item menu: reload the shelves quietly (the hero is kept).
         viewModelScope.launch { graph.itemChanges.collect { load() } }
+        /**
+         * 用户口径（2026-11-26）：播放器退出/切集上报完成后 → **立刻**刷续播，
+         * 不受 onResume 那个 60 秒节流限制。
+         */
+        viewModelScope.launch {
+            graph.playbackChanged.collect {
+                lastLoad = 0L          // 清掉节流，允许马上刷
+                refreshResume()
+            }
+        }
     }
 
     fun refresh() = load(manual = true)
