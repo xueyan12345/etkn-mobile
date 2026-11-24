@@ -41,6 +41,12 @@ class DiscoverViewModel(private val graph: AppGraph) : ViewModel() {
     val options: StateFlow<DiscoverOptions> = _options.asStateFlow()
     private var page = 0
     private var loadJob: Job? = null
+    /**
+     * 用户口径（2026-11-24）：探索页列表的滚动位置。
+     * 存在 ViewModel 里（导航期间保活），返回时用它恢复，不停在顶部。
+     */
+    var gridIndex: Int = 0
+    var gridOffset: Int = 0
 
     init {
         reload()

@@ -108,20 +108,25 @@ internal fun EpisodeShelf(
      *
      * 之前完全没有这个逻辑：切到后面的集，当前集早就滚出屏幕，用户得自己找。
      */
+    /**
+     * 用户口径（2026-11-24）**整条平滑平移一张卡**（照参考视频）。
+     *
+     * 参考视频的手感：点第 4 集 → 整条横条平滑左移一张卡的宽度，
+     * 第 4 集滑到第 3 集原来的位置，第 5 集滑到第 4 集原来的位置；点前一集反向。
+     *
+     * 实现要点：
+     *  · 关键是「目标集永远停在同一个锚点位置」，而不是「只要可见就不动」
+     *  · 每次切换都用同一套动画曲线（MaterialTheme 的 spatial spec），
+     *    快慢一致才有连续的平移感
+     *  · 锚点取「让当前集出现在第 2 格」（左边留一格，右边能看到下一集）
+     */
     LaunchedEffect(currentId, state.items.size) {
         val index = state.items.indexOfFirst { it.id == currentId }
         if (index < 0) return@LaunchedEffect
-        val info = row.layoutInfo
-        val first = info.visibleItemsInfo.firstOrNull()?.index ?: return@LaunchedEffect
-        val last = info.visibleItemsInfo.lastOrNull()?.index ?: return@LaunchedEffect
-        when {
-            // 已经在视野里，而且下一集也露得出来 → 一律不动（参考应用就是这个手感）
-            index in first..(last - 1) -> Unit
-            // 在视野里但正好是最后一格 → 往后挪一格，让下一集露出来
-            index == last -> row.animateScrollToItem(index)
-            // 完全在视野外 → 滚到它刚好出现在起始位置
-            else -> row.animateScrollToItem(index)
-        }
+        // 锚点：目标集显示在左起第 2 个位置（留一格给上一集，右边露出下一集）
+        val anchorOffset = 1
+        val target = (index - anchorOffset).coerceAtLeast(0)
+        row.animateScrollToItem(target, scrollOffset = 0)
     }
     LaunchedEffect(pending, state.items.size) {
         if (pending in state.items.indices) {

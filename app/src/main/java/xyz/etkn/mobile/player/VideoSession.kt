@@ -192,6 +192,13 @@ class VideoSession(
     private var currentLength: Long = -1L
     /** 下一集的 (episodeId, url)，用于流水线预加载。 */
     private var nextUrl: Pair<String, String>? = null
+    /**
+     * 用户口径（2026-11-24）：下一集的片头结束位置与总时长。
+     * 预加载量要用「片头结束 + 1 分钟」做下限（不受配额限制），
+     * 没有片头数据时 introEndMs = -1，退回纯配额。
+     */
+    private var nextIntroEndMs: Long = -1L
+    private var nextDurationMs: Long = 0L
     private var autoSkippedIntro = false
     private var autoSkippedCredits = false
 
@@ -615,61 +622,42 @@ class VideoSession(
 
     fun tickCache(positionMs: Long, durationMs: Long) {
         /**
-         * 用户口径（2026-11-23）**这里原来写成 `if (!settings.preloadNext) return`，是错的**。
-         *
-         * 「预加载下一集」和「当前集缓存窗口（最大缓存大小/时长）」是两件独立的事：
-         *  · 预加载关掉，只代表不去预先下载下一集；
-         *  · 当前集该缓存多少，由 cacheMemoryMb / cacheMemorySeconds 决定。
-         * 原来把两件事绑在一起 → 只要关掉预加载，
-         * 设置里那两个缓存大小/时长就完全不生效（用户看到的「就是一个面板」）。
-         *
-         * 现在只有「连当前集都不需要缓存」时才提前退出（两个阈值都是 0 视为关闭）。
-         */
-        /**
-         * 用户口径（2026-11-23）：进播放器第一次 tick 时**先收敛一次磁盘**。
-         * 老版本没有上限检查，已经堆积了 12GB+，不主动收一次不会自己变小。
+         * 用户口径（2026-11-23）：进播放器第一次 tick 时先收敛一次磁盘
+         * （老版本堆的超额缓存不会自己变小）。
          */
         if (!trimmedThisItem) {
             trimmedThisItem = true
             PlaybackCache.trimNow(graph.app, settings)
         }
+        // 两个阈值都是 0 = 不做缓存
         val cacheWindowOn = settings.cacheMemoryMb > 0 || settings.cacheMemorySeconds > 0
         if (!cacheWindowOn) return
         val cur = currentUrl ?: return
         val currentItem = item ?: return
-        // 用户口径（2026-11-23）：这一集已经有完整本地文件 → 不重复下载，直接推进下一集。
-        // 之前会先判断 localFile，但下一步仍然进 pipeline 又拉一遍（浪费流量）。
-        if (PlaybackCache.localFileById(graph.app, currentItem.id) != null) {
-            startNextIfIdle(currentItem)
-            _ui.update { it.copy(nextPreloaded = PlaybackCache.isNextReady()) }
-            return
-        }
+
         /**
-         * 用户口径（2026-11-23）修「起播变慢」：
-         * 之前起播第 5 秒就开始全速把整集往下拉缓存，和视频播放抢同一条 115 直链带宽，
-         * 导致起播/前几秒明显卡慢。
+         * 用户口径（2026-11-24）**缓冲窗口是滑动窗口，必须紧跟播放位置**。
          *
-         * 现在加两个前置条件：
-         *  ① 已播过 15 秒（起播缓冲已经过去，播放稳定了）
-         *  ② 播放器前向缓冲已 ≥ 30 秒（内核自己先攒够，再去抢带宽不会卡画面）
+         * 之前有两个前置条件（播放 >15s、内核前向缓冲 >30s）会直接 return，
+         * 导致起播后一大段时间完全不缓冲、缓冲条不动 → 用户看到的「逻辑很乱」。
+         * 现在去掉这两个门槛：只要开播就推进窗口。
+         * 带宽冲突由「每次 tick 只拉一个 chunk」自然缓解（见 pullWindow）。
          */
-        if (positionMs < 15_000) return
-        val bufferedAhead = (player?.bufferedPosition ?: 0L) - positionMs
-        if (bufferedAhead < 30_000) return
-        // 当前集已整集落盘就不用再跑
-        if (PlaybackCache.localFileById(graph.app, currentItem.id) != null) {
-            // 当前集完成 → 尝试推进到下一集
-            startNextIfIdle(currentItem)
-            _ui.update { it.copy(nextPreloaded = PlaybackCache.isNextReady()) }
-            return
-        }
+        if (positionMs <= 0) return
+
         val length = currentLength
         scope.launch {
             /**
-             * 用户口径（2026-11-23）修「缓冲条到头但下一集气泡不亮」：
-             * pipeline() 以前是 fire-and-forget，这里 await 它真正跑完再刷新状态，
-             * 否则 isNextReady() 在下载刚开始时就返回 false，气泡永远不亮。
+             * 下一集信息（含片头结束位置和总时长）——
+             * 供「片头优先」的预加载量计算使用。
              */
+            val nextInfo = PlaybackCache.NextEpisode(
+                itemId = nextUrl?.first ?: "",
+                url = nextUrl?.second ?: "",
+                introEndMs = nextIntroEndMs,
+                durationMs = nextDurationMs,
+            ).takeIf { it.itemId.isNotEmpty() && it.url.isNotEmpty() }
+
             val job = PlaybackCache.pipeline(
                 context = graph.app,
                 settings = settings,
@@ -678,20 +666,34 @@ class VideoSession(
                 currentPositionMs = positionMs,
                 currentDurationMs = durationMs,
                 currentLength = length,
-                next = nextUrl?.let { (id, url) -> id to url },
+                next = nextInfo,
             )
             job?.join()
-            // 用户口径（2026-11-23）：缓冲条要反映「按设置真正缓存到哪」，
-            // 不是播放器内核那一小截前向缓冲。
-            val covered = PlaybackCache.cachedPositionMs(graph.app, currentItem.id, durationMs, length)
+            /**
+             * 用户口径（2026-11-24）**缓冲条数据源**。
+             *
+             * ui.cachedPosition 这个字段之前只声明、从未计算 —— 永远是 0，
+             * 所以进度条上的缓冲段只能退回 player.bufferedPosition（内核几秒前向缓冲），
+             * 用户看到的就是「缓冲条逻辑很乱」。
+             *
+             * 现在按真实落盘文件换算：当前集缓存到第几毫秒。
+             * 这是滑动窗口的结果，所以会随播放位置一起前进 —— 单集内缓冲条恒长。
+             */
+            val cachedMs = PlaybackCache.cachedPositionMs(
+                context = graph.app,
+                itemId = currentItem.id,
+                durationMs = durationMs,
+                totalBytes = currentLength,
+            )
             _ui.update {
                 it.copy(
+                    cachedPosition = cachedMs,
                     nextPreloaded = PlaybackCache.isNextReady(),
-                    cachedPosition = covered,
                 )
             }
         }
     }
+
 
     /**
      * 用户口径（2026-11-23）：直接用本地缓存文件起播（零网络）。
@@ -740,6 +742,14 @@ class VideoSession(
                 val source = info.sources.firstOrNull() ?: return@runCatching
                 val url = PlaybackAddress.resolve(source, session.server, session.token, session.userId)
                 nextUrl = nextItem.id to url
+                /**
+                 * 用户口径（2026-11-24）：把下一集的片头结束位置和总时长记下来，
+                 * 供「片头优先」的预加载量计算（片头后 1 分钟不受配额限制）。
+                 */
+                nextIntroEndMs = info.chapters
+                    .firstOrNull { it.markerType == "IntroEnd" }
+                    ?.startTicks?.div(TICKS_PER_MS) ?: -1L
+                nextDurationMs = info.runTimeTicks.takeIf { it > 0 }?.div(TICKS_PER_MS) ?: 0L
                 PlaybackCache.pipeline(
                     context = graph.app,
                     settings = settings,
@@ -748,7 +758,12 @@ class VideoSession(
                     currentPositionMs = player?.currentPosition ?: 0L,
                     currentDurationMs = player?.duration?.takeIf { it > 0 } ?: 0L,
                     currentLength = currentLength,
-                    next = nextItem.id to url,
+                    next = PlaybackCache.NextEpisode(
+                        itemId = nextItem.id,
+                        url = url,
+                        introEndMs = nextIntroEndMs,
+                        durationMs = nextDurationMs,
+                    ),
                 )
             }
         }

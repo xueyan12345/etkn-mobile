@@ -153,23 +153,21 @@ private fun TabPager(tabs: List<TopLevel>, pager: PagerState, vertical: Boolean)
          *    外层 TabPager 收不到，标签页就不会被拖成两页并排
          *  · 纵向 / 点击 → 直接放行（不影响页面滚动和点按）
          */
-        val blockHorizontalSwipe = Modifier.pointerInput(Unit) {
-            awaitPointerEventScope {
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Final)
-                    val change = event.changes.firstOrNull() ?: continue
-                    // 内层已经处理过（轮播图 / LazyRow）→ 不碰
-                    if (change.isConsumed) continue
-                    val dx = kotlin.math.abs(change.position.x - change.previousPosition.x)
-                    val dy = kotlin.math.abs(change.position.y - change.previousPosition.y)
-                    // 只吃「明确的横向拖拽」残余
-                    if (dx > dy && dx > 0f) change.consume()
-                }
-            }
-        }
+        /**
+         * 用户口径（2026-11-24，第三次修正）**不再用「吃掉横滑事件」的方式**。
+         *
+         * 前两次都造成了副作用：
+         *  · Initial 阶段吃 → 轮播图完全滑不动
+         *  · Final 阶段吃 → 首页横向列表（LazyRow）时灵时不灵
+         *    （LazyRow 要靠连续几帧位移才能认定拖拽，中间被吃几帧就判定失败）
+         *
+         * 正确做法：外层 Pager 的 userScrollEnabled = false 已经足够
+         * 阻止「滑页面切标签」—— 它本身就不接收横滑手势了。
+         * 不需要额外拦截，让内层所有横向滚动组件正常工作。
+         */
         HorizontalPager(
             pager,
-            Modifier.fillMaxSize().then(blockHorizontalSwipe),
+            Modifier.fillMaxSize(),
             beyondViewportPageCount = 1,
             userScrollEnabled = false,
             key = key,

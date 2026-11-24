@@ -222,6 +222,20 @@ object PlaybackCache {
      *     bySize  = position 换算成字节 + 大小阈值
      *     target  = min(byTime, bySize, 总长)
      */
+    /**
+     * 用户口径（2026-11-24）**滑动窗口核心**。
+     *
+     * 语义（用户口述，逐条对齐）：
+     *  ① 两个条件（时间 / 大小）达成任一个，就【这一轮】不再往后扩
+     *  ② 但窗口跟着播放位置走 —— 播放前进，窗口就前进
+     *     → 缓冲条 = 播放位置 + 窗口长度，在单集内恒长
+     *     → 边播边缓冲、边缓冲边暂停、边暂停再缓冲，全程动态
+     *  ③ 「当前集缓冲完成」的判据【只看往后】：
+     *     从当前播放位置到片尾已经无可缓冲（have >= total）
+     *     从中间开始播时前面没缓存，不影响判定
+     *
+     * @return true = 从当前位置到片尾已经全在本地（可触发下一集预加载）
+     */
     private suspend fun pullWindow(
         context: Context,
         settings: Settings,
@@ -230,31 +244,37 @@ object PlaybackCache {
         positionMs: Long,
         durationMs: Long,
         knownLength: Long,
-    ): Boolean {
-        windowLock.withLock {
-            // 用户口径（2026-11-23）：缓存文件按 itemId 命名，不再用 URL
-            val target = fileForId(context, itemId)
-            // 整集已完成
-            if (target.isFile && target.length() > 0) return true
-            val part = File(target.parentFile, target.name + ".part")
+    ): Boolean = windowLock.withLock {
+        val target = fileForId(context, itemId)
+        // 整集已完整落盘
+        if (target.isFile && target.length() > 0) return@withLock true
+        val part = File(target.parentFile, target.name + ".part")
 
-            val windowMs = maxWindowMs(settings)
-            val windowBytes = maxWindowBytes(settings)
-            val bytesPerMs = if (durationMs > 0 && knownLength > 0) knownLength.toDouble() / durationMs else 0.0
+        val windowMs = maxWindowMs(settings)
+        val windowBytes = maxWindowBytes(settings)
+        // 总长为 0 时无法按时间换算，只能用大小窗口
+        val bytesPerMs = if (durationMs > 0 && knownLength > 0) knownLength.toDouble() / durationMs else 0.0
 
-            val posBytes = if (bytesPerMs > 0) (positionMs * bytesPerMs).toLong() else 0L
-            val byTime = if (bytesPerMs > 0) posBytes + (windowMs * bytesPerMs).toLong() else Long.MAX_VALUE
-            val bySize = posBytes + windowBytes
-            var wantBytes = minOf(byTime, bySize)
-            // 没总长信息时，至少拉满一个「大小窗口」
-            if (knownLength > 0) wantBytes = wantBytes.coerceAtMost(knownLength)
-            else if (wantBytes == Long.MAX_VALUE) wantBytes = windowBytes
+        val total = if (knownLength > 0) knownLength else Long.MAX_VALUE
+        val posBytes = if (bytesPerMs > 0) (positionMs * bytesPerMs).toLong() else 0L
 
-            var have = if (part.isFile) part.length() else 0L
-            // 已经够就不动
-            if (have >= wantBytes && !(knownLength > 0 && have >= knownLength)) return false
+        /**
+         * 目标覆盖到哪：
+         *   byTime = 当前位置 + 时间窗口
+         *   bySize = 当前位置 + 大小窗口
+         *   取小者（任一条达成就不扩）—— 这就是用户说的「两个达成一个就不再缓存」
+         */
+        val byTime = if (bytesPerMs > 0) posBytes + (windowMs * bytesPerMs).toLong() else Long.MAX_VALUE
+        val bySize = if (windowBytes > 0) posBytes + windowBytes else Long.MAX_VALUE
+        var wantBytes = minOf(byTime, bySize)
+        // 两个阈值都没配（都为 0）时不做上限，直接拉满
+        if (wantBytes == Long.MAX_VALUE) wantBytes = total
+        if (total != Long.MAX_VALUE) wantBytes = wantBytes.coerceAtMost(total)
 
-            // 分段续拉：一次最多拉 32MB，避免单个协程长时间占住下不完
+        var have = if (part.isFile) part.length() else 0L
+
+        // 已经够（窗口到位），本轮不下载，但要返回「是否已到片尾」
+        if (have < wantBytes) {
             val chunk = 32L * 1024 * 1024
             while (have < wantBytes) {
                 val until = minOf(wantBytes, have + chunk)
@@ -263,18 +283,106 @@ object PlaybackCache {
                 if (after <= have) break   // 没进展，避免死循环
                 have = after
             }
-
-            // 拉满整集 → 转正
-            if (knownLength > 0 && have >= knownLength) {
-                runCatching { part.renameTo(target) }
-                // 用户口径（2026-11-23）：写完立刻检查磁盘上限（之前这里没有，缓存会无限涨）
-                runCatching { trim(context, settings, protect = target) }
-                return true
-            }
-            // 窗口式（非整集）写入也要检查
-            runCatching { trim(context, settings, protect = part) }
-            return false
         }
+
+        // 拉满整集 → 转正
+        val reachedEnd = total != Long.MAX_VALUE && have >= total
+        if (reachedEnd) {
+            runCatching { part.renameTo(target) }
+            runCatching { trim(context, settings, protect = target) }
+            return@withLock true
+        }
+        runCatching { trim(context, settings, protect = part) }
+        // 没到片尾：本次窗口到位就算「这一轮完成」，但不代表整集完成
+        return@withLock false
+    }
+
+    /**
+     * 用户口径（2026-11-24）**下一集预加载量**（含片头优先规则）。
+     *
+     * @param introEndMs 下一集片头结束位置（无片头数据传 -1）
+     *
+     * 规则：
+     *  · 有片头：目标 = 片头结束 + 1 分钟
+     *      配额能覆盖到那里 → 按配额继续
+     *      配额覆盖不到 → 突破配额，硬缓冲到「片头后 1 分钟」
+     *  · 无片头：按配额（时间 / 大小）
+     */
+    /**
+     * 用户口径（2026-11-24）**下一集预加载量**（片头优先）。
+     *
+     * 规则（用户口述）：
+     *  ① 下一集有片头数据 → 目标 = 片头结束 + 1 分钟
+     *     · 配额（时间/大小）能覆盖到那个位置 → 按配额继续往下缓冲
+     *     · 配额覆盖不到 → **突破配额**，硬缓冲到「片头结束 + 1 分钟」
+     *  ② 下一集没有片头数据 → 按配额（时间/大小取小者）
+     *
+     * 为什么这样：片头是会被跳过的，只要「片头 + 后 1 分钟」在本地，
+     * 点下一集就能秒播且跳过片头后不卡。
+     *
+     * @param introEndMs 片头结束位置；-1 表示无片头数据
+     * @param durationMs 下一集总时长；0 表示未知
+     */
+    private suspend fun preloadNextEpisode(
+        context: Context,
+        settings: Settings,
+        nextId: String,
+        nextUrl: String,
+        nextLength: Long,
+        introEndMs: Long,
+        durationMs: Long,
+    ) {
+        val target = fileForId(context, nextId)
+        if (target.isFile && target.length() > 0) {
+            nextComplete = true
+            return
+        }
+        val part = File(target.parentFile, target.name + ".part")
+
+        val total = if (nextLength > 0) nextLength else Long.MAX_VALUE
+        val windowMs = maxWindowMs(settings)
+        val windowBytes = maxWindowBytes(settings)
+
+        // 配额（从第 0 秒起算）：时间窗口与大小窗口取小者
+        val bytesPerMs = if (durationMs > 0 && nextLength > 0) nextLength.toDouble() / durationMs else 0.0
+        val quotaByTime = if (windowMs > 0 && bytesPerMs > 0) (windowMs * bytesPerMs).toLong() else Long.MAX_VALUE
+        val quotaBySize = if (windowBytes > 0) windowBytes else Long.MAX_VALUE
+        var quotaBytes = minOf(quotaByTime, quotaBySize)
+        if (quotaBytes == Long.MAX_VALUE) quotaBytes = total  // 两个阈值都没配 → 拉满
+
+        /**
+         * 片头优先：片头结束 + 1 分钟 对应的字节位置。
+         * 需要码率才能换算；缺 duration 或总长时无法换算，只能退回配额。
+         */
+        val introFloorBytes: Long? =
+            if (introEndMs > 0 && bytesPerMs > 0) {
+                ((introEndMs + 60_000L) * bytesPerMs).toLong()
+            } else null
+
+        /**
+         * 最终目标：
+         *  · 有片头下限（introFloor）：
+         *      配额 >= 下限 → 用配额（配额更大，继续往下缓冲）
+         *      配额 <  下限 → 用下限（突破配额硬缓冲到片头后 1 分钟）
+         *  · 无片头下限 → 只用配额
+         */
+        var wantBytes = if (introFloorBytes != null) maxOf(quotaBytes, introFloorBytes) else quotaBytes
+        if (total != Long.MAX_VALUE) wantBytes = wantBytes.coerceAtMost(total)
+
+        var have = if (part.isFile) part.length() else 0L
+        if (have < wantBytes) {
+            val chunk = 32L * 1024 * 1024
+            while (have < wantBytes) {
+                val until = minOf(wantBytes, have + chunk)
+                downloadInto(context, nextUrl, part, from = have, until = until)
+                val after = if (part.isFile) part.length() else 0L
+                if (after <= have) break
+                have = after
+            }
+        }
+        runCatching { trim(context, settings, protect = part) }
+        // 用户口径：下一集【已开始缓冲、点下去能秒播】就亮气泡，不要求全缓存完
+        if (have > 0) nextComplete = true
     }
 
     /** 兼容旧入口：按窗口拉一次。 */
@@ -340,6 +448,19 @@ object PlaybackCache {
      * 当前集缓存完成后，才去取下一集直链并为下一集跑同样的窗口缓存。
      * 跑到下一集完成 → nextComplete = true → 气泡亮。
      */
+    /**
+     * 用户口径（2026-11-24）**流水线重做**。
+     *
+     * 关键变化（对照用户口述）：
+     *  ① 第一环：当前集窗口跟随播放位置推进（不是「拉满整集」才算完成）
+     *  ② 当前集「从当前位置到片尾已无可缓冲」→ 立即触发下一集预加载
+     *     （不等播完，片尾前就开始）
+     *  ③ 下一集预加载量：有片头 → 片头结束+1分钟（配额够就按配额，
+     *     配额不够则突破配额硬缓冲到片头后 1 分钟）；无片头 → 按配额
+     *  ④ 下一集【已开始缓冲】即视为可秒播 → 气泡亮（不要求全缓存完）
+     *
+     * @param next 下一集 (itemId, url, introEndMs:-1 无片头, durationMs)
+     */
     fun pipeline(
         context: Context,
         settings: Settings,
@@ -348,44 +469,50 @@ object PlaybackCache {
         currentPositionMs: Long,
         currentDurationMs: Long,
         currentLength: Long,
-        next: Pair<String, String>?,   // (episodeId, url)
+        next: NextEpisode?,
     ): Job? {
         val key = stableKey(currentUrl)
         if (writing.containsKey(key)) return writing[key]
 
         val job = workScope.launch {
             try {
-                // 第一环：当前集 —— 把「位置 + 窗口」这段拉到本地
-                val currentDone = pullWindow(
+                // 第一环：当前集窗口（跟随播放位置）
+                val currentAtEnd = pullWindow(
                     context, settings, currentEpisodeId, currentUrl,
                     currentPositionMs, currentDurationMs, currentLength,
                 )
-                // 只有当前集整集缓存完成，才算「这一环跑完」
-                currentComplete = currentDone
-                if (!currentDone) return@launch
+                currentComplete = currentAtEnd
+                // 还没到片尾 → 本轮结束，等下次 tick 继续推窗口
+                if (!currentAtEnd) return@launch
 
-                if (!settings.preloadNext || next == null) return@launch
+                if (!settings.preloadNext) return@launch
+                val n = next ?: return@launch
 
-                // 第二环：当前集完成 → 才去拉下一集
-                val (nextId, nextUrl) = next
-                nextEpisodeId = nextId
+                // 第二环：当前集已到片尾 → 立刻预加载下一集
+                nextEpisodeId = n.itemId
                 nextComplete = false
-                val nextLength = probeLength(nextUrl)
-                val nextDone = pullWindow(context, settings, nextId, nextUrl, 0L, 0L, nextLength)
-                nextComplete = nextDone
+                val nextLength = probeLength(n.url)
+                preloadNextEpisode(
+                    context, settings, n.itemId, n.url,
+                    nextLength, n.introEndMs, n.durationMs,
+                )
             } finally {
                 writing.remove(key)
             }
         }
-        /**
-         * 用户口径（2026-11-23）修「缓冲条到头了但下一集闪电气泡不亮」：
-         * 原来这个函数自己 launch 完就返回，调用方紧接着读 isNextReady() 永远是 false，
-         * 而且之后再没人更新 UI。改成把 Job 返回出去，调用方可以挂完成回调再刷新状态。
-         */
         writing[key] = job
         return job
     }
 
+    /** 下一集预加载所需信息。 */
+    data class NextEpisode(
+        val itemId: String,
+        val url: String,
+        /** 片头结束位置（毫秒）；-1 = 这一集没有片头数据。 */
+        val introEndMs: Long,
+        /** 这一集总时长（毫秒）；0 = 未知。 */
+        val durationMs: Long,
+    )
 
     /**
      * 探资源总字节数：用 HTTP HEAD 读 Content-Length。

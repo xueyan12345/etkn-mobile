@@ -91,6 +91,7 @@ import xyz.etkn.mobile.ui.nav.LocalNav
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.DisposableEffect
 
 @Composable
 fun DiscoverScreen() {
@@ -112,12 +113,35 @@ fun DiscoverScreen() {
      * 返回时原样恢复，停在你刚才翻到的位置。
      */
     /**
-     * LazyGridState 自带 Saver：用 rememberSaveable 直接构造，
-     * 首项 index 和偏移量会进 SavedStateRegistry，返回时原样恢复。
-     * 注意不能在里面调 rememberLazyGridState()（那是 @Composable，saver lambda 不是组合上下文）。
+     * 用户口径（2026-11-24）**探索页返回必须停在原位置**（第二次修）。
+     *
+     * 上一次用 rememberSaveable(Saver) 没生效 —— 实测返回还是回顶。
+     * 原因是这个页面在导航返回时是「重新进入」而不是「配置变更」，
+     * rememberSaveable 依赖的 SavedStateRegistry 在这条路径上不保证恢复。
+     *
+     * 现在改成把位置存进 ViewModel（导航期间保活，不随组合销毁）：
+     *  · 离开页面时把 index/offset 写进 vm
+     *  · 重新进入时用 vm 里存的值初始化 LazyGridState
      */
-    val grid = rememberSaveable(saver = androidx.compose.foundation.lazy.grid.LazyGridState.Saver) {
-        androidx.compose.foundation.lazy.grid.LazyGridState()
+    val grid = remember {
+        androidx.compose.foundation.lazy.grid.LazyGridState(
+            firstVisibleItemIndex = vm.gridIndex,
+            firstVisibleItemScrollOffset = vm.gridOffset,
+        )
+    }
+    // 位置变化时同步回 ViewModel（DisposableEffect 保证离开时也写一次）
+    DisposableEffect(grid) {
+        onDispose {
+            vm.gridIndex = grid.firstVisibleItemIndex
+            vm.gridOffset = grid.firstVisibleItemScrollOffset
+        }
+    }
+    LaunchedEffect(grid) {
+        snapshotFlow { grid.firstVisibleItemIndex to grid.firstVisibleItemScrollOffset }
+            .collect { (i, o) ->
+                vm.gridIndex = i
+                vm.gridOffset = o
+            }
     }
     val density = LocalDensity.current
     // Measured with the status bar and its padding: the grid starts right below the bar.

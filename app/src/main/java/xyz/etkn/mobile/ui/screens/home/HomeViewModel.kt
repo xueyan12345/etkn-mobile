@@ -49,6 +49,8 @@ class HomeViewModel(
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
     private var heroJob: Job? = null
+    /** 上一次算出 hero 的账号 key：用于判断切账号后不能沿用旧轮播。 */
+    private var lastHeroAccountKey: String? = null
     private var lastLoad = 0L
 
     init {
@@ -83,7 +85,19 @@ class HomeViewModel(
         viewModelScope.launch {
             val cached = runCatching { withContext(graph.cacheUse(ResponseCache.Mode.Read)) { fetch() } }.getOrNull() ?: return@launch
             if (_state.value is Load.Ready || cached.libraries.isEmpty()) return@launch
-            _state.value = Load.Ready(cached.copy(hero = fallbackHero(cached)))
+            /**
+             * 用户口径（2026-11-24）：**缓存路径也要按账号的 HeroSnapshot 出图**。
+             *
+             * 原来这里用 fallbackHero(最新入库头 6 部) —— 完全不看账号，
+             * 于是「切账号 → 先显示缓存的旧图，必须手动刷新才变」。
+             * 现在优先读当前账号的 snapshot；没有 snapshot 才退回 fallback。
+             */
+            val shown = HeroSnapshot.read(context, sessionKey())
+            val pool = cached.latest.flatMap { it.items }.filter(::hasBackdrop).distinctBy { it.id }
+            val byId = pool.associateBy { it.id }
+            val fromSnapshot = shown?.ids?.mapNotNull { byId[it] }.orEmpty()
+            val hero = if (fromSnapshot.isNotEmpty()) fromSnapshot else fallbackHero(cached)
+            _state.value = Load.Ready(cached.copy(hero = hero))
         }
     }
 
@@ -91,8 +105,23 @@ class HomeViewModel(
         if (manual) _refreshing.value = true
         viewModelScope.launch {
             try {
+                /**
+                 * 用户口径（2026-11-24）**修「切换账号后轮播图用旧缓存」**。
+                 *
+                 * 原来这里无条件把「上一次的 hero」塞进新数据：
+                 *     .let { fresh -> fresh.copy(hero = (_state.value as? Load.Ready)?.value?.hero.orEmpty()) }
+                 * 切账号时 _state.value 里还是上一个账号的 hero → 直接沿用了
+                 * → 用户看到的就是「切过去还是老的，必须手动刷新」。
+                 *
+                 * 现在只有【同一个账号】才沿用上一次的 hero（避免首页闪一下空轮播）；
+                 * 账号变了就让它空着，由 loadHero 立刻按新账号的 HeroSnapshot 算。
+                 */
+                val sameAccount = lastHeroAccountKey == sessionKey()
                 val data = withContext(graph.cacheUse(ResponseCache.Mode.Store)) { fetch() }
-                    .let { fresh -> fresh.copy(hero = (_state.value as? Load.Ready)?.value?.hero.orEmpty()) }
+                    .let { fresh ->
+                        val keep = if (sameAccount) (_state.value as? Load.Ready)?.value?.hero.orEmpty() else emptyList()
+                        fresh.copy(hero = keep)
+                    }
                 val fromCache = (_state.value as? Load.Ready) != null && lastLoad == 0L
                 lastLoad = System.currentTimeMillis()
                 _state.value = Load.Ready(data)
@@ -167,7 +196,12 @@ class HomeViewModel(
         heroJob?.cancel()
         heroJob = viewModelScope.launch {
             val accountKey = sessionKey()
+            lastHeroAccountKey = accountKey
             val shown = HeroSnapshot.read(context, accountKey)
+            /**
+             * 用户口径（2026-11-24）**切账号必须立刻按该账号的 snapshot 出图**。
+             * 未过期就用该账号上次那一批（不是更早的），过期就重抽。
+             */
             if (shown != null && System.currentTimeMillis() - shown.at < HERO_TTL_MS) {
                 /**
                  * 未过期：沿用上次那 8 个 id。

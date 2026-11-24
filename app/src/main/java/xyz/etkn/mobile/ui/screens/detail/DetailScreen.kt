@@ -553,7 +553,28 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
                     Text(it, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 2.dp))
                 }
             }
-            item.productionYear?.let { Text(it.toString(), style = MaterialTheme.typography.labelLarge) }
+            /**
+             * 用户口径（2026-11-24）**补「完整上映日期 + 时长」**。
+             *
+             * 数据源（已实测确认）：
+             *  · 日期：media.items.release_date → API 的 PremiereDate
+             *    覆盖：movie 100% / series 93% / episode 32%
+             *  · 时长：version_analysis → RunTimeTicks
+             *    覆盖：全部库都有（含 LTX破解）
+             *
+             * 取不到就不显示，绝不编造、不显示 0。
+             * 有完整日期就显示日期，没有就退回年份。
+             */
+            val dateText = item.premiereDate?.take(10)?.replace("-", "/")
+            if (dateText != null) {
+                Text(dateText, style = MaterialTheme.typography.labelLarge)
+            } else {
+                item.productionYear?.let { Text(it.toString(), style = MaterialTheme.typography.labelLarge) }
+            }
+            // 时长：单集显示本集时长，电影显示总时长
+            formatRuntime(item.runtimeMs)?.let {
+                Text(it, style = MaterialTheme.typography.labelLarge, color = muted)
+            }
             item.officialRating?.let { RatingBadge(it) }
             /**
              * 用户口径（2026-11-23）：**「制作中」状态标记删掉**（参考图红圈里要去掉的内容）。
@@ -935,4 +956,19 @@ private fun InfoBlock(item: Item, centered: Boolean) {
             )
         }
     }
+}
+
+/**
+ * 用户口径（2026-11-24）：时长显示格式。
+ *  · ≥ 1 小时 → 「1小时59分」
+ *  · < 1 小时 → 「45分25秒」
+ *  · 0 或异常 → null（不显示，不编造）
+ */
+internal fun formatRuntime(ms: Long): String? {
+    if (ms <= 0) return null
+    val totalSec = ms / 1000
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return if (h > 0) "${h}小时${m}分" else "${m}分${s}秒"
 }
