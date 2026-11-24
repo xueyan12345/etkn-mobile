@@ -102,6 +102,11 @@ class AppGraph(val app: Application) {
 
     init {
         sessions.api = api
+        /**
+         * 用户口径（2026-11-24）：缓存下载器必须复用播放器的 media client。
+         * 之前它自己 new 裸 DataSource，下载直链时 403 直接把进程崩了。
+         */
+        xyz.etkn.mobile.player.PlaybackCache.init(http.media)
         scope.launch(Dispatchers.IO) { responses.prune() }
         // Nothing of a signed-out account stays on disk.
         scope.launch {

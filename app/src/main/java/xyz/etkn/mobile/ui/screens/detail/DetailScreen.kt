@@ -369,9 +369,33 @@ private fun ChapterCard(chapter: Chapter, item: Item, onPlay: () -> Unit) {
      */
     val urls = images()
     val hasOwnImage = !chapter.imagePath.isNullOrBlank() || !chapter.imageTag.isNullOrBlank()
+    /**
+     * 用户口径（2026-11-24）**章节没图时用「整部剧」的封面，不是单集图**。
+     *
+     * 上一版这里调 urls.landscape(item, 480)，item 是【当前这一集】——
+     * 而 landscape() 内部第 2 条是 `if (item.isEpisode) item.imageTags["Primary"]`，
+     * 于是「片头结束」那张直接取了本集自己的剧照，跟别的章节不是同一张，
+     * 屏幕上就出现「三张会议场景 + 一张男主特写」的乱象。
+     *
+     * 现在只用【父级/系列级】的图，绝不碰 episode 自己的 Primary：
+     *  ① 父级横版 Thumb（parentThumbItemId + parentThumbTag）—— 首选，16:9 正好
+     *  ② 父级背景图（parentBackdropItemId + parentBackdropTags）
+     *  ③ 系列海报（seriesId + seriesPrimaryTag），用 ContentScale.Crop 居中裁
+     *  ④ 都没有 → 占位图标
+     * 这样同一集内所有章节卡都是同一张系列封面，干净一致。
+     */
+    val parentThumb = item.parentThumbItemId?.let { pid ->
+        item.parentThumbTag?.let { tag -> urls.image(pid, "Thumb", 480, tag) }
+    }
+    val parentBackdrop = item.parentBackdropItemId?.let { pid ->
+        item.parentBackdropTags.firstOrNull()?.let { tag -> urls.image(pid, "Backdrop", 480, tag) }
+    }
+    val seriesPoster = item.seriesId?.let { sid ->
+        item.seriesPrimaryTag?.let { tag -> urls.image(sid, "Primary", 480, tag) }
+    }
     val thumb: String? = when {
         hasOwnImage -> urls.chapter(item, chapter, 480)
-        else -> urls.landscape(item, 480) ?: urls.backdrop(item, 480) ?: urls.poster(item, 480)
+        else -> parentThumb ?: parentBackdrop ?: seriesPoster
     }
     Column(
         Modifier
@@ -494,18 +518,18 @@ private fun DetailHeader(data: DetailData, centered: Boolean) {
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                // 单集页：再下一行是「S1:E34 - 集标题」
-                if (item.isEpisode) {
-                    Text(
-                        listOfNotNull(item.episodeCode, item.name).joinToString(" - "),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
+                /**
+                 * 用户口径（2026-11-24）：**「S1:E8 - 集名」从头部移走**。
+                 *
+                 * 原来这行在剧名和元数据之间，把头部撑成三行；
+                 * 现在移到「播放按钮」下面、「简介」上面（见下方 episodeLabel 区块）。
+                 *
+                 * 头部空出来的高度这样补：
+                 *  · Spacer 10dp → 16dp
+                 *  · MetaLines 内部行距 6dp → 8dp
+                 * 视觉上头部仍然饱满，不再出现「少一行显得空」。
+                 */
+                Spacer(Modifier.height(16.dp))
                 MetaLines(item, techSource(data), align)
             }            // 元数据（类型标签等）仍在海报底部，和播放按钮一起
             Column(
@@ -537,7 +561,8 @@ private fun techSource(data: DetailData): MediaSource? = with(data) {
 private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizontal) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val ratings = item.ratings
-    Column(horizontalAlignment = align, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    // 用户口径（2026-11-24）：集号行移出头部后，行距 6dp → 8dp 让信息区更饱满
+    Column(horizontalAlignment = align, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (ratings.isNotEmpty()) {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(14.dp, align),
@@ -685,6 +710,27 @@ private fun ActionRow(
                         Icon(Icons.Rounded.MoreVert, "更多", Modifier.size(20.dp))
                     }
                 }
+            }
+        }
+        /**
+         * 用户口径（2026-11-24）**「S1:E8 - 集名」放到这里**：
+         * 播放按钮下面、简介上面。
+         *
+         * 只有单集页才有（item.isEpisode）。样式：中等字重、正常色，
+         * 比剧名小、比简介标题大，作为「当前看的是哪一集」的明确标识。
+         */
+        if (item.isEpisode) {
+            val episodeLine = listOfNotNull(item.episodeCode, item.name).joinToString(" - ")
+            if (episodeLine.isNotBlank()) {
+                Text(
+                    episodeLine,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                )
             }
         }
         if (item.trailers.isNotEmpty()) {

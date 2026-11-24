@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
-import androidx.media3.datasource.DefaultHttpDataSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,6 +17,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.etkn.mobile.data.settings.Settings
 import java.io.File
 import java.io.RandomAccessFile
+import okhttp3.OkHttpClient
 
 /**
  * 用户口径（2026-11-23）磁盘缓存 + 预加载。**按播放进度向前推进的滑动窗口 + 串行流水线。**
@@ -51,6 +51,22 @@ import java.io.RandomAccessFile
 object PlaybackCache {
 
     private const val UA = "ETKN-Mobile"
+
+    /**
+     * 用户口径（2026-11-24）缓存下载专用 OkHttp client。
+     *
+     * 必须和播放器用同一套连接池/UA —— 裸 DefaultHttpDataSource 不带任何
+     * 认证信息，下载直链时服务端返 403，当时直接把进程崩了。
+     * `clients.media` 是 media 专用 client（stream URL 自带凭据，跟随重定向）。
+     *
+     * 这个实例在 PlayerCache.init() 里由 AppGraph 注入。
+     */
+    private var mediaClient: OkHttpClient = OkHttpClient()
+
+    /** 由 AppGraph 在启动时注入 media client（带连接池 + UA）。 */
+    fun init(client: OkHttpClient) {
+        mediaClient = client
+    }
     private const val DIR = "mediafiles"
 
     private val root = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -237,6 +253,7 @@ object PlaybackCache {
      * @return true = 从当前位置到片尾已经全在本地（可触发下一集预加载）
      */
     private suspend fun pullWindow(
+        client: OkHttpClient,
         context: Context,
         settings: Settings,
         itemId: String,
@@ -278,7 +295,7 @@ object PlaybackCache {
             val chunk = 32L * 1024 * 1024
             while (have < wantBytes) {
                 val until = minOf(wantBytes, have + chunk)
-                downloadInto(context, url, part, from = have, until = until)
+                downloadInto(client, url, part, from = have, until = until)
                 val after = if (part.isFile) part.length() else 0L
                 if (after <= have) break   // 没进展，避免死循环
                 have = after
@@ -324,6 +341,7 @@ object PlaybackCache {
      * @param durationMs 下一集总时长；0 表示未知
      */
     private suspend fun preloadNextEpisode(
+        client: OkHttpClient,
         context: Context,
         settings: Settings,
         nextId: String,
@@ -374,7 +392,7 @@ object PlaybackCache {
             val chunk = 32L * 1024 * 1024
             while (have < wantBytes) {
                 val until = minOf(wantBytes, have + chunk)
-                downloadInto(context, nextUrl, part, from = have, until = until)
+                downloadInto(client, nextUrl, part, from = have, until = until)
                 val after = if (part.isFile) part.length() else 0L
                 if (after <= have) break
                 have = after
@@ -397,7 +415,7 @@ object PlaybackCache {
         onComplete: (Boolean) -> Unit = {},
     ) {
         pipelineJob = workScope.launch {
-            val done = pullWindow(context, settings, itemId, url, positionMs, durationMs, knownLength)
+            val done = pullWindow(mediaClient, context, settings, itemId, url, positionMs, durationMs, knownLength)
             onComplete(done)
         }
     }
@@ -413,31 +431,55 @@ object PlaybackCache {
      * 从 [from] 字节往后下载到 .part 文件，最多下到 [until]（-1 = 不限）。
      * 用 Range 请求续传，已经有的部分不重下。
      */
-    private suspend fun downloadInto(context: Context, url: String, target: File, from: Long, until: Long) {
-        val source = DefaultHttpDataSource.Factory().setUserAgent(UA).createDataSource()
-        val spec = DataSpec.Builder()
-            .setUri(Uri.parse(url))
-            .setPosition(from)
-            .apply { if (until > from) setLength(until - from) }
-            .build()
-        source.open(spec)
-        try {
-            RandomAccessFile(target, "rw").use { raf ->
-                raf.seek(from)
-                val buffer = ByteArray(256 * 1024)
-                var written = from
-                while (true) {
-                    // 退出播放时 stopAll() 取消协程 → 这里立即中断
-                    currentCoroutineContext().ensureActive()
-                    val read = source.read(buffer, 0, buffer.size)
-                    if (read < 0) break
-                    raf.write(buffer, 0, read)
-                    written += read
-                    if (until > from && written >= until) break
+    /**
+     * 用户口径（2026-11-24）**闪退根因修复**。
+     *
+     * 日志铁证：
+     *   FATAL EXCEPTION: DefaultDispatcher-worker-7
+     *   yt1: Response code: 403
+     *   Process: xyz.etkn.mobile
+     *
+     * 原因：这里原来用裸 `DefaultHttpDataSource.Factory().setUserAgent(UA)`，
+     * 既没带 App 的 User-Agent 令牌，也没带任何认证头；
+     * 而且 403 抛出的 IOException 在协程里没有被捕获 → 直接 FATAL 杀进程。
+     *
+     * 修法：
+     *  ① 用 OkHttpDataSource + 和播放器同一套 client（带同源 X-Emby-Token 拦截器）
+     *  ② 整段包 runCatching —— 403/超时/断网一律只记日志，绝不许崩进程
+     */
+    private suspend fun downloadInto(client: OkHttpClient, url: String, target: File, from: Long, until: Long) {
+        runCatching {
+            // 复用播放器的 OkHttp client（同源请求自动带 X-Emby-Token + UA）
+            val factory = androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(client).setUserAgent(UA)
+            val source = factory.createDataSource()
+            val spec = DataSpec.Builder()
+                .setUri(Uri.parse(url))
+                .setPosition(from)
+                .apply { if (until > from) setLength(until - from) }
+                .build()
+            try {
+                source.open(spec)
+                RandomAccessFile(target, "rw").use { raf ->
+                    raf.seek(from)
+                    val buffer = ByteArray(256 * 1024)
+                    var written = from
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val read = source.read(buffer, 0, buffer.size)
+                        if (read < 0) break
+                        raf.write(buffer, 0, read)
+                        written += read
+                        if (until > from && written >= until) break
+                    }
                 }
+            } finally {
+                runCatching { source.close() }
             }
-        } finally {
-            runCatching { source.close() }
+        }.onFailure {
+            android.util.Log.w(
+                "ETKN-Cache",
+                "download failed from=$from until=$until url=${url.take(90)} err=${it.message}",
+            )
         }
     }
 
@@ -462,6 +504,7 @@ object PlaybackCache {
      * @param next 下一集 (itemId, url, introEndMs:-1 无片头, durationMs)
      */
     fun pipeline(
+        client: OkHttpClient,
         context: Context,
         settings: Settings,
         currentEpisodeId: String,
@@ -475,10 +518,15 @@ object PlaybackCache {
         if (writing.containsKey(key)) return writing[key]
 
         val job = workScope.launch {
+            /**
+             * 用户口径（2026-11-24）：**任何异常都不许逃出这个协程**。
+             * 上一版下载 403 抛到这里 → FATAL EXCEPTION 杀进程。
+             * 现在兜一层 runCatching，最坏情况是这一轮缓存失败，播放不受影响。
+             */
             try {
                 // 第一环：当前集窗口（跟随播放位置）
                 val currentAtEnd = pullWindow(
-                    context, settings, currentEpisodeId, currentUrl,
+                    client, context, settings, currentEpisodeId, currentUrl,
                     currentPositionMs, currentDurationMs, currentLength,
                 )
                 currentComplete = currentAtEnd
@@ -493,9 +541,11 @@ object PlaybackCache {
                 nextComplete = false
                 val nextLength = probeLength(n.url)
                 preloadNextEpisode(
-                    context, settings, n.itemId, n.url,
+                    client, context, settings, n.itemId, n.url,
                     nextLength, n.introEndMs, n.durationMs,
                 )
+            } catch (t: Throwable) {
+                android.util.Log.w("ETKN-Cache", "pipeline failed: ${t.message}")
             } finally {
                 writing.remove(key)
             }
@@ -535,7 +585,7 @@ object PlaybackCache {
         if (writing.containsKey(key)) return
         writing[key] = workScope.launch {
             try {
-                pullWindow(context, settings, episodeId, url, 0L, 0L, probeLength(url))
+                pullWindow(mediaClient, context, settings, episodeId, url, 0L, 0L, probeLength(url))
                 nextEpisodeId = episodeId
                 nextComplete = true
                 trim(context, settings)

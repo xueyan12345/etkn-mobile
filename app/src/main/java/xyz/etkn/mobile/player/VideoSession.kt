@@ -659,6 +659,7 @@ class VideoSession(
             ).takeIf { it.itemId.isNotEmpty() && it.url.isNotEmpty() }
 
             val job = PlaybackCache.pipeline(
+                client = graph.http.media,
                 context = graph.app,
                 settings = settings,
                 currentEpisodeId = currentItem.id,
@@ -752,6 +753,7 @@ class VideoSession(
                     ?.startTicks?.div(TICKS_PER_MS) ?: -1L
                 nextDurationMs = source.runTimeTicks.takeIf { it > 0 }?.div(TICKS_PER_MS) ?: 0L
                 PlaybackCache.pipeline(
+                    client = graph.http.media,
                     context = graph.app,
                     settings = settings,
                     currentEpisodeId = current.id,
