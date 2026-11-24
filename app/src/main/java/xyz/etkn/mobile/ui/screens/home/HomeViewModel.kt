@@ -97,7 +97,18 @@ class HomeViewModel(
             val byId = pool.associateBy { it.id }
             val fromSnapshot = shown?.ids?.mapNotNull { byId[it] }.orEmpty()
             val hero = if (fromSnapshot.isNotEmpty()) fromSnapshot else fallbackHero(cached)
-            _state.value = Load.Ready(cached.copy(hero = hero))
+            /**
+             * 用户口径（2026-11-26）**绝不让 hero 变空**。
+             *
+             * HomeScreen 里 `hasHero = data.hero.isNotEmpty()`，
+             * 一旦为空，hero 那个 item 会被整个移除、换成 12dp 的 Spacer
+             * → 顶部整块消失，用户看到的就是一次白闪。
+             *
+             * 所以这里如果算出来是空（缓存里没有该账号的对应条目），
+             * 就保留上一次已经在显示的 hero，宁可短暂显示旧图也不闪。
+             */
+            val keepOld = (_state.value as? Load.Ready)?.value?.hero.orEmpty()
+            _state.value = Load.Ready(cached.copy(hero = hero.ifEmpty { keepOld }))
         }
     }
 
@@ -116,10 +127,22 @@ class HomeViewModel(
                  * 现在只有【同一个账号】才沿用上一次的 hero（避免首页闪一下空轮播）；
                  * 账号变了就让它空着，由 loadHero 立刻按新账号的 HeroSnapshot 算。
                  */
-                val sameAccount = lastHeroAccountKey == sessionKey()
+                /**
+                 * 用户口径（2026-11-26）**修「切账号轮播图闪一下」**。
+                 *
+                 * 上一版在这里按「是否同账号」决定要不要保留上一次的 hero：
+                 * 账号变了就 `emptyList()` → 轮播图区按空列表渲染一帧空白
+                 * → 用户看到的就是一次约 100ms 的白闪
+                 *（实测录屏第 15 帧：顶部大图整体泛白、图片近乎消失，下一帧才恢复）。
+                 *
+                 * 正确做法：**永远保留上一次的 hero 作为占位**，不要清空。
+                 * 新账号的推荐算好后由 loadHero 一次性替换 —— 这样中间不会出现空白帧。
+                 * 「切过去还是旧图」的问题已由 HeroSnapshot 按账号读取解决（见 loadHero），
+                 * 与这里的占位无关，所以保留旧图不会带来「显示上一个账号推荐」的问题。
+                 */
                 val data = withContext(graph.cacheUse(ResponseCache.Mode.Store)) { fetch() }
                     .let { fresh ->
-                        val keep = if (sameAccount) (_state.value as? Load.Ready)?.value?.hero.orEmpty() else emptyList()
+                        val keep = (_state.value as? Load.Ready)?.value?.hero.orEmpty()
                         fresh.copy(hero = keep)
                     }
                 val fromCache = (_state.value as? Load.Ready) != null && lastLoad == 0L
@@ -198,10 +221,6 @@ class HomeViewModel(
             val accountKey = sessionKey()
             lastHeroAccountKey = accountKey
             val shown = HeroSnapshot.read(context, accountKey)
-            /**
-             * 用户口径（2026-11-24）**切账号必须立刻按该账号的 snapshot 出图**。
-             * 未过期就用该账号上次那一批（不是更早的），过期就重抽。
-             */
             if (shown != null && System.currentTimeMillis() - shown.at < HERO_TTL_MS) {
                 /**
                  * 未过期：沿用上次那 8 个 id。

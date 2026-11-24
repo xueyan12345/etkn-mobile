@@ -32,6 +32,7 @@ import xyz.etkn.mobile.ui.nav.MainShell
 import xyz.etkn.mobile.ui.screens.connect.ConnectScreen
 import xyz.etkn.mobile.ui.screens.me.UpdatePrompt
 import xyz.etkn.mobile.ui.theme.EtknTheme
+import androidx.compose.animation.core.tween
 
 class MainActivity : ComponentActivity() {
     override fun attachBaseContext(newBase: Context) {
@@ -104,13 +105,38 @@ fun EtknRoot(graph: AppGraph) {
     val settings = stored ?: return
     EtknTheme(settings) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            /**
+             * 用户口径（2026-11-26）**切换账号轮播图白闪的真正根因在这里**。
+             *
+             * 这里原来写的是 `fadeIn() togetherWith fadeOut()`：
+             * 切换账号 → targetState（session.key）变化 → 整棵树淡出再淡入。
+             * 淡出到中间那一刻，屏幕上所有内容（含轮播图）都是半透明的，
+             * 叠在 Surface 的纯色背景上 → 视觉上就是「闪一下白」。
+             * 实测录屏抓到一帧顶部大图整体泛白、图片近乎消失，就是这一帧。
+             *
+             * 改法：
+             *  · 只在「登录态之间」切换时不做全屏淡入淡出，直接切（内容自己会变）
+             *  · 只有进入/退出登录（登录页 ↔ 主界面）这种跨场景才需要淡入淡出
+             */
+            val target = when (val s = state) {
+                is SessionState.SignedIn -> s.session.key
+                SessionState.SignedOut -> "signed-out"
+                SessionState.Restoring -> "restoring"
+            }
             AnimatedContent(
-                targetState = when (val s = state) {
-                    is SessionState.SignedIn -> s.session.key
-                    SessionState.SignedOut -> "signed-out"
-                    SessionState.Restoring -> "restoring"
+                targetState = target,
+                transitionSpec = {
+                    /**
+                     * 只有「登录页 ↔ 主界面」这类跨场景切换才淡入淡出；
+                     * 账号 ↔ 账号、账号 ↔ 恢复中 一律瞬时切换，避免整屏闪一下。
+                     */
+                    val scene = { key: String -> key == "signed-out" || key == "restoring" }
+                    if (scene(initialState) || scene(targetState)) {
+                        fadeIn() togetherWith fadeOut()
+                    } else {
+                        fadeIn(animationSpec = tween(0)) togetherWith fadeOut(animationSpec = tween(0))
+                    }
                 },
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
                 label = "session",
             ) { target ->
                 when {
