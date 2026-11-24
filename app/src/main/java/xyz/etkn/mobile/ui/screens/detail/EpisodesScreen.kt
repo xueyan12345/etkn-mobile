@@ -66,6 +66,10 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.size
+import xyz.etkn.mobile.ui.components.px
+import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.foundation.layout.Column
 
 class EpisodesViewModel(graph: AppGraph, private val seriesId: String, seasonId: String?) : ViewModel() {
     private val api = graph.api
@@ -125,10 +129,11 @@ private fun EpisodesContent(route: EpisodesRoute) {
                 val season = seasons.firstOrNull { it.id == state.seasonId }
                 val host = season ?: seasons.firstOrNull()
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    val h = (maxWidth * 0.56f).coerceIn(200.dp, 340.dp)
+                    val boxW = maxWidth
+                    val h = (boxW * 0.56f).coerceIn(200.dp, 340.dp)
                     Box(Modifier.fillMaxWidth().height(h)) {
                         Artwork(
-                            host?.let { urls.backdrop(it, maxWidth.px()) ?: urls.poster(it, maxWidth.px()) },
+                            host?.let { urls.backdrop(it, boxW.px()) ?: urls.poster(it, boxW.px()) },
                             Modifier.fillMaxSize(),
                             route.title,
                             placeholder = Icons.Rounded.Tv,

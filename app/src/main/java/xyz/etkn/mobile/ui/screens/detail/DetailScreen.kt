@@ -291,7 +291,7 @@ private fun DetailContent(
                                     SeasonCard(
                                         season = season,
                                         selected = season.id == episodes.seasonId,
-                                        onClick = { vm.selectSeason(seriesId, season.id) },
+                                        onClick = { seriesId?.let { vm.selectSeason(it, season.id) } },
                                     )
                                 }
                             }
@@ -1101,7 +1101,7 @@ private fun SeasonCard(
 ) {
     val urls = images()
     val width = 104.dp
-    val count = season.recursiveItemCount.takeIf { it > 0 } ?: season.childCount
+    val count = (season.recursiveItemCount ?: 0).takeIf { it > 0 } ?: (season.childCount ?: 0)
     val rating = season.communityRating
     Column(
         Modifier.width(width).clickable(onClick = onClick),
