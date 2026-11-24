@@ -5,6 +5,7 @@
 ```
 xyz.etkn.mobile
 ├── AppGraph / EtknApp / MainActivity     装配、Coil ImageLoader、Compose 根
+│                  res/layout/view_texture_player.xml（PlayerView 走 TextureView，画布旋转必需）
 ├── data
 │   ├── net        HttpClients（共享连接池：api/probe/images/media/events）、ApiClient（JSON 规则）、Json 容错读取
 │   ├── api        EtknApi（/api/tv 全部路由）、ServerProbe（ETKN 身份识别）、ImageUrls（图片 URL 规则与尺寸分桶）
@@ -14,7 +15,7 @@ xyz.etkn.mobile
 │   ├── update     Releases（GitHub 发行解析、版本比较、ABI 选包）、UpdateManager（检查、镜像下载、SHA-256 校验、安装）
 │   └── settings   AppSettings（主题、配色来源、首页推荐、解码、片头片尾、倍速、自动下一集；缓存服务器主题色）；UiScale（页面大小，同步 SharedPreferences）
 ├── player         danmaku/（DanmakuTimeline/Layout 解析与分道、DanmakuFeed 120 s 窗口拉取、DanmakuView 位图缓存绘制）
-│                  PlayerActivity（横屏、沉浸、画中画）、VideoSession（双内核选择与切换 + 上报 + 下一集 + 跳过）、mpv/MpvPlayer（libmpv 作为 Media3 Player）、PlaybackPrefetch、ResolvedRedirects、DolbyVision、PlayerScreen（画面与浮层）、PlayerControls、PlayerGestures、PlayerSheets + PlayerPanel（右侧独立窗口面板）、PlayerFactory、PlaybackAddress
+│                  PlayerActivity（横屏、沉浸、画中画）、VideoSession（双内核选择与切换 + 上报 + 下一集 + 跳过）、mpv/MpvPlayer（libmpv 作为 Media3 Player）、PlaybackPrefetch、ResolvedRedirects、DolbyVision、PlayerScreen（画面与浮层）、PlayerControls、PlayerGestures、PlayerSheets + PlayerPanel（右侧独立窗口面板）、PlayerFactory、PlaybackAddress、CanvasRotationSupport（平板画布旋转机型门控）、PlaybackCache（滑动窗口缓存与下一集预加载）
 ├── music          MusicConnection（共享 ExoPlayer、ResolvingDataSource 按需解析、上报）、MusicService（MediaSession 后台播放）、Lyrics（LRC）
 └── ui
     ├── theme      MaterialExpressiveTheme + HCT 种子配色 + 8 档形状 + 语义 Tokens
@@ -27,7 +28,10 @@ xyz.etkn.mobile
 
 - **会话**：`SessionManager.state`（Restoring / SignedOut / SignedIn）驱动根界面；切换账号时 `MainShell` 以账号 key 重建，旧页面与请求一起销毁；任何 401 经 `EtknApi` 回调 `expire()`，仅当 generation 与当前会话一致才生效。
 - **列表分页**：`PagedViewModel` 以服务端实际返回条数推进 `StartIndex`，按 `TotalRecordCount` 或空页结束，失败停住等待重试（不自动循环）。
-- **首页 Hero**：`PersonalRecommendations?Stream=true&Limit=1` 逐条拉取并实时追加（首条到达即渲染），跳过无背景图项；推荐不可用时回退各库最新。
+- **首页 Hero**：`PersonalRecommendations?Stream=true&Limit=1` 逐条拉取并实时追加（首条到达即渲染），跳过无背景图项；推荐不可用时回退各库最新。按账号存 `HeroSnapshot(lastShownAt + 8 个 id)`，`HERO_TTL_MS = 12h`：未过期沿用（剔除已看完/已删除后不足 8 个则当场补），过期重抽。切账号时 `load()` 只允许同账号沿用上一次的 hero、`showCached()` 按当前账号的快照出图，否则会显示上一个账号的推荐。
+- **播放方向**：`applyOrientation(wantPortrait)` 是唯一写方向的地方。入口 `LaunchedEffect(Unit)` 只负责「立刻请求横屏」（所有机型）+「兜底机型置 `forceRotate`」，**不写 `portrait`**；真实方向由服务端 `MediaStreams` 宽高与播放器 `onVideoSizeChanged` **无条件** `applyOrientation` 决定（两者都可能后到，所以不能写成「仅在变化时应用」）。
+- **平板画布旋转**：仅 `CanvasRotationSupport.enabled`（OPD2515）走这条路径。系统忽略 `requestedOrientation` 时，用 `TextureView` + 「宽高互换画布 + `requiredSize` + `graphicsLayer{rotationZ=90f}` + `contentAlignment=Center`」把整层（画面/控制条/浮层）一起转。侧边面板 `PlayerSidePanel(rotated)` 的窗口是全屏、内部再套同一块旋转画布；画布坐标与屏幕坐标的对应关系见 `AGENTS.md`。
+- **缓存与预加载**：`PlaybackCache` 维护「播放位置 + 窗口」的滑动窗口（时间与大小取小者），窗口随播放前进所以单集内缓冲条恒长。`tickCache`（1 s 驱动）在窗口到达片尾时把 `currentComplete` 置真并触发下一集预加载；下一集开始缓冲即 `nextComplete = true`（气泡亮），不要求整集缓存完。预加载量片头优先：有 `IntroEnd` 时目标「片头结束 + 1 分钟」，配额不够可突破。配额全局共用（当前集剩余 + 下一集 ≤ 设定值）。
 - **视频播放**：点击播放即预取 PlaybackInfo（`PlaybackPrefetch`，同时在后台加载两个内核的原生库）→ 服务端 `DirectStreamUrl`（同源校验）→ 内核。不等完整详情：点击的条目先显示标题，详情回来再补章节。内核按片源选（设置「播放内核」可固定）：原盘与 HDR/杜比视界（`PlaybackAddress.isHdr`，看 VideoRange/ColorTransfer/ExtendedVideoType）走 ExoPlayer，其余走 mpv（`MpvPlayer` 是 `SimpleBasePlayer`，控制、手势、弹幕、画中画、上报两边共用；`hwdec=mediacodec-copy,no`、`vo=gpu-next`、ASS/PGS 由 mpv 渲染、CJK 字幕字体链接系统 Noto CJK）；一个内核报错就在同一位置换另一个。ExoPlayer 的数据源经 `ResolvedRedirects` 记住 302 目标（ETKN → 115/CDN），之后的 Range 请求不再回服务端解析，目标失效时回原地址。日志记 PlaybackInfo 与首帧耗时。外挂字幕作为 SubtitleConfiguration 侧载；音轨/字幕名称优先使用服务端 MediaStreams 标题。上报 Playing / 10 s Progress / Stopped，Stopped 走应用级协程。
 - **音乐**：队列项 URI 为 `etkn-music://track/<id>`，在 ExoPlayer 加载线程通过 PlaybackInfo 解析为带 `X-Emby-Token/UserId/PlaySessionId/MediaSourceId` 的直链并缓存；`MediaSessionService` 提供通知、锁屏与蓝牙控制；歌词 GET 为空才 POST 在线补取。
 

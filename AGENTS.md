@@ -26,3 +26,48 @@
 - 诊断日志（`data/diagnostics/Diagnostics.kt`）：只记录本应用 UID 的错误级日志（含崩溃堆栈）和 `ETKN*` 标签的关键行（来源、轨道、解码器、格式），带年份时间戳，256 KB × 8 轮转，启动时删除 7 天前的文件；「我的 → 导出日志」按日期与小时段导出，导出前去掉 URL 查询串与令牌类键值。自己写的日志只记主机、状态码、格式与 PID，不记完整播放地址、令牌或账号信息；不要再挂 Media3 `EventLogger` 这类逐事件日志。进程自身记不下的死亡由下次启动时读取 `ApplicationExitInfo`（`ExitRecords`）写入 crash.log：崩溃与 ANR 一律记录，自行退出只记非零状态（libmpv 致命错误是 `exit(1)`），其他原因只记在前台时发生的；每条附上该 PID 留在系统日志缓冲区里的最后几行（记录器随进程一起被杀，常漏掉这几行），原生崩溃另解析墓碑 protobuf 的信号、abort 信息与崩溃线程回溯。
 - `MpvPlayer` 继承 `SimpleBasePlayer`：未列入 `COMMANDS` 的命令会被静默忽略（缺 `COMMAND_RELEASE` 时 libmpv 从不销毁，下一次 `MPVLib.create` 直接结束进程）；新增 `handle…` 覆写时必须同步加命令。
 - 区分“源码完成 / CI 构建通过 / 真机验证”，未经真机验证的行为不得写成已验证。
+
+## 平板画布旋转（OPPO Pad Mini 专项）
+
+- **触发机型白名单**：`player/CanvasRotationSupport.kt`，只含 `OPD2515` / "OPPO Pad Mini"。其他机型（手机、普通平板）系统方向本来就正常，一旦误套画布旋转会把画面压成中央小方块。动旋转相关代码必须先看这个门控。
+- **为什么要画布旋转**：Android 16 大屏（smallestWidthDp ≥ 600）默认忽略 `requestedOrientation`，SenPlayer / AfuseKit 在这台平板上同样转不了，属系统级限制。`SurfaceView` 是独立硬件合成层、不在 View 树绘制，`graphicsLayer` 转不动（转完是「竖排文字」）；必须用 `TextureView`（`res/layout/view_texture_player.xml` 里 `surface_type="texture_view"`，Media3 没有 `setUseTextureView` API）。
+- **画布尺寸必须用原始屏幕宽高 + `requiredSize`**：写 `.size(canvasW, canvasH)` 会被父容器 constraints 钳制（2520×1680 被压成 1680×1680），2.4:1 的视频 fit 进缩小画布只取到宽 700，旋转后左右各 490px 黑边。`requiredSize` 才能绕开父约束。
+- **画布必须 `contentAlignment = Center`**：绕自身中心旋转。用左上角摆放再手动 translation 补，平移量是按「已居中」推的，实际会整体偏左、上方被截。
+- **旋转态的滑动面板（音轨/字幕/选集/弹幕/倍速）**：`player/PlayerPanel.kt` 的 `PlayerSidePanel(rotated = ...)`。窗口必须全屏 `MATCH_PARENT` + `Gravity.FILL`（否则被 Window 边界裁切），面板位置靠内部 Compose 画布算。
+- **画布坐标系换算是易错点**（连续改错三版）：`rotationZ = 90f` 顺时针转，画布内点 `(dx,dy)` 到屏幕是 `(-dy, dx)` —— 画布右侧→屏幕下、画布底部→屏幕左、**画布顶部→屏幕右**、画布左侧→屏幕上。所以「用户看到的屏幕右侧」要写 `Alignment.TopCenter`。不要靠直觉选边，先按这条公式推。
+- **全屏窗口下 `setCanceledOnTouchOutside` 会失效**：窗口自己铺满整屏就没有「外面」，系统永远判不到点击外部。必须在 Compose 层铺透明点击层（`clickable(indication = null)`）关闭，面板本体再加一个空的 `clickable` 消费点击防冒泡。
+- **`rotated` 参数不能直接引用**：`dialog` 是 `remember(host)` 创建的，`setContent` 的 lambda 只跑一次，直接闭包捕获外部 `rotated` 会被固化成首次组合时的值（那时还是 false）。必须 `rememberUpdatedState`。
+- **不要给 `decorView.layoutParams` 赋 `?.apply{}` 的结果**：Dialog 刚显示时它是 null，右侧 `?.` 对 null 返回 null，再赋回去就是 `setLayoutParams(null)` → `NullPointerException: Layout parameters cannot be null`。要显式 `new ViewGroup.LayoutParams(...)`。
+- **起播方向**：`LaunchedEffect(Unit)` 里对所有机型先 `requestedOrientation = USER_LANDSCAPE`（手机系统立刻转，第一帧就是横的），兜底机型同时置 `forceRotate = true`；但**不要**在这里写 `portrait` 状态 —— 会和服务端尺寸预判/`onVideoSizeChanged` 抢写，竖屏视频永远翻不回来。真实方向一律由后两者无条件 `applyOrientation` 决定。
+
+## 播放缓存
+
+- `PlaybackCache` 是**滑动窗口**语义：目标 = 播放位置 + 窗口（时间与大小取小者），窗口跟着播放位置走，所以单集内缓冲条**恒长**。不是「一次性配额拉满就停」。
+- **「当前集缓存完成」的判据只看往后**：从当前播放位置到片尾已无可缓冲。从中间开始播时前面没缓存，不影响判定；不能要求「整集 0→结尾全缓存」。
+- **气泡（下一集就绪）条件**：当前集到片尾 + 下一集**已开始缓冲、点下去能秒播**（不是全缓存完）。配额全局共用：上一集剩余 + 下一集预加载 ≤ 设定的时间/大小。
+- **下一集预加载量片头优先**：有 `IntroEnd` 片头数据 → 目标「片头结束 + 1 分钟」；配额能覆盖就按配额继续，覆盖不到就**突破配额**硬缓冲到片头后 1 分钟（这一条不受限）。无片头数据 → 按配额。
+- **`ui.cachedPosition` 必须真的被计算**：这个字段曾经只声明、从未赋值，永远是 0，缓冲段只能退回 `player.bufferedPosition`（内核几秒前向缓冲），用户看到的就是「缓冲条逻辑很乱」。现在由 `tickCache` 按落盘文件大小换算写入。
+- **`currentComplete` 不能只信 `pullWindow` 的返回值**：`pullWindow` 在「窗口已够、本轮没下载」时返回 false，于是缓冲条铺到片尾了 `currentComplete` 还是 false、气泡永不亮。要由 `tickCache` 按真实缓冲位置（含 2 秒容差）直接写 `PlaybackCache.markCurrentComplete()`。
+- **下载器必须复用播放器的 OkHttp client**（`PlaybackCache.init(graph.http.media)`）：裸 `DefaultHttpDataSource` 不带认证信息，下载直链返 403；且 403 抛在协程里没被捕获会直接 `FATAL EXCEPTION` 杀进程（`yt1: Response code: 403`）。`downloadInto` 与 `pipeline` 都必须包 `runCatching` / `catch (Throwable)`。
+- **`tickCache` 不要加「播满 N 秒 / 内核缓冲满 N 秒才启动」这类门槛**：会让起播后一大段时间完全不缓冲、缓冲条不动。驱动间隔 1 秒、分片 12MB，网速快时缓冲条才能连续往前走。
+
+## 详情页
+
+- **不做画面动态取色**（原 `ArtworkTheme` / `rememberArtworkSeed` 已从详情页移除）：切一集会重新取色 → 重建整套 Material3 配色（`seedColorScheme` + `tintedSurfaces` + `etknTokens`）→ 整棵子树重组重绘，又慢又生硬。固定用 App 主题色，切集时主题不变，只有真正变化的内容重组。
+- **章节缩略图只用系列级封面**：`ImageUrls.seriesCover()` = 父级 `Thumb` → 父级 `Backdrop` → 系列 `Primary`。**不能**用 `landscape(item)` 传 episode —— 它内部第 2 条是 `if (item.isEpisode) item.imageTags["Primary"]`，会把本集剧照当封面，同一排章节卡就变成「一张本集特写 + 其余别的场景」。
+- **滚动状态必须页面级**：`rememberLazyListState()` 建在内容内部时，切集重组即重建 → 跳回顶部。要提升到 `AnimatedContent` 之外，`contentKey` 用「是否 Ready」而不是 `it::class`。
+- **探索页返回保位不能用 `rememberSaveable`**：导航返回是「重新进入」不是配置变更，`SavedStateRegistry` 不保证恢复。要把 `firstVisibleItemIndex/Offset` 存进 ViewModel。
+- **元数据行**：日期取 `PremiereDate`（电影 100%、剧集 93%、单集仅 32%），没有就退回 `ProductionYear`；时长取 `MediaSource.runTimeTicks`（各库都有）。取不到就不显示，**不得编造或显示 0**。格式：≥1 小时「1小时59分」，否则「45分25秒」。
+
+## 首页
+
+- **轮播图按账号独立**：`HeroSnapshot(lastShownAt + 8 个 id)`，`HERO_TTL_MS = 12h`。未过期沿用（剔除已看完/已删除后不足 8 个则当场补），过期重抽。
+- **切账号必须立刻换图**：两个入口都要按账号算 —— `load()` 里不能无条件沿用上次的 hero（只有同账号才沿用），`showCached()` 不能用不分账号的 `fallbackHero`。否则用户看到「切过去还是老的，必须手动刷新」。
+- **主界面禁止左右滑动切标签，但不要用「吃掉横滑事件」实现**：`PointerEventPass.Initial` 吃会让轮播图完全滑不动，`Final` 吃会让 `LazyRow` 时灵时不灵（拖拽要靠连续几帧位移才能认定，中间被吃几帧就判定失败）。只用外层 Pager 的 `userScrollEnabled = false` 即可，内层横向组件不要再拦。
+
+## 版本管理
+
+- 每个版本写 `release_notes_vX.Y.Z.md`（简体中文，用户可见），打 tag 时用 `git tag -a v1.2.X -F release_notes_v1.2.X.md`。
+- 版本号每档 1-10 递增（1.1.1~1.1.10 → 1.2.1~1.2.10），`baseVersionCode` 与 `baseVersionName` 在 `app/build.gradle.kts`。
+- 发布只告知版本号，不发 APK 文件（用户在 App 内自行更新）。
+- **一次改动做完再发版**：不要为单个小问题连续发多个版本，用户明确要求「下次更新直接都做完了再发版」。
