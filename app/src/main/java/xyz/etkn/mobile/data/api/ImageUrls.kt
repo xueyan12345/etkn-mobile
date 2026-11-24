@@ -41,6 +41,36 @@ class ImageUrls(private val server: String, private val userId: String) {
         return backdrop(item, widthPx) ?: primary(item, widthPx)
     }
 
+    /**
+     * 用户口径（2026-11-24）**章节卡专用：只取「整部剧」的封面，绝不碰本集自己的图**。
+     *
+     * 为什么需要这个而不用 landscape()：
+     * landscape() 内部第 2 条是 `if (item.isEpisode) item.imageTags["Primary"]`，
+     * 传 episode 进去会把本集剧照当成封面用 —— 结果同一排章节卡里
+     * 一张是本集特写、其余是别的场景，视觉上完全不统一。
+     *
+     * 回退顺序（全部是父级/系列级）：
+     *  ① 父级横版 Thumb（parentThumbItemId + parentThumbTag）—— 16:9 最合适
+     *  ② 父级背景图（parentBackdropItemId + parentBackdropTags）
+     *  ③ 系列海报（seriesId + seriesPrimaryTag）—— 竖版，靠 Crop 裁成 16:9
+     *  ④ 都没有 → null（调用方画占位图标）
+     */
+    fun seriesCover(item: Item, widthPx: Int): String? {
+        item.parentThumbItemId?.let { pid ->
+            item.parentThumbTag?.let { tag -> return image(pid, "Thumb", widthPx, tag) }
+        }
+        item.parentBackdropItemId?.let { pid ->
+            item.parentBackdropTags.firstOrNull()?.let { tag ->
+                return image(pid, "Backdrop", widthPx, tag)
+            }
+        }
+        // 系列海报：item 自己是剧集时用 seriesId，是季/系列时用自己
+        val seriesItem = if (item.isEpisode) item.seriesId else item.id
+        val seriesTag = if (item.isEpisode) item.seriesPrimaryTag else item.imageTags["Primary"]
+        if (seriesItem != null && seriesTag != null) return image(seriesItem, "Primary", widthPx, seriesTag)
+        return null
+    }
+
     fun backdrop(item: Item, widthPx: Int): String? {
         item.backdropTags.firstOrNull()?.let { return image(item.id, "Backdrop", widthPx, it) }
         val parent = item.parentBackdropItemId

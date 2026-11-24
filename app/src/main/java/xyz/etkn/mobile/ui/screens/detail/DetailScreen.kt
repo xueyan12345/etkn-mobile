@@ -384,18 +384,10 @@ private fun ChapterCard(chapter: Chapter, item: Item, onPlay: () -> Unit) {
      *  ④ 都没有 → 占位图标
      * 这样同一集内所有章节卡都是同一张系列封面，干净一致。
      */
-    val parentThumb = item.parentThumbItemId?.let { pid ->
-        item.parentThumbTag?.let { tag -> urls.image(pid, "Thumb", 480, tag) }
-    }
-    val parentBackdrop = item.parentBackdropItemId?.let { pid ->
-        item.parentBackdropTags.firstOrNull()?.let { tag -> urls.image(pid, "Backdrop", 480, tag) }
-    }
-    val seriesPoster = item.seriesId?.let { sid ->
-        item.seriesPrimaryTag?.let { tag -> urls.image(sid, "Primary", 480, tag) }
-    }
     val thumb: String? = when {
         hasOwnImage -> urls.chapter(item, chapter, 480)
-        else -> parentThumb ?: parentBackdrop ?: seriesPoster
+        // 用户口径（2026-11-24）：只用系列级封面（父级 Thumb → 父级 Backdrop → 系列海报）
+        else -> urls.seriesCover(item, 480)
     }
     Column(
         Modifier
