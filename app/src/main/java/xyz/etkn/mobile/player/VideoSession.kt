@@ -217,6 +217,20 @@ class VideoSession(
 
     /** 供 UI 读取：当前源是否为 DV（决定用 SurfaceView 还是 TextureView）。 */
     val isDolbyVision: StateFlow<Boolean> = _isDolbyVision.asStateFlow()
+
+    /**
+     * 用户口径（2026-11-26）**当前源是否为 HDR（HDR10 / HLG / PQ）**。
+     *
+     * 日志实证：走马上任那一集
+     *   color=BT2020/Limited range/ST2084 PQ/10/10
+     * 这是 HDR10（PQ 曲线，0-10000 nit）。
+     * 在平板上走 TextureView 时 HDR 元数据丢失 → 按 SDR 解释 → 整体发暗发灰。
+     * 手机正常是因为渲染路径不同，系统做了转换。
+     *
+     * 处理：HDR 片源切到 mpv 引擎（mpv 自带 tone-map，见 MpvPlayer.load）。
+     */
+    private val _isHdr = MutableStateFlow(false)
+    val isHdr: StateFlow<Boolean> = _isHdr.asStateFlow()
     private var nextDurationMs: Long = 0L
     private var autoSkippedIntro = false
     private var autoSkippedCredits = false
@@ -279,6 +293,40 @@ class VideoSession(
                     android.util.Log.i(TAG, "dolby-vision detected=$dv → ${if (dv) "SurfaceView（放弃画布旋转，优先出画）" else "TextureView"}")
                     _isDolbyVision.value = dv
                 }
+                /**
+                 * 用户口径（2026-11-26）：识别 HDR（HDR10 / HLG / PQ）。
+                 * 判据：colorSpace 是 BT2020 或 transfer 是 ST2084(PQ)/HLG。
+                 * HDR 片源需要 tone-map，平板走 TextureView 会丢 HDR 元数据导致发暗。
+                 */
+                val hdr = tracks.groups.any { group ->
+                    if (group.type != C.TRACK_TYPE_VIDEO) return@any false
+                    (0 until group.length).any { i ->
+                        val f = group.getTrackFormat(i)
+                        val cs = f.colorInfo?.colorSpace
+                        val tr = f.colorInfo?.colorTransfer
+                        cs == C.COLOR_SPACE_BT2020 ||
+                            tr == C.COLOR_TRANSFER_ST2084 ||
+                            tr == C.COLOR_TRANSFER_HLG
+                    }
+                }
+                if (hdr != _isHdr.value) {
+                    android.util.Log.i(TAG, "hdr detected=$hdr（BT2020/PQ/HLG）→ ${if (hdr) "需要 tone-map" else "无需转换"}")
+                    _isHdr.value = hdr
+                    /**
+                     * 用户口径（2026-11-26）**HDR 片源自动切 mpv**。
+                     *
+                     * 引擎是在「起播前」选的，那时还不知道片源是不是 HDR
+                     * （轨道信息要等解封装之后才有）。
+                     * 所以这里在**识别到 HDR 之后**再切一次内核：
+                     *  · Exo（走 TextureView）→ HDR 元数据丢失 → 画面发暗
+                     *  · mpv 自带 tone-map → 正常亮度
+                     *
+                     * 只切一次（switchToHdrEngine 有防重入），
+                     * 且只在「当前是 Exo + 系统没用主动选 mpv」时切，
+                     * 避免覆盖用户自己的引擎设置。
+                     */
+                    if (hdr && !dv) switchToHdrEngine()
+                }
             }
             applyServerTracks(tracks)
             publishTracks(tracks)
@@ -320,6 +368,36 @@ class VideoSession(
      * onPlayerError 里的自动换核逻辑切到 mpv（那段本来就是 Exo→Mpv，无需改）。
      * 手动在设置里选了内核仍然优先。
      */
+    /**
+     * 用户口径（2026-11-26）**识别到 HDR 后切到 mpv 做 tone-map**。
+     *
+     * 为什么不在 engineFor 里判断：那里还没解封装，拿不到 HDR 信息。
+     * 所以在这里（轨道信息到位后）补一次切换。
+     *
+     * 安全约束：
+     *  · 只在 Auto / Exo 时切（用户明确选了 mpv 就不用切，已经是了）
+     *  · 防重入：切过一次就不再切，避免反复重建内核
+     *  · 保留当前进度，切完从原位置继续
+     */
+    private var switchedForHdr = false
+
+    private fun switchToHdrEngine() {
+        if (switchedForHdr) return
+        if (settings.engine == PlayerEngine.Mpv) return   // 已经是 mpv
+        if (engine == Engine.Mpv) return
+        switchedForHdr = true
+        val position = player?.currentPosition ?: return
+        val src = source ?: return
+        android.util.Log.i(TAG, "HDR 片源 → 切 mpv 做 tone-map（从 ${position / 1000}s 续播）")
+        runCatching {
+            forcedEngine = Engine.Mpv
+            playSource(src, position, disc = false)
+        }.onFailure {
+            android.util.Log.w(TAG, "切 mpv 失败，继续用 Exo：${it.message}")
+            forcedEngine = null
+        }
+    }
+
     private fun engineFor(chosen: MediaSource, disc: Boolean): Engine {
         forcedEngine?.let { return it }
         if (disc) return Engine.Exo

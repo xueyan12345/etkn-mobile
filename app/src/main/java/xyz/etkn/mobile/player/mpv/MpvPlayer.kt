@@ -237,6 +237,27 @@ class MpvPlayer(
             return
         }
         MPVLib.setPropertyString("start", if (startMs > 0) seconds(startMs) else "none")
+        /**
+         * 用户口径（2026-11-26）**HDR→SDR tone-map（修「平板播 HDR10 片源特别暗」）**。
+         *
+         * 背景（日志实证）：走马上任那一集是 HDR10 ——
+         *   color=BT2020/Limited range/ST2084 PQ/10/10
+         * 手机播正常，是因为手机侧的渲染路径会做 HDR→SDR 转换；
+         * 平板为了支持画布旋转走 TextureView，HDR 元数据在那一层丢了，
+         * PQ 的编码值被当成 SDR 直接显示 → 整体发暗发灰。
+         *
+         * 这里给 mpv 显式开启 tone-map（mpv 自带完整实现）：
+         *  · target-trc=srgb / target-prim=bt.709 → 输出 SDR
+         *  · tone-mapping=auto → 按片源自动选曲线
+         *  · hdr-compute-peak=yes → 逐帧估峰值，暗部不会压死
+         * 这几项对 SDR 片源无副作用（mpv 不做转换），所以可以无条件设。
+         */
+        runCatching {
+            MPVLib.setPropertyString("target-trc", "srgb")
+            MPVLib.setPropertyString("target-prim", "bt.709")
+            MPVLib.setPropertyString("tone-mapping", "auto")
+            MPVLib.setPropertyBoolean("hdr-compute-peak", true)
+        }
         requestPause(!playWhenReady)
         MPVLib.command("loadfile", uri.toString(), "replace")
         Log.i(TAG, "load host=${uri.host} start=${startMs / 1000}s hwdec=${decoder.name}")

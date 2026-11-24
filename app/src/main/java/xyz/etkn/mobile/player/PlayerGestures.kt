@@ -67,10 +67,40 @@ internal fun GestureLayer(
                     onTap = { onToggle() },
                     onDoubleTap = { offset ->
                         if (!enabled) return@detectTapGestures
+                        /**
+                         * 用户口径（2026-11-26）**双击手势改成九宫格**。
+                         *
+                         * 分区（横屏、竖屏都一样，画面均分 3×3）：
+                         *   1 2 3
+                         *   4 5 6
+                         *   7 8 9
+                         *  · 1（左上角）  → 后退 10 秒
+                         *  · 3（右上角）  → 快进 10 秒
+                         *  · 其余 7 格    → 暂停/播放
+                         *
+                         * 旧逻辑是「按 x 分三列」：左列后退、中列暂停、右列快进。
+                         * 现在只有两个上角做快进退，其余全部暂停。
+                         *
+                         * ⚠️ 坐标系说明：这里的 `offset` 和 `size` 都是**画布坐标系**。
+                         * OPPO 平板的横屏是靠「整层画布 rotationZ=90°」实现的，
+                         * 而手势层就在那块画布内部，所以画布坐标 == 用户看到的画面坐标。
+                         * 因此九宫格直接用 offset/size 算就是对的，
+                         * 绝对不能在屏幕原始坐标里算（那样会整体错位 90°）。
+                         */
+                        val col = when {
+                            offset.x < size.width / 3f -> 0      // 左列
+                            offset.x < size.width * 2f / 3f -> 1 // 中列
+                            else -> 2                            // 右列
+                        }
+                        val row = when {
+                            offset.y < size.height / 3f -> 0      // 上排
+                            offset.y < size.height * 2f / 3f -> 1 // 中排
+                            else -> 2                              // 下排
+                        }
                         val delta = when {
-                            offset.x < size.width * 0.35f -> -10_000L
-                            offset.x > size.width * 0.65f -> 10_000L
-                            else -> 0L
+                            row == 0 && col == 0 -> -10_000L   // 1 左上 → 后退
+                            row == 0 && col == 2 -> 10_000L    // 3 右上 → 快进
+                            else -> 0L                          // 其余 → 暂停
                         }
                         if (delta == 0L) {
                             if (player.isPlaying) player.pause() else player.play()

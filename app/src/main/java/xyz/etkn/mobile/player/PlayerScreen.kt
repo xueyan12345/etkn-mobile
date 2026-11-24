@@ -149,12 +149,31 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 用户口径（2026-11-23）：只有确认需要兜底的机型才允许画布旋转。
      * 手机 / 普通平板系统方向正常，误开就会把画面压成中央小方块。
      */
-    val needsCanvasRotation = remember { CanvasRotationSupport.enabled }
     /**
      * 用户口径（2026-11-26）：当前源是否 Dolby Vision。
-     * DV 源不用 TextureView（会黑屏），因此也不做画布旋转。
+     *
+     * 必须先声明，因为下面 needsCanvasRotation 要用它。
      */
     val isDv by session.isDolbyVision.collectAsStateWithLifecycle()
+
+    /**
+     * 用户口径（2026-11-26）**修「DV 片源画面正但 UI 躺」**。
+     *
+     * 上一版只把渲染器从 TextureView 换成 SurfaceView（解决黑屏），
+     * 但【画布旋转】没跟着关：
+     *   · TextureView 参与 View 树变换 → 转 90° 时画面和 UI 一起转（一致）
+     *   · SurfaceView 是独立硬件层 → UI 转了 90°，画面不转
+     *   · 结果：画面正、进度条/集数/按钮全躺（截图实证）
+     *
+     * 现在把 DV 也纳入「不做画布旋转」的条件：
+     * 一次性影响三处（都读这个变量）——
+     *   ① rotated = forceRotate && needsCanvasRotation（是否 rotationZ）
+     *   ② canvasW/canvasH（是否宽高互换）
+     *   ③ applyWindowInsets = !rotated
+     * 于是 DV 源走「不旋转 + SurfaceView」，画面和 UI 方向自然一致。
+     */
+    val canvasCapable = remember { CanvasRotationSupport.enabled }
+    val needsCanvasRotation = canvasCapable && !isDv
     /**
      * 用户口径（2026-11-23）**起播方向必须一开始就是横屏**。
      *
@@ -168,7 +187,11 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      *
      * 所以需要在兜底的机型上初值直接给 true，不等校验。
      */
-    var forceRotate by remember { mutableStateOf(CanvasRotationSupport.enabled) }
+    /**
+     * 用户口径（2026-11-26）：DV 源不做画布旋转，初值也跟着走。
+     * （needsCanvasRotation 现在已排除 DV，这里保持一致，避免起播先闪一下旋转态。）
+     */
+    var forceRotate by remember { mutableStateOf(CanvasRotationSupport.enabled && !isDv) }
     /**
      * 用户口径（2026-11-23）OPPO Pad Mini 专项：这台平板上「旋转屏幕」按钮完全无效，
      * 只能跟随系统方向。SenPlayer / AfuseKit 同样如此 → 不是我们独有的 bug，
@@ -669,7 +692,11 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                          * 所以一旦识别为 DV，就放弃 TextureView（也就放弃画布旋转），
                          * 换回 SurfaceView 保证出画 —— 画面可见优先于旋转。
                          */
-                        val useTexture = needsCanvasRotation && !isDv
+                        /**
+                         * 用户口径（2026-11-26）：needsCanvasRotation 已经排除了 DV，
+                         * 所以这里只按它判断即可（DV → false → SurfaceView）。
+                         */
+                        val useTexture = needsCanvasRotation
                         val pv = if (useTexture) {
                             android.view.LayoutInflater.from(ctx)
                                 .inflate(xyz.etkn.mobile.R.layout.view_texture_player, null) as PlayerView
@@ -680,6 +707,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                             useController = false
                             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                             setShutterBackgroundColor(android.graphics.Color.BLACK)
+                            setKeepContentOnPlayerReset(true)
                             setKeepContentOnPlayerReset(true)
                             // Plain white text with a dark outline instead of the system caption box
                             // (black background); ASS/SSA keep their own embedded styling.
