@@ -69,6 +69,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.fillMaxSize
 
 @Composable
 internal fun PlayerSheet(
@@ -304,9 +305,15 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
      * 占满剩余空间。不加 weight 时 LazyColumn 在「按内容包裹」的父容器里
      * 会被量成刚好装下全部内容，滚动与惯性都会失效（OPPO 平板上表现为只能一格格扒）。
      */
+    /**
+     * 用户口径（2026-11-26）：这里不能写 `Modifier.weight(1f)`
+     * —— EpisodeSheet 不在 ColumnScope 里，weight 不可用（编译报 Unresolved reference）。
+     * 面板本身已经用 `heightIn(max = 画布高 88%)` 给了高度上限，
+     * 列表用 fillMaxSize 就会填满这个上限，从而恢复滚动与惯性。
+     */
     LazyColumn(
         state = listState,
-        modifier = Modifier.weight(1f),
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
