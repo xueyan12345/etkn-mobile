@@ -33,6 +33,11 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.findViewTreeViewModelStoreOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import xyz.etkn.mobile.R
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.BoxWithConstraints
 
 /**
  * 用户口径（2026-11-23）播放器右侧菜单 —— 照参考图逐项对齐（实测数值）。
@@ -87,17 +92,45 @@ fun PlayerSidePanel(
                     CompositionLocalProvider(LocalContentColor provides onPanel) {
                         // 面板自己画圆角半透明底；window 背景全透明，
                         // 这样圆角外侧不会出现方角/暗边（那圈暗边是旧实现最被诟病的地方）。
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(
-                                    surface.copy(alpha = 0.88f),
-                                    RoundedCornerShape(12.dp),
-                                ),
-                        ) {
-                            // 上下内边距 ≈ 参考图的 185px（≈ 30dp）
-                            Column(Modifier.fillMaxSize().padding(vertical = 30.dp)) {
-                                currentContent()
+                        /**
+                         * 用户口径（2026-11-24）**平板画布旋转的浮层方案（第二版，正确版）**。
+                         *
+                         * 上一版直接给 Dialog 的 decorView 设 rotation=90°，两个问题：
+                         *  ① 崩了：decorView.layoutParams 为 null 时赋值 null → NPE
+                         *  ② 就算不崩也会被 Window 边界裁掉一半
+                         *
+                         * 现在照搬播放器里已验证的做法：
+                         *  · Window 保持全屏、不旋转
+                         *  · 内部用「宽高互换 + 绕中心 90°」的 Compose 画布
+                         *  · 面板贴在这块画布的右侧（视觉上仍是屏幕右侧）
+                         */
+                        BoxWithConstraints(Modifier.fillMaxSize()) {
+                            val availableW = if (rotated) maxHeight else maxWidth
+                            val panelWidth = (availableW * 0.51f).coerceIn(260.dp, 420.dp)
+                            val canvas = if (rotated) {
+                                Modifier.requiredSize(maxHeight, maxWidth).graphicsLayer { rotationZ = 90f }
+                            } else {
+                                Modifier.fillMaxSize()
+                            }
+                            Box(canvas) {
+                                Box(
+                                    Modifier
+                                        .align(Alignment.CenterEnd)
+                                        .fillMaxHeight()
+                                        .width(panelWidth)
+                                        .padding(
+                                            end = if (rotated) 0.dp
+                                            else (maxWidth.value * 0.054f).dp,
+                                        )
+                                        .background(
+                                            surface.copy(alpha = 0.88f),
+                                            RoundedCornerShape(12.dp),
+                                        ),
+                                ) {
+                                    Column(Modifier.fillMaxSize().padding(vertical = 30.dp)) {
+                                        currentContent()
+                                    }
+                                }
                             }
                         }
                     }
@@ -118,51 +151,24 @@ fun PlayerSidePanel(
         dialog.window?.let { window ->
             val metrics = host.resources.displayMetrics
             val dp = metrics.density
-            val gap = (metrics.widthPixels * 0.054f).toInt().coerceAtLeast((8 * dp).toInt())
 
-            window.setGravity(Gravity.END or Gravity.CENTER_VERTICAL)
+            /**
+             * 用户口径（2026-11-24）：窗口改成全屏铺满、不定位、不旋转。
+             * 面板的位置和旋转全部交给内部 Compose 画布处理 ——
+             * 这样不会被 Window 边界裁切，也不会碰 decorView.layoutParams（上一版 NPE 来源）。
+             */
+            window.setGravity(Gravity.FILL)
             window.setWindowAnimations(R.style.Animation_Etkn_SidePanel)
             // window 背景全透明 —— 圆角完全由 Compose 画，外侧不会有任何描边/方角。
             window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
 
             window.attributes = window.attributes.apply {
-                /**
-                 * 用户口径（2026-11-24）：画布旋转时，Dialog 的坐标系也要按
-                 * 「宽高互换」来算 —— 屏幕逻辑上仍是竖屏（1680×2520），
-                 * 但用户看到的是横屏（2520×1680），所以面板宽度要按屏幕高度算。
-                 */
-                val logicalW = if (rotated) metrics.heightPixels else metrics.widthPixels
-                width = (logicalW * 0.51f).toInt()
-                    .coerceIn((260 * dp).toInt(), (420 * dp).toInt())
-                // 高度按内容包裹：wrap_content 由 Column 决定，配合垂直居中 = 浮动卡片
-                height = WindowManager.LayoutParams.WRAP_CONTENT
-                x = gap
+                // 全屏窗口：面板尺寸/位置由内部 Compose 画布决定
+                width = WindowManager.LayoutParams.MATCH_PARENT
+                height = WindowManager.LayoutParams.MATCH_PARENT
                 dimAmount = 0f
             }
 
-            /**
-             * 关键：给 Dialog 的 decorView 套和播放器一样的旋转。
-             * 面板本来在右侧居中（Gravity.END|CENTER_VERTICAL），
-             * 旋转 90° 后需要把画布按「宽高互换 + 居中」重新摆放，
-             * 否则会跑到屏幕外或偏角。
-             */
-            if (rotated) {
-                val screenW = metrics.widthPixels.toFloat()
-                val screenH = metrics.heightPixels.toFloat()
-                val decor = window.decorView
-                // 画布按互换后的尺寸摆放（宽=屏幕高、高=屏幕宽）
-                decor.layoutParams = decor.layoutParams?.apply {
-                    width = screenH.toInt()
-                    height = screenW.toInt()
-                }
-                decor.pivotX = screenH / 2f
-                decor.pivotY = screenW / 2f
-                decor.rotation = 90f
-                // 旋转后整体位置需要补偿：绕中心转 90° 后，
-                // 原画布左上角会跑到屏幕外，用 translation 拉回来。
-                decor.translationX = (screenW - screenH) / 2f
-                decor.translationY = (screenH - screenW) / 2f
-            }
             window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
 
             // 参考图有轻微毛玻璃感：小半径背景模糊（S+ 支持）
