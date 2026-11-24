@@ -39,6 +39,8 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.clickable
 
 /**
  * 用户口径（2026-11-23）播放器右侧菜单 —— 照参考图逐项对齐（实测数值）。
@@ -130,7 +132,27 @@ fun PlayerSidePanel(
                              * 画布必须居中！否则 requiredSize(2520,1680) 的画布
                              * 会摆在窗口左上角，转 90° 后超出窗口被裁掉上下两条。
                              */
-                            Box(canvas, contentAlignment = Alignment.Center) {
+                            /**
+                             * 用户口径（2026-11-26）**点面板以外的地方要能关闭**。
+                             *
+                             * 之前窗口是全屏 MATCH_PARENT + Gravity.FILL，
+                             * Dialog 自己就铺满整屏，所以 setCanceledOnTouchOutside(true)
+                             * 永远不会触发（它判的是「点在 Dialog 外面」，
+                             * 而 Dialog 已经没有「外面」了）→ 用户只能按系统返回键关。
+                             *
+                             * 现在在画布最外层铺一个透明点击层：
+                             * 点空白处 → 关闭；点面板本体 → 被面板自己的 clickable 消费，不关。
+                             */
+                            Box(
+                                Modifier
+                                    .then(canvas)
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = currentDismiss,
+                                    ),
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 /**
                                  * 用户口径（2026-11-24）**别把面板撑满全高**。
                                  *
@@ -139,25 +161,24 @@ fun PlayerSidePanel(
                                  * 参考图是「按内容包裹 + 垂直居中」的浮动卡片。
                                  */
                                 /**
-                                 * 用户口径（2026-11-24）**旋转画布下「右侧」要换算成画布坐标系**。
+                                 * 用户口径（2026-11-26）**position 换算终版：屏幕右侧 = 画布顶部**。
                                  *
-                                 * 画布是绕中心逆时针 90°（rotationZ = 90f）画出来的，
-                                 * 所以要出现在【用户看到的屏幕右侧】，在画布坐标系里必须是【底部】：
-                                 *   画布 x 轴 ↗ 屏幕 −y（上）
-                                 *   画布 y 轴 ↗ 屏幕 +x（右）
-                                 * 之前写 CenterEnd（画布右端）→ 转完跑到屏幕底部，用户说「位置不对」。
+                                 * 画布 rotationZ = 90f（顺时针），画布内点 (dx,dy) 转到屏幕是 (-dy, dx)：
+                                 *   画布右侧 (dx>0,dy=0) → 屏幕下方   ← v1.2.24 用的 CenterEnd，错了
+                                 *   画布底部 (dx=0,dy>0) → 屏幕左侧   ← v1.2.25 用的 BottomCenter，也错
+                                 *   画布顶部 (dx=0,dy<0) → 屏幕右侧   ← 正确，用户要的就是这个
+                                 *   画布左侧 (dx<0,dy=0) → 屏幕上方
                                  *
-                                 * 所以：旋转时贴画布底部（需要再补一段安全边距），
-                                 * 不旋转时贴右端（保持原样）。
+                                 * 所以旋转态必须贴【画布顶部】，并用 top 留出安全边距。
                                  */
                                 Box(
                                     Modifier
                                         .fillMaxSize()
                                         .padding(
                                             end = panelGap,
-                                            bottom = if (currentRotated) panelGap else 0.dp,
+                                            top = if (currentRotated) panelGap else 0.dp,
                                         ),
-                                    contentAlignment = if (currentRotated) Alignment.BottomCenter
+                                    contentAlignment = if (currentRotated) Alignment.TopCenter
                                                        else Alignment.CenterEnd,
                                 ) {
                                     Box(
@@ -167,6 +188,12 @@ fun PlayerSidePanel(
                                             .background(
                                                 surface.copy(alpha = 0.88f),
                                                 RoundedCornerShape(12.dp),
+                                            )
+                                            // 消费面板内的点击，避免冒泡到外层把它关掉
+                                            .clickable(
+                                                interactionSource = remember { MutableInteractionSource() },
+                                                indication = null,
+                                                onClick = {},
                                             ),
                                     ) {
                                         Column(Modifier.padding(vertical = 24.dp)) {
