@@ -55,6 +55,8 @@ import xyz.etkn.mobile.ui.components.images
 import xyz.etkn.mobile.ui.components.px
 import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.ui.theme.Etkn
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.snapshotFlow
 
 /** Episodes per range chip. */
 private const val RANGE = 20
@@ -93,6 +95,20 @@ internal fun EpisodeShelf(
 ) {
     val row = rememberLazyListState()
     val chips = rememberLazyListState()
+
+    /**
+     * 用户口径（2026-11-26）**修「进入详情页不定位到当前集，停在最开头」**。
+     *
+     * 原因：`scrollToItem` 在列表**还没被测量/上屏**时调用会被静默忽略
+     * （LazyList 在 layoutInfo 为空时直接吞掉滚动请求，不抛错）。
+     * 数据是异步到达的，LaunchedEffect 触发那一刻列表往往还没上屏，
+     * 于是「定位到 417 集」被吞掉，画面停在最开头。
+     *
+     * 这里等 `layoutInfo.totalItemsCount > 0` 之后再滚，保证请求一定被执行。
+     */
+    suspend fun awaitLaidOut() {
+        snapshotFlow { row.layoutInfo.totalItemsCount }.first { it > 0 }
+    }
 
     /** 分集卡尺寸：和章节卡一致（历史口径 160dp）。 */
     val cardWidth = 160.dp
@@ -134,8 +150,16 @@ internal fun EpisodeShelf(
         val request = pendingScroll ?: return@LaunchedEffect
         val at = state.indexOfNumber(request.number)
         if (at >= 0) {
-            // 目标集放左起第 2 格：左边留一集、右边露出下一集，方便连续点
-            row.scrollToItem((at - UNIT_OFFSET).coerceAtLeast(0))
+            /**
+             * 用户口径（2026-11-26）**修「点区间后高亮亮在左边那一格」**。
+             *
+             * 旧实现固定把目标集放在左起第 2 格（`at - 1`），
+             * 于是「横条第一格」变成了目标集的**上一集**：
+             * 点 41-60 → 第一格是第 40 集 → 按集号算出来属于 21-40 → 高亮亮左边那个。
+             * 现在点区间时 offset = 0（目标贴左起第 1 格），第一格就是区间首集，高亮必然对。
+             */
+            awaitLaidOut()
+            row.scrollToItem((at - request.offset).coerceAtLeast(0))
             pendingScroll = null
         }
     }
@@ -153,6 +177,7 @@ internal fun EpisodeShelf(
         val at = state.indexOf(currentId)
         if (at < 0) return@LaunchedEffect
         followedEpisode = currentId
+        awaitLaidOut()
         row.scrollToItem((at - UNIT_OFFSET).coerceAtLeast(0))
     }
 
@@ -164,7 +189,11 @@ internal fun EpisodeShelf(
         if (state.items.isEmpty()) return@LaunchedEffect
         val target = currentId ?: state.anchorId ?: return@LaunchedEffect
         val at = state.indexOf(target)
-        if (at >= 0) row.scrollToItem((at - UNIT_OFFSET).coerceAtLeast(0))
+        if (at >= 0) {
+            // 等列表真正上屏再滚，否则这次定位会被静默丢弃（进页面停在最开头）
+            awaitLaidOut()
+            row.scrollToItem((at - UNIT_OFFSET).coerceAtLeast(0))
+        }
     }
 
     /** 区间 chip 栏跟着高亮走。 */
@@ -188,10 +217,10 @@ internal fun EpisodeShelf(
             if (state.items.size > 1) {
                 val lastNumber = state.items.lastOrNull()?.indexNumber ?: state.items.size
                 val firstNumber = state.items.firstOrNull()?.indexNumber ?: 1
-                IconButton(onClick = { pendingScroll = PendingScroll(firstNumber) }) {
+                IconButton(onClick = { pendingScroll = PendingScroll(firstNumber, offset = 0) }) {
                     Icon(Icons.Rounded.FirstPage, "第一集")
                 }
-                IconButton(onClick = { pendingScroll = PendingScroll(lastNumber) }) {
+                IconButton(onClick = { pendingScroll = PendingScroll(lastNumber, offset = 0) }) {
                     Icon(Icons.Rounded.LastPage, "最后一集")
                 }
             }
@@ -212,7 +241,7 @@ internal fun EpisodeShelf(
                         checked = index == activeRange,
                         onClick = {
                             // 直接请求「滚到该区间第一集」；高亮由滚动结果自然驱动
-                            pendingScroll = PendingScroll(rangeStart)
+                            pendingScroll = PendingScroll(rangeStart, offset = 0)
                         },
                     ) {
                         Text("$rangeStart-$rangeEnd")
@@ -253,7 +282,15 @@ internal fun EpisodeShelf(
  * 因为要让「请求第 20 集」和「请求第 20 集」是同一个 key（不会因为重复点击重复滚），
  * 同时「清空请求」不会触发同一个 LaunchedEffect 重启。
  */
-private data class PendingScroll(val number: Int)
+private data class PendingScroll(
+    val number: Int,
+    /**
+     * 目标集相对横条左边的格数。
+     *  · 0 —— 目标集贴在左起第 1 格（点区间 chip 用这个，高亮才能精确落在该区间）
+     *  · 1 —— 目标集显示在左起第 2 格（切集跟随时用，左边留一集方便回看）
+     */
+    val offset: Int = 0,
+)
 
 /**
  * 目标集相对横条左边的格数。
