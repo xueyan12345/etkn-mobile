@@ -165,7 +165,7 @@ object CloudResources {
      * 只额外继承 `_shared_pool_parent_source_id` 之类做兜底不需要的字段一律不加。
      */
     fun parseChildren(provider: CloudProvider, result: JsonObject, parent: JsonObject): List<CloudResource> {
-        val rows = result.rows("items")
+        val rows = result.rows()
         if (rows.isEmpty()) return emptyList()
         return rows.mapNotNull { row ->
             // 至少要能定位到单集：sha1 + source_id

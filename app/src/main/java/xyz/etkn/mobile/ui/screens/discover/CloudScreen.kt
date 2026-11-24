@@ -84,6 +84,13 @@ fun CloudScreen(route: CloudRoute) {
     val haze = rememberHazeState()
     var source by remember { mutableStateOf<CloudProvider?>(null) }
     var confirm by remember { mutableStateOf<CloudResource?>(null) }
+    /**
+     * 用户口径（2026-11-26）**选集弹窗**（对应 ETKN 网页端的集号网格）。
+     *  · picking         = 正在选集的那个资源（null = 没在选）
+     *  · pickingChildren = 该资源的分集清单（null = 还在加载）
+     */
+    var picking by remember { mutableStateOf<CloudResource?>(null) }
+    var pickingChildren by remember { mutableStateOf<List<CloudResource>?>(null) }
     var message by remember { mutableStateOf<Pair<String, String>?>(null) }
     val title = route.title + if (season == null) "" else " · 第 $season 季"
 
