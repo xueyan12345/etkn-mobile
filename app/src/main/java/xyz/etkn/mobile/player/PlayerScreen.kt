@@ -899,13 +899,14 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             }
         }
             /**
-             * 用户口径（2026-11-24）**平板画布旋转时，字幕/音频/选集/弹幕/倍速等
-             * 选择浮层也必须跟着一起转**。
+             * 用户口径（2026-11-26）**面板直接渲染在已旋转的画布内部**。
              *
-             * 之前 PlayerSheet 写在旋转 Box 外面 —— 视频画面转了 90°，浮层还是竖屏，
-             * 用户看到的就是「画面横着、弹窗竖着」。
-             * 现在把它放进旋转容器内部，和视频/控制条同一坐标系，
-             * 平板和手机都自然正确（手机 rotated=false，行为完全不变）。
+             * 画布坐标系 == 用户看到的画面坐标系，所以面板的
+             * 「右侧 = Alignment.CenterEnd」天然正确，不需要任何换算；
+             * 方向也跟着画布一起转，不会再出现「画面横着、弹窗竖着」。
+             *
+             * 这也顺带解决了位置问题：之前它在独立 Window 里，
+             * 绕开画布成了另一套坐标系，怎么调对齐都会偏。
              */
             if (sheet != Sheet.None) {
                 PlayerSheet(
@@ -914,7 +915,6 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     onDismiss = { sheet = Sheet.None },
                     onRotate = { manualOrientation = true; applyOrientation(!(portrait ?: true)); touch() },
                     portrait = portrait ?: false,
-                    rotated = forceRotate && needsCanvasRotation,
                 )
             }
         }

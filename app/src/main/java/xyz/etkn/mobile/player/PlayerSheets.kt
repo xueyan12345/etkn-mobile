@@ -80,10 +80,13 @@ internal fun PlayerSheet(
     /** 用户口径（2026-11-22）：横竖屏切换挪到「三点」菜单最上方。 */
     onRotate: () -> Unit = {},
     portrait: Boolean = false,
-    /** 用户口径（2026-11-24）：画布旋转时必须一起转，否则浮层还是竖屏。 */
-    rotated: Boolean = false,
 ) {
-    PlayerSidePanel(onDismiss, rotated) {
+    /**
+     * 用户口径（2026-11-26）：不再需要 rotated 参数。
+     * 面板由 PlayerScreen 直接渲染在「已旋转的画布」内部，
+     * 画布坐标系等于用户看到的画面坐标系，方向自动正确。
+     */
+    PlayerSidePanel(onDismiss) {
         when (sheet) {
             Sheet.Audio -> OptionList("音轨", ui.audio.map { it.label to it.selected }) { i -> session.selectTrack(ui.audio[i]); onDismiss() }
             Sheet.Subtitle -> Column {
