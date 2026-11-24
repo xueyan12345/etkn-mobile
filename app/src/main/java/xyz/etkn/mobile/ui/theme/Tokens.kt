@@ -36,6 +36,14 @@ data class EtknTokens(
     val posterScrim: Brush,
     val wideScrim: Brush,
     val detailScrim: Brush,
+    /**
+     * 用户口径（2026-11-26）方案 D：详情页信息区的**深色渐变托底**。
+     *
+     * 不用黑框/圆角底板（用户嫌「大黑框难看」），改成从底往上渐变的遮罩：
+     *  · 底部够黑（0.92）→ 任何亮色海报上文字都清楚
+     *  · 用 1.5 次方曲线往上淡出到完全透明 → 顶部没有硬边，齐边融入画面
+     */
+    val detailPlateScrim: Brush,
     val skeleton: Color,
     val rating: Color,
 )
@@ -81,6 +89,19 @@ fun etknTokens(scheme: ColorScheme, dark: Boolean): EtknTokens = EtknTokens(
     // 原因：旧配置在 45% 处就叠了 0.5 不透明度的主题色，整张背景图被糊掉。
     // 现在：中上部完全透明（背景图原样清晰），只在底部 55% 之后开始过渡到页面底色，
     // 保证下面的文字/按钮可读。
+    /**
+     * 方案 D：详情页信息区渐变托底。
+     * 归一化坐标是从上到下（0 = 渐变区顶部，1 = 底部）。
+     * 顶部完全透明 → 中部快速加深 → 底部 0.92 黑，形成没有硬边的托底。
+     */
+    detailPlateScrim = Brush.verticalGradient(
+        0.00f to Color.Transparent,
+        0.22f to Color.Black.copy(alpha = 0.28f),
+        0.45f to Color.Black.copy(alpha = 0.58f),
+        0.68f to Color.Black.copy(alpha = 0.80f),
+        0.85f to Color.Black.copy(alpha = 0.90f),
+        1.00f to Color.Black.copy(alpha = 0.94f),
+    ),
     detailScrim = Brush.verticalGradient(
         0f to Color.Transparent,
         0.55f to Color.Transparent,

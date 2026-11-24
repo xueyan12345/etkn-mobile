@@ -550,28 +550,32 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                 // 避免出现「白字压图 + 黑字重复」两层剧名（上一版的问题）
             }
             /**
-             * 用户口径（2026-11-26）**剧名区域加独立底板（修「白字/深字压在亮色海报上看不清」）**。
+             * 用户口径（2026-11-26）**方案 D：深色渐变托底（不用黑框）**。
              *
-             * 旧方案的毛病：文字直接压在「海报 + 半透明渐变」上，
-             * 深色海报没问题，但遇到亮色海报（鬼灭那部：夜景 + 亮橙角色）
-             * 对比度就不够，字被背景吃掉。
-             * 单纯加深渐变会把海报压得过暗，影响观感。
+             * 演进过程（都是用户否掉的）：
+             *  · 第一版：文字直接压海报 + 原有半透明渐变 → 亮色海报（鬼灭）看不清
+             *  · 第二版：加一块 0.78 不透明度的深色圆角底板 → 能看清了，但用户嫌「大黑框难看」
              *
-             * 现在改成**独立底板**：整块信息区（剧名 + 评分/日期/时长/类型 + 右侧三条技术信息）
-             * 垫在一块半透明深色圆角底板上。
-             *  · 底板不透明度够高（0.78），任何海报都不会影响可读性
-             *  · 底板是圆角 + 左右留边距，不会显得像「贴在图上的一块黑条」
-             *  · 文字颜色跟着底板走（固定浅色），不再依赖海报明暗
+             * 现在按用户选定的方案 D 重做：
+             *  · **不给边框、不给圆角**，改成一条从底往上渐变的深色遮罩，齐边融入画面
+             *  · 渐变用 1.5 次方曲线（越往上越透明），顶部完全过渡到透明，
+             *    没有硬边，不会像「贴上去的一条黑带」
+             *  · 底部够黑（约 0.92）保证任何亮海报上文字都清楚
+             *  · 渐变高度 340dp 折算成海报高度的比例，跟着海报高度走
              */
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(height * 0.30f)
+                    .background(Etkn.tokens.detailPlateScrim),
+            )
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(horizontal = Etkn.space.screen)
-                    .padding(bottom = 8.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color.Black.copy(alpha = 0.78f))
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(bottom = 12.dp),
                 horizontalAlignment = align,
             ) {
                 /**
@@ -589,7 +593,7 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                     Text(
                         item.seriesName?.takeIf { item.isEpisode || item.isSeason } ?: item.name,
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        // 底板是深色，文字固定浅色（不跟主题走，否则浅色主题会出现深字压深底）
+                        // 渐变托底是深色，文字固定浅色（不跟主题走，否则浅色主题会出现深字压深底）
                         color = Color.White,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -673,7 +677,7 @@ private fun techSource(data: DetailData): MediaSource? = with(data) {
 @Composable
 private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizontal) {
     /**
-     * 用户口径（2026-11-26）：**底板是深色，文字固定浅色**。
+     * 用户口径（2026-11-26）：**渐变托底是深色，文字固定浅色**。
      * 用主题色（onSurface/onSurfaceVariant）在浅色主题下会是深字压深底，看不见。
      */
     val muted = Color.White.copy(alpha = 0.72f)
@@ -739,7 +743,7 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
 
 @Composable
 private fun RatingBadge(text: String) {
-    // 用户口径（2026-11-26）：分级徽章现在画在深色底板上，固定用浅色
+    // 用户口径（2026-11-26）：分级徽章现在画在深色渐变上，固定用浅色
     val color = Color.White.copy(alpha = 0.78f)
     Text(
         text,
@@ -1293,7 +1297,7 @@ private fun MediaTechRows(
     compact: Boolean = false,
 ) {
     /**
-     * 用户口径（2026-11-26）：信息区已垫深色底板，文字固定浅色，
+     * 用户口径（2026-11-26）：信息区已有深色渐变托底，文字固定浅色，
      * 不跟主题走（浅色主题下 onSurface 会是深字压深底）。
      */
     val onPanel = Color.White
