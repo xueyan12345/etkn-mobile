@@ -71,3 +71,32 @@
 - **版本号每档从 .0 开始、末位 0-10 递增，满 10 进下一位**：`1.2.10 → 1.3.0 → 1.3.1 → … → 1.3.10 → 1.4.0`。当前在 `1.2.26`，**下一个版本从 `1.3.0` 开始**。`baseVersionCode` 与 `baseVersionName` 在 `app/build.gradle.kts`。
 - 发布只告知版本号，不发 APK 文件（用户在 App 内自行更新）。
 - **一次改动做完再发版**：不要为单个小问题连续发多个版本，用户明确要求「下次更新直接都做完了再发版」。
+
+## 详情页「影片信息」三条（视频 / 音频 / 字幕）
+
+- **常驻显示，不做隐藏入口**：早期藏在「影片信息」胶囊后点开才浮出，用户明确要求删掉入口、三条直接铺在播放按钮行**上方**（「从头播放」那一行的上面）。
+- **层级规则**：`series`（剧集详情页）/ `movie`（电影详情页）/ `episode`（单集页）显示；`season`（季详情页）**不显示**。
+- **数据源**：统一走 `techSource(data)`（已处理「series 层取下一集的版本」）。多版本时点视频行展开 `item.mediaSources`，切换走 `vm.selectSource(i)`。
+- **`(默认)` 不能重复拼**：服务端 `DisplayTitle` 本身就带 `(默认)`（实测 `国语 DDP stereo (默认)`），客户端再拼一次会显示成 `(默认) (默认)`。统一用 `MediaStream.cleanTitle()`，已含则不再补。
+- **只有多于 1 条才给展开箭头**：单音轨 / 无字幕时不画箭头（`现在就出发 S4E13` 实测 1 条 eac3 音轨、0 条字幕，无箭头是正确行为，不是 bug）。
+
+## 详情页「标记已播放」
+
+- 右上角对号 = 标记已播放，走 `vm.togglePlayed()` → `EtknApi.setPlayed(id, played)`（`POST` / `DELETE {u}/PlayedItems/{id}`）。
+- **必须「以点击后的目标值回写 UI」**，不能等服务端返回再判断：旧写法先 `withUserData` 读回、服务端没跟着变时图标就不动，表现为「点了没反应」。
+- **`mutate` 不能静默失败**：旧实现 `runCatching{}.onSuccess{}` 失败分支什么都不做，用户既看不到变化也看不到提示。现在失败写进 notice 并打日志。
+
+## 选集菜单与分页
+
+- **打开选集要定位到当前集，且上下都要露出**：用 `EpisodePage` 的 `AnchorId = current.id` 拉取，不能用 `start = 0` 固定拉前 N 条 —— 1200+ 集的剧播到 1265 时，前 200 条里根本没有当前集，`indexOfFirst` 返回 -1 就定位到第一条。定位时 `currentIndex - 3` 让当前集不顶在最上面。
+- **分页区间的计算基准是「集号」不是「列表下标」**：`firstVisibleItemIndex / RANGE` 在按需加载的长列表里会算错区间（实测 417 集分页 401-420，点 419 后选中项跳到 61-80）。要用 `Item.indexNumber` 算，找不到时再退回滚动位置。
+- **`Modifier.weight` 只能用在 `ColumnScope` / `RowScope` 内**：`EpisodeSheet` 不在 scope 里，写 `Modifier.weight(1f)` 会编译失败（`Unresolved reference: weight`）。
+
+## 播放器面板的滚动惯性
+
+- 面板给 `heightIn(max = 画布高 88%)`，内部列表用 `fillMaxSize()`。若面板写成 `wrapContentHeight()`，列表会被量成「刚好装下全部内容」，**LazyColumn 认为自己不可滚动 → 没有 fling/惯性**，长列表只能一格格扒（OPPO 平板实测，手机上因内容少不明显）。
+
+## 播放上报
+
+- `report()` 里所有关键值（`positionMs` / `durationMs` / `completedBySkip`）必须**先快照成局部变量**再构造 payload。切集瞬间 `player` 可能已绑到新集，异步读会读到新集的 0 秒，把上一集记成「播到很早的位置」。
+- 切集顺序：先写 `completedBySkip`，再 `stopReporting()`（它会同步发 `Stopped`），最后才 `load()`。`playSource` 内部会把 `completedBySkip` 重置为 false，靠快照隔离。
