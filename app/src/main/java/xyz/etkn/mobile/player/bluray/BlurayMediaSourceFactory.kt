@@ -94,12 +94,34 @@ class BlurayMediaSourceFactory(
          * Dolby Vision profile 7 (dual-layer, Blu-ray) has no phone decoder; its base layer is
          * plain HEVC HDR10, so present it as such instead of failing the DV decoder lookup.
          */
+        val DV_PROFILE_5 = Regex("(dv(?:he|h1))\\.0?5\\.(\\d+)")
+
         fun baseLayer(format: Format): Format {
             val codecs = format.codecs?.lowercase(Locale.ROOT) ?: return format
-            if (format.sampleMimeType != MimeTypes.VIDEO_DOLBY_VISION || !DV_PROFILE_7.matches(codecs)) return format
+            if (format.sampleMimeType != MimeTypes.VIDEO_DOLBY_VISION) return format
+            /**
+             * 用户口径（2026-11-26）**杜比视界 profile 5 也要降级成普通 HEVC**。
+             *
+             * 原来这里只处理 profile 7（因为 profile 7 有 HDR10 基础层，降级后还能看）。
+             * 但实测（谷雨 = dvhe.05.08）：
+             *  · profile 5 保持 video/dolby-vision → 交给 DV 解码器
+             *  · 平板走纹理视图，IPTPQc2 色彩元数据在这一层丢失
+             *  · 结果：Exo 偏色、mpv 也偏色（两个内核都偏）
+             *
+             * profile 5 的码流本质就是 HEVC（只是套了层 DV 元数据），
+             * 降级成 video/hevc 交给系统 HEVC 解码器后：
+             *  · 系统按标准流程处理亮度/色彩
+             *  · 不会再有 IPTPQc2 被误读的问题
+             * 代价是失去 DV 动态元数据（画质略降），但颜色正确、能看。
+             */
+            val isP7 = DV_PROFILE_7.matches(codecs)
+            val isP5 = DV_PROFILE_5.matches(codecs)
+            if (!isP7 && !isP5) return format
+            val baseCodecs = NalUnitUtil.getH265BaseLayerCodecsString(format.initializationData)
+                ?: return format   // 拿不到基础层 codec 就原样返回，别把 format 搞坏
             return format.buildUpon()
                 .setSampleMimeType(MimeTypes.VIDEO_H265)
-                .setCodecs(NalUnitUtil.getH265BaseLayerCodecsString(format.initializationData))
+                .setCodecs(baseCodecs)
                 .build()
         }
 

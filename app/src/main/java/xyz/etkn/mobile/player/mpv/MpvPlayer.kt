@@ -261,13 +261,40 @@ class MpvPlayer(
          * mpv 默认可能把它当普通 HEVC（按 BT709 解释）→ 必然偏绿。
          * 这里显式告诉 mpv：这是杜比视界，按它的原生色彩空间处理再转 SDR。
          */
+        /**
+         * 用户口径（2026-11-26）**不要手工强设 video-params-***。
+         *
+         * 上一版我强行设了 `vf=format=fmt=gbrpf32le` 和
+         * `video-params-primaries/gamma`，结果反而更糟 ——
+         * 这些是「告诉 mpv 输入是什么格式」的参数，
+         * 设错等于骗它，颜色必然错（谷雨用 mpv 也偏色就是这个原因）。
+         *
+         * 正确做法：让 mpv 自己从码流/容器里读色彩信息。
+         * mpv 内置了 libplacebo，对杜比视界（含 profile 5 的 IPTPQc2）
+         * 有完整支持，只要不干扰它，它自己会走对路径。
+         *
+         * 这里只保留一个「不猜、按码流来」的语义。
+         */
+        /**
+         * 用户口径（2026-11-26）**不要给 mpv 设 video-params-***。
+         *
+         * 日志铁证（1.4.8，谷雨那次）：
+         *   mpv_set_property(video-params-primaries) returned error property not found
+         *   mpv_set_property(video-params-gamma)     returned error property not found
+         * → 这两个属性 mpv 根本不存在，设了完全无效（上一版整个方案是空操作）。
+         *
+         * 正确做法：交给 mpv 自己从码流读色彩（它对 DV/IPTPQc2 有原生支持）。
+         * 只在它确实需要提示时，用**真实存在**的属性。
+         */
         if (isDolbyVisionSource) {
             runCatching {
-                // 让 libplacebo 按 DV 的 IPTPQc2 解释，而不是猜 BT709
-                MPVLib.setPropertyString("vf", "format=fmt=gbrpf32le")
-                MPVLib.setPropertyString("video-params-primaries", "bt.2020")
-                MPVLib.setPropertyString("video-params-gamma", "pq")
-                android.util.Log.i("ETKN-Mpv", "DV 源 → 强制 bt.2020 + pq 解析（避免偏绿）")
+                /**
+                 * dolbyvision 相关的真实属性（Android/libplacebo 后端）：
+                 *  · tone-mapping 已在下面统一设置
+                 *  · 这里只需要确保 DV 元数据不被丢弃
+                 */
+                MPVLib.setPropertyBoolean("vd-lavc-dr", true)
+                android.util.Log.i("ETKN-Mpv", "DV 源 → 交给 mpv 原生 DV 处理（不设不存在的属性）")
             }
         }
         runCatching {

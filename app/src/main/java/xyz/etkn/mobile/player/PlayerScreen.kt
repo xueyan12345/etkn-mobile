@@ -213,8 +213,24 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 外层再 rotationZ=90 只会让 UI 转、画面不转 → 更乱。
      * 所以 mpv 激活时把画布旋转让出来，由 mpv 自己把画面铺满屏幕。
      */
-    val mpvActive = player is MpvPlayer
-    val needsCanvasRotation = canvasCapable && !mpvActive
+    /**
+     * 用户口径（2026-11-26）**mpv 也走画布旋转，但 video-rotate 必须为 0**。
+     *
+     * 日志铁证（1.4.8，两个错误叠在一起）：
+     *   ETKN-Mpv: video-rotate=90           ← 我让 mpv 自己转了 90°
+     *   round=1 want=L real=P ok=false gate=false canvasRotate=true
+     *                                        ← 画布也在转（rotated=true）
+     *   → **两层叠加 = 界面横排 + 画面又转 90° = 画面躺着的（用户截图）**
+     *
+     * 现在的做法：
+     *  · 画布旋转照常开（rotated=true）→ 界面按横屏排布、SurfaceView 的**布局框**也被转
+     *  · mpv 的 video-rotate 设 **0**（不再让它自己转）
+     *  两层只转一次 → 界面和画面方向一致。
+     *
+     * （SurfaceView 的内容不参与 View 树旋转，但它的布局框会跟着转，
+     *   所以框已经是横屏的，内容按框绘制即可，不需要再转。）
+     */
+    val needsCanvasRotation = canvasCapable
     /**
      * 用户口径（2026-11-23）**起播方向必须一开始就是横屏**。
      *
@@ -711,9 +727,35 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                  * 需要横屏时转 90°，竖屏视频时不转。
                  */
                 /**
-                 * `portrait` 为 null 时按「横屏视频」处理（起播默认横屏）。
+                 * 用户口径（2026-11-26）**mpv 不做 video-rotate**。
+                 *
+                 * 上一版给 mpv 设了 video-rotate=90°，结果画面转了但界面没转：
+                 * 截图实证「界面竖排、画面横躺、字幕竖排」——方向更乱了。
+                 *
+                 * 正确理解：
+                 *  · 外层画布已经在做 rotationZ=90（为了让整机横过来）
+                 *  · mpv 的 SurfaceView 是独立图层，外层旋转对它无效
+                 *  · 如果再让 mpv 自己转，就变成「只转画面不转界面」
+                 *
+                 * 所以正确做法是：**把画布的横屏尺寸直接给 mpv**，
+                 * 让它在横屏坐标系里绘制画面 —— 界面和画面就都对了。
+                 * 下面 modifier 用 canvasW/canvasH 保证尺寸是横屏的。
                  */
-                val mpvRotate = if (canvasCapable && forceRotate && portrait != true) 90 else 0
+                /**
+                 * 用户口径（2026-11-26）：mpv 的旋转角度必须和外层画布一致。
+                 * 外层 rotationZ=90（横屏）→ mpv video-rotate 也 90；
+                 * 竖屏视频（portrait==true）→ 两者都不转。
+                 */
+                /**
+                 * 用户口径（2026-11-26）**mpv 的 video-rotate 固定 0**。
+                 *
+                 * 原因：外层画布已经做了 rotationZ=90（见上面 rotated），
+                 * 如果 mpv 再自己转 90°，就是 180° 叠加 → 画面躺着的。
+                 *
+                 * 日志实证：1.4.8 里 video-rotate=90 + canvasRotate=true 同时出现，
+                 * 用户截图就是「界面横排、画面躺」。
+                 */
+                val mpvRotate = 0
                 AndroidView(
                     factory = { (core.view.parent as? ViewGroup)?.removeView(core.view); core.view },
                     update = {

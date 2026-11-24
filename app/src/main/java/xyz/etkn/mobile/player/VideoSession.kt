@@ -364,20 +364,23 @@ class VideoSession(
                      *
                      * 实测依据：mpv 在这台平板上能正常出画（ready 1569ms）。
                      */
-                    if (dv5 && engine == Engine.Exo && forcedEngine == null && autoSwitchAllowed) {
-                        android.util.Log.i(TAG, "DV profile5 → 切 mpv（避免偏绿）")
-                        /**
-                         * 先把这个标记挂到「下次创建的 mpv 实例」上，
-                         * 否则 mpv 起来时不知道这是 DV 源，会按普通 HEVC 解释 → 偏绿。
-                         */
-                        pendingDvSource = true
-                        forcedEngine = Engine.Mpv
-                        val cur = source
-                        val pos = player?.currentPosition ?: 0L
-                        if (cur != null) {
-                            main.post { if (!released && source === cur) playSource(cur, pos) }
-                        }
-                    }
+                    /**
+                     * 用户口径（2026-11-26）**DV profile 5 不再切 mpv**。
+                     *
+                     * 实测结论（用户逐内核验证）：
+                     *  · Exo：横屏正常，但偏色
+                     *  · mpv：画面方向错乱，也偏色
+                     *
+                     * 也就是说偏色不是「哪个内核对」的问题，是**色彩链路**的问题：
+                     * profile 5 的 SPS 里没有色彩信息（color=NA/NA/NA），
+                     * 颜色只能靠 DV 元数据（IPTPQc2），
+                     * 而平板走纹理视图时这一层元数据丢失 → 两个内核都偏色。
+                     *
+                     * 所以这里不再切内核（切了也偏色，反而把横屏搞坏）。
+                     * 偏色的正确解法是「让解码器输出 SDR」，
+                     * 见下面 maybeDisableDvForSdr()。
+                     */
+                    if (dv5) android.util.Log.i(TAG, "DV profile5：保留当前内核（切核不解决偏色）")
                 }
                 if (dv != _isDolbyVision.value) {
                     android.util.Log.i(TAG, "dolby-vision detected=$dv → ${if (dv) "SurfaceView（放弃画布旋转，优先出画）" else "TextureView"}")
