@@ -56,6 +56,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlin.math.abs
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.LaunchedEffect
 
 /**
  * False while a tab sits in the pager without being the page shown: the neighbours are composed
