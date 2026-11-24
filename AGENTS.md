@@ -68,6 +68,6 @@
 ## 版本管理
 
 - 每个版本写 `release_notes_vX.Y.Z.md`（简体中文，用户可见），打 tag 时用 `git tag -a v1.2.X -F release_notes_v1.2.X.md`。
-- 版本号每档 1-10 递增（1.1.1~1.1.10 → 1.2.1~1.2.10），`baseVersionCode` 与 `baseVersionName` 在 `app/build.gradle.kts`。
+- **版本号每档从 .0 开始、末位 0-10 递增，满 10 进下一位**：`1.2.10 → 1.3.0 → 1.3.1 → … → 1.3.10 → 1.4.0`。当前在 `1.2.26`，**下一个版本从 `1.3.0` 开始**。`baseVersionCode` 与 `baseVersionName` 在 `app/build.gradle.kts`。
 - 发布只告知版本号，不发 APK 文件（用户在 App 内自行更新）。
 - **一次改动做完再发版**：不要为单个小问题连续发多个版本，用户明确要求「下次更新直接都做完了再发版」。
