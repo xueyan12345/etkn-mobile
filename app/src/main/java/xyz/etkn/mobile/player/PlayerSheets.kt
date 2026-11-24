@@ -70,6 +70,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.fillMaxSize
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 @Composable
 internal fun PlayerSheet(
@@ -288,28 +291,40 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
          * 所以这里必须按 StartIndex 翻完整季，否则长剧（蜡笔小新 2377 集）
          * 只能看到前 80 集，当前集之前的集全都看不到。
          */
-        episodes = runCatching {
+        /**
+         * 注意：`runCatching` 的 lambda 不是 suspend 作用域，
+         * 里面不能直接用 coroutineScope / async（编译会报
+         * "Cannot infer type" / "'async' can not be called without the corresponding coroutine scope"）。
+         * 所以外层用 try/catch，并发放在 suspend 的 coroutineScope 里。
+         */
+        episodes = try {
             val first = graph.api.episodePage(seriesId, current.seasonId, start = 0, limit = EPISODE_PAGE)
             val total = maxOf(first.total, first.items.size)
             val restStarts = (first.items.size until total step EPISODE_PAGE).toList()
-            val rest = if (restStarts.isEmpty()) emptyList() else kotlinx.coroutines.coroutineScope {
-                restStarts.map { start ->
-                    kotlinx.coroutines.async {
-                        runCatching {
-                            graph.api.episodePage(seriesId, current.seasonId, start = start, limit = EPISODE_PAGE).items
-                        }.getOrDefault(emptyList())
-                    }
-                }.awaitAll()
+            val rest: List<List<Item>> = if (restStarts.isEmpty()) {
+                emptyList()
+            } else {
+                coroutineScope {
+                    restStarts.map { start ->
+                        async {
+                            runCatching {
+                                graph.api.episodePage(seriesId, current.seasonId, start = start, limit = EPISODE_PAGE).items
+                            }.getOrDefault(emptyList())
+                        }
+                    }.awaitAll()
+                }
             }
             (listOf(first.items) + rest)
-                .filter { it.isNotEmpty() }
-                .sortedBy { it.firstOrNull()?.indexNumber ?: Int.MAX_VALUE }
+                .filter { page -> page.isNotEmpty() }
+                .sortedBy { page -> page.firstOrNull()?.indexNumber ?: Int.MAX_VALUE }
                 .flatten()
                 .let { all ->
                     val seen = HashSet<String>(all.size)
                     all.filter { seen.add(it.id) }
                 }
-        }.getOrDefault(emptyList())
+        } catch (error: Exception) {
+            emptyList()
+        }
     }
     Text(current.seasonName ?: "选集", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
     val list = episodes
