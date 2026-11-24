@@ -746,10 +746,11 @@ class VideoSession(
                  * 用户口径（2026-11-24）：把下一集的片头结束位置和总时长记下来，
                  * 供「片头优先」的预加载量计算（片头后 1 分钟不受配额限制）。
                  */
-                nextIntroEndMs = info.chapters
+                // chapters / runTimeTicks 都在 MediaSource 上，不在 PlaybackInfo
+                nextIntroEndMs = source.chapters
                     .firstOrNull { it.markerType == "IntroEnd" }
                     ?.startTicks?.div(TICKS_PER_MS) ?: -1L
-                nextDurationMs = info.runTimeTicks.takeIf { it > 0 }?.div(TICKS_PER_MS) ?: 0L
+                nextDurationMs = source.runTimeTicks.takeIf { it > 0 }?.div(TICKS_PER_MS) ?: 0L
                 PlaybackCache.pipeline(
                     context = graph.app,
                     settings = settings,
