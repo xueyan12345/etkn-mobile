@@ -324,15 +324,42 @@ object PlaybackCache {
             }
         }
 
-        // 拉满整集 → 转正
-        val reachedEnd = total != Long.MAX_VALUE && have >= total
+        /**
+         * 用户口径（2026-11-26）**修「缓冲条已经到最后了，下一集还是没预加载」**。
+         *
+         * 旧判定：`reachedEnd = have >= total` —— 要求**整集字节数全部下载完**。
+         * 但这是滑动窗口：窗口大小 = min(时间窗口, 大小窗口)，
+         * 正常情况下永远不会把整集拉满（用户设的是 400MB / 1200 秒，不是「整集」）。
+         * 于是 `reachedEnd` 永远 false → 预加载永远不触发。
+         *
+         * 用户的口径是：**从当前播放位置往后，已经没有可以缓冲的地方了**，
+         * 就算这一集缓冲完成。这等价于「窗口右边界已经顶到片尾」。
+         *
+         * 现在按这个判定：
+         *  · 已经能确定总长（total 有效）且窗口右边界 wantBytes 顶到 total → 完成
+         *  · 或者实际已下载量 have 顶到 total（真拉满）→ 完成
+         *  · 总长未知（total == MAX_VALUE）且无法判断 → 用「当前位置已是末尾附近」兜底
+         *    （positionMs 距片尾 < 5 秒且这一轮没有新的可下载量）
+         */
+        val reachedEnd = when {
+            total != Long.MAX_VALUE && wantBytes >= total -> true
+            total != Long.MAX_VALUE && have >= total -> true
+            // 总长未知时：播放位置已经很靠后，且这一轮没再下到东西 → 认为无可缓冲
+            total == Long.MAX_VALUE && durationMs > 0 && positionMs >= durationMs - 5_000 && have == 0L -> true
+            else -> false
+        }
         if (reachedEnd) {
-            runCatching { part.renameTo(target) }
-            runCatching { trim(context, settings, protect = target) }
+            // 真拉满了才转正；只是窗口顶到片尾时保留 .part（下次还要接着用）
+            if (total != Long.MAX_VALUE && have >= total) {
+                runCatching { part.renameTo(target) }
+                runCatching { trim(context, settings, protect = target) }
+            } else {
+                runCatching { trim(context, settings, protect = part) }
+            }
             return@withLock true
         }
         runCatching { trim(context, settings, protect = part) }
-        // 没到片尾：本次窗口到位就算「这一轮完成」，但不代表整集完成
+        // 窗口还没顶到片尾：本轮结束，等下次 tick 继续推
         return@withLock false
     }
 
@@ -551,7 +578,17 @@ object PlaybackCache {
                     client, context, settings, currentEpisodeId, currentUrl,
                     currentPositionMs, currentDurationMs, currentLength,
                 )
-                currentComplete = currentAtEnd
+                /**
+                 * 用户口径（2026-11-26）**别把 tickCache 判定的「已完成」冲掉**。
+                 *
+                 * tickCache 会按真实落盘位置直接写 currentComplete = true（见 markCurrentComplete）。
+                 * 但这里如果无条件赋值，本轮 pullWindow 恰好返回 false 就会把它改回 false，
+                 * 两个写入者互相覆盖，气泡时亮时不亮。
+                 *
+                 * 现在只在「本轮判定为完成」时才置 true，绝不主动置 false
+                 * （取消完成由 clearReady() 在切集时统一处理）。
+                 */
+                if (currentAtEnd) currentComplete = true
                 // 还没到片尾 → 本轮结束，等下次 tick 继续推窗口
                 if (!currentAtEnd) return@launch
 
@@ -561,7 +598,7 @@ object PlaybackCache {
                 // 第二环：当前集已到片尾 → 立刻预加载下一集
                 nextEpisodeId = n.itemId
                 nextComplete = false
-                val nextLength = probeLength(n.url)
+                val nextLength = probeLength(client, n.url)
                 preloadNextEpisode(
                     client, context, settings, n.itemId, n.url,
                     nextLength, n.introEndMs, n.durationMs,
@@ -591,9 +628,20 @@ object PlaybackCache {
      * 探不到返回 -1（调用方按「位置 + 窗口」估算）。
      * 注：DefaultHttpDataSource 不暴露 contentLength()，所以直接用 OkHttp。
      */
-    private fun probeLength(url: String): Long = runCatching {
+    /**
+     * 探资源总字节数：用 HTTP HEAD 读 Content-Length。
+     *
+     * 用户口径（2026-11-26）**必须复用带认证的 client**。
+     * 旧实现自己 `OkHttpClient()` 新建一个裸客户端，请求不带 X-Emby-Token →
+     * 服务端返 403 → 拿不到 Content-Length → 返回 -1 →
+     * 调用方按 total = MAX_VALUE 处理 → `reachedEnd` 永远 false →
+     * 下一集预加载永远不触发（这正是「缓冲条到底了气泡还不亮」的一半原因）。
+     *
+     * 现在用传进来的 [client]（和播放器/下载同一个、带认证的实例）。
+     */
+    private fun probeLength(client: OkHttpClient, url: String): Long = runCatching {
         val request = okhttp3.Request.Builder().url(url).head().build()
-        okhttp3.OkHttpClient().newCall(request).execute().use { response ->
+        client.newCall(request).execute().use { response ->
             response.header("Content-Length")?.toLongOrNull() ?: -1L
         }
     }.getOrDefault(-1L)
@@ -607,7 +655,7 @@ object PlaybackCache {
         if (writing.containsKey(key)) return
         writing[key] = workScope.launch {
             try {
-                pullWindow(mediaClient, context, settings, episodeId, url, 0L, 0L, probeLength(url))
+                pullWindow(mediaClient, context, settings, episodeId, url, 0L, 0L, probeLength(mediaClient, url))
                 nextEpisodeId = episodeId
                 nextComplete = true
                 trim(context, settings)

@@ -198,6 +198,8 @@ class VideoSession(
      * 没有片头数据时 introEndMs = -1，退回纯配额。
      */
     private var nextIntroEndMs: Long = -1L
+    /** 正在取下一集直链（避免 tick 每 5 秒重复发起）。 */
+    private var nextFetching = false
     private var nextDurationMs: Long = 0L
     private var autoSkippedIntro = false
     private var autoSkippedCredits = false
@@ -645,6 +647,21 @@ class VideoSession(
          */
         if (positionMs <= 0) return
 
+        /**
+         * 用户口径（2026-11-26）**修「下一集预加载永远不发生」的另一半原因**。
+         *
+         * `startNextIfIdle` 这个函数在整个工程里**零调用**（死代码），
+         * 而下一集的直链 `nextUrl` 只在它里面被设置。
+         * 于是 nextUrl 永远是 null → 传给 pipeline 的 next 恒为 null →
+         * pipeline 里 `val n = next ?: return@launch` 直接返回 →
+         * 预加载根本不会发生。
+         *
+         * 这里在每次 tick 时确保 nextUrl 已经取到（取过一次就不重复取）。
+         */
+        if (settings.preloadNext && nextUrl == null) {
+            startNextIfIdle(currentItem)
+        }
+
         val length = currentLength
         scope.launch {
             /**
@@ -750,7 +767,10 @@ class VideoSession(
         // 「预加载下一集」开关：只管下一集，和当前集的缓存窗口无关
         if (!settings.preloadNext) return
         val nextItem = _ui.value.next ?: return
+        // 已经取过这一集的直链就不再重复取
         if (nextUrl?.first == nextItem.id) return
+        if (nextFetching) return
+        nextFetching = true
         scope.launch {
             runCatching {
                 val info = api.playbackInfo(nextItem.id)
@@ -783,6 +803,7 @@ class VideoSession(
                     ),
                 )
             }
+            nextFetching = false
         }
     }
 
