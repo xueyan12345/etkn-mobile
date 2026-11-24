@@ -551,13 +551,27 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                  * 用户口径（2026-11-23）：**图下必须有纯黑粗体剧名**（参考图第②行）。
                  * 单集页这里显示剧名（seriesName），系列页显示本剧名。
                  */
-                Text(
-                    item.seriesName?.takeIf { item.isEpisode || item.isSeason } ?: item.name,
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                /**
+                 * 用户口径（2026-11-26）**分级等级徽章（OfficialRating）挪到剧名后面**。
+                 *
+                 * 原来它在元数据区里，排在「日期 / 时长」下面单独一行。
+                 * 现在跟剧名同一行：剧名占满左侧，分级小徽章紧跟在剧名右边。
+                 * 剧名太长时徽章仍在行末（Row 里剧名 weight(1f) 先占满再让位）。
+                 */
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        item.seriesName?.takeIf { item.isEpisode || item.isSeason } ?: item.name,
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    item.officialRating?.takeIf { it.isNotBlank() }?.let {
+                        Spacer(Modifier.width(8.dp))
+                        RatingBadge(it)
+                    }
+                }
                 /**
                  * 用户口径（2026-11-24）：**「S1:E8 - 集名」从头部移走**。
                  *
@@ -658,8 +672,10 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
             formatRuntime(item.runtimeMs)?.let {
                 Text(it, style = MaterialTheme.typography.labelLarge, color = muted)
             }
-            item.officialRating?.let { RatingBadge(it) }
             /**
+             * 用户口径（2026-11-26）：分级徽章已挪到剧名那一行（见 DetailHeader），
+             * 这里不再重复渲染。
+             *
              * 用户口径（2026-11-23）：**「制作中」状态标记删掉**（参考图红圈里要去掉的内容）。
              * 原来这里是 item.statusLabel?.takeIf { item.isSeries }。
              */

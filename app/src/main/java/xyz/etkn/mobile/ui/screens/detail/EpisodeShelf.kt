@@ -93,102 +93,79 @@ internal fun EpisodeShelf(
      * 用户口径（2026-11-24）：两者一起从 180dp 缩到 160dp。
      */
     val cardWidth = 160.dp
-    // Position to scroll to once it is loaded (range chips, jump to last).
-    var pending by remember { mutableIntStateOf(-1) }
+    /**
+     * 用户口径（2026-11-26）**选集滚动逻辑整体重写（第三次，这次动的是架构不是参数）**。
+     *
+     * 前两次失败的共同原因：一直在「怎么算区间 / 怎么算下标」上打补丁，
+     * 但没解决「列表里到底有没有这一集」和「什么时候滚才有效」这两件事。
+     *
+     * 录屏实测到的两个现象，对应两个不同的坏点：
+     *  ① 点 421-440 chip：绿色阴影没落到 421-440
+     *     → chip 的选中判定和滚过去的目标不是同一个值
+     *  ② 点 462 集：横条跳到最开头 E80 那块
+     *     → 目标集根本不在已加载列表里（positionOf 找不到 → 退回 0）
+     *
+     * 现在统一规则：
+     *  · **所有定位都以「集号」为准**（1-based），不再用列表下标
+     *  · 滚之前先 `list.ensureNumber(n)` 把那一集加载进来
+     *  · 滚的触发条件绑定「数据里已经有这一集」，数据没到就不滚（避免滚到 0）
+     *  · chip 高亮 = 当前集所在区间（setSelection），与滚动解耦
+     */
+    var pendingNumber by remember { mutableIntStateOf(-1) }
     val ranges = if (state.total > RANGE + RANGE / 2) (state.total + RANGE - 1) / RANGE else 0
+
+    /** 当前集所在区间（1-based）。 */
+    val currentRange = ((currentNumber ?: 1) - 1).coerceAtLeast(0) / RANGE
+
     /**
-     * 用户口径（2026-11-26）**修「单集页点其他集，选集分页区间乱跳」**。
-     *
-     * 现象：《蜡笔小新》S1E417（分页 401-420）点 E419 后，
-     * 集标题正确切到 E419，但分页选中项跳到 61-80、横条显示 E77-E80。
-     *
-     * 根因：这里原来写的是
-     *     row.firstVisibleItemIndex / RANGE
-     * `firstVisibleItemIndex` 是**当前已加载列表里的下标**，不是全局集号。
-     * 蜡笔小新 1200+ 集、列表只按需加载了一部分，
-     * 切集之后 `items` 的子集和滚动位置一变，下标记就算到了别的区间。
-     *
-     * 正确算法：用当前集在全集中的**集号**（IndexNumber）算区间，
-     * 而不是已加载列表里的下标。
+     * 用户点 chip / 跳首尾时记录的「想去的集号」。
+     * 只有当这一集真的进了列表、且能算出下标时，才执行滚动。
      */
+    fun jumpToNumber(number: Int) {
+        pendingNumber = number.coerceAtLeast(1)
+        list.ensureNumber(number)
+    }
+
     /**
-     * 用户口径（2026-11-26）**第二次修「选集分页乱跳」**。
-     *
-     * 上一版改成用 `state.items` 里当前集的 indexNumber 算，仍然会闪：
-     * 切集瞬间 `state.items` 还是旧数据（新集所在页还没加载），
-     * 算出来就是旧集号 → 分页先跳到错误区间，等数据到了再跳回来。
-     * 录屏实测到的就是：「1261-1280 → 1081-1100 → 又回 1261-1280」。
-     *
-     * 现在改为**直接由传进来的 currentNumber 算**，完全不依赖列表加载状态：
-     *  · 切集瞬间 currentNumber 立刻就是新集的真实集号
-     *  · 一次就算对，不会先跳错误区间再纠正
-     *  · 拿不到 currentNumber 时才退回按滚动位置
+     * ① 数据到位后滚动到目标集。
+     * 以 `state.items` 和 `pendingNumber` 为 key：任何一边变了都重新判断，
+     * 但只要那一集还没进列表就什么都不做（关键：不会像以前那样滚到 0）。
      */
-    val range by remember(currentNumber, currentId) {
-        derivedStateOf {
-            val number = currentNumber
-            if (number != null && number > 0) {
-                ((number - 1) / RANGE).coerceAtLeast(0)
-            } else {
-                row.firstVisibleItemIndex / RANGE
-            }
+    LaunchedEffect(pendingNumber, state.items, currentId) {
+        val number = if (pendingNumber > 0) pendingNumber else currentNumber ?: return@LaunchedEffect
+        val at = list.positionOfNumber(number)
+        if (at >= 0) {
+            // 目标集放在左起第 2 格（左边留一集，右边露出下一集，方便连续点）
+            row.animateScrollToItem((at - 1).coerceAtLeast(0))
+            pendingNumber = -1
+        } else {
+            // 还没加载到 → 继续补（幂等，加载完会再次进入本 effect）
+            list.ensureNumber(number)
         }
     }
 
     /**
-     * 用户口径（2026-11-26）：jump 统一按「位置」语义，但调用方传进来的
-     * 是「集号 - 1」这种全局序号。列表是全集时两者等价；
-     * 是子集时用 loadThrough 把目标位置所在页拉进来，再滚过去。
+     * ② 切集（单集页原地换集）时让选集跟随当前集。
+     *
+     * 只在没有待处理的跳转时执行，避免和 ① 抢滚动位置。
      */
-    fun jump(index: Int) {
-        val at = index.coerceAtLeast(0)
-        pending = at
-        list.loadThrough(at)
-    }
-
-    /** 按「集号」跳（用于区间 chip）：换算成位置后复用 jump。 */
-    fun jumpToNumber(number: Int) = jump((number - 1).coerceAtLeast(0))
-
-    LaunchedEffect(state.seasonId, state.anchorIndex >= 0) {
-        if (state.anchorIndex >= 0) row.scrollToItem(state.anchorIndex)
-    }
-    /**
-     * 用户口径（2026-11-23，照抄参考视频）**切集时选集要自动跟随**。
-     *
-     * 参考应用的行为（逐集从 1 点到 25 实测）：
-     *  · 目标集在当前可见的一屏内 → 列表横向位置**不动**，只移高亮；
-     *  · 目标集跨出可见范围 → 自动横向滚动，把目标集带到可点位置；
-     *  · 而且保证**下一集也在手边**，可以连续点下去不停。
-     *
-     * 之前完全没有这个逻辑：切到后面的集，当前集早就滚出屏幕，用户得自己找。
-     */
-    /**
-     * 用户口径（2026-11-24）**整条平滑平移一张卡**（照参考视频）。
-     *
-     * 参考视频的手感：点第 4 集 → 整条横条平滑左移一张卡的宽度，
-     * 第 4 集滑到第 3 集原来的位置，第 5 集滑到第 4 集原来的位置；点前一集反向。
-     *
-     * 实现要点：
-     *  · 关键是「目标集永远停在同一个锚点位置」，而不是「只要可见就不动」
-     *  · 每次切换都用同一套动画曲线（MaterialTheme 的 spatial spec），
-     *    快慢一致才有连续的平移感
-     *  · 锚点取「让当前集出现在第 2 格」（左边留一格，右边能看到下一集）
-     */
-    LaunchedEffect(currentId, state.items.size) {
-        val index = state.items.indexOfFirst { it.id == currentId }
-        if (index < 0) return@LaunchedEffect
-        // 锚点：目标集显示在左起第 2 个位置（留一格给上一集，右边露出下一集）
-        val anchorOffset = 1
-        val target = (index - anchorOffset).coerceAtLeast(0)
-        row.animateScrollToItem(target, scrollOffset = 0)
-    }
-    LaunchedEffect(pending, state.items.size) {
-        if (pending in state.items.indices) {
-            row.animateScrollToItem(pending)
-            pending = -1
+    LaunchedEffect(currentId, currentNumber, state.items) {
+        if (pendingNumber > 0) return@LaunchedEffect
+        val number = currentNumber ?: return@LaunchedEffect
+        val at = list.positionOfNumber(number)
+        if (at < 0) {
+            list.ensureNumber(number)
+            return@LaunchedEffect
         }
+        // 目标集在第 2 格位置（与 ① 一致，切集手感统一）
+        row.animateScrollToItem((at - 1).coerceAtLeast(0))
     }
-    LaunchedEffect(range, ranges) { if (ranges > 0) chips.animateScrollToItem((range - 1).coerceAtLeast(0)) }
+
+    /** ③ 区间 chip 栏跟着当前区间走。 */
+    LaunchedEffect(currentRange, ranges) {
+        if (ranges > 0) chips.animateScrollToItem((currentRange - 1).coerceAtLeast(0))
+    }
+
     val nearEnd by remember { derivedStateOf { (row.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= row.layoutInfo.totalItemsCount - 6 } }
     LaunchedEffect(nearEnd, state.hasMore) { if (nearEnd && state.hasMore) list.more() }
 
@@ -196,17 +173,26 @@ internal fun EpisodeShelf(
         Row(Modifier.fillMaxWidth().padding(start = Etkn.space.screen - 4.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             SeasonTitle(seasons, state.seasonId, onSeason, Modifier.weight(1f))
             if (state.total > 1) {
-                IconButton(onClick = { jump(0) }) { Icon(Icons.Rounded.FirstPage, "第一集") }
-                IconButton(onClick = { jump(state.total - 1) }) { Icon(Icons.Rounded.LastPage, "最后一集") }
+                // 用户口径（2026-11-26）：首尾跳转同样按集号（1-based），不走列表下标
+                IconButton(onClick = { jumpToNumber(1) }) { Icon(Icons.Rounded.FirstPage, "第一集") }
+                IconButton(onClick = { jumpToNumber(state.total.coerceAtLeast(1)) }) { Icon(Icons.Rounded.LastPage, "最后一集") }
             }
             TextButton(onClick = onAll) { Text("全部") }
         }
         if (ranges > 1) {
             LazyRow(state = chips, contentPadding = PaddingValues(horizontal = Etkn.space.screen), horizontalArrangement = Arrangement.spacedBy(PillGap)) {
                 items(ranges) { index ->
-                    val start = index * RANGE + 1
-                    PillToggle(checked = index == range, onClick = { jumpToNumber(index * RANGE + 1) }) {
-                        Text("$start-${minOf(start + RANGE - 1, state.total)}")
+                    val rangeStart = index * RANGE + 1
+                    /**
+                     * 用户口径（2026-11-26）：高亮用「当前集所在区间」，
+                     * 点击也传「该区间的第一集集号」，两者同源，不会再出现
+                     * 「点了 421-440 但阴影没落上去」。
+                     */
+                    PillToggle(
+                        checked = index == currentRange,
+                        onClick = { jumpToNumber(rangeStart) },
+                    ) {
+                        Text("$rangeStart-${minOf(rangeStart + RANGE - 1, state.total)}")
                     }
                 }
             }
