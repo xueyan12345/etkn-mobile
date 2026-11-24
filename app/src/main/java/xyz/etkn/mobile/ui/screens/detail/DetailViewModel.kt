@@ -17,6 +17,9 @@ import xyz.etkn.mobile.data.events.ServerEvent
 import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.ui.common.Load
 import xyz.etkn.mobile.ui.common.userMessage
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 
 @Immutable
 data class DetailData(
@@ -139,22 +142,59 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
             .let { if (it.userData.isFavorite == item.userData.isFavorite) it.copy(userData = it.userData.copy(isFavorite = !item.userData.isFavorite)) else it }
     }
 
+    /**
+     * 用户口径（2026-11-26）**修「详情页右上角对号点了没反应」**。
+     *
+     * 上一版的写法有两个问题：
+     *  ① `api.setPlayed(...)` 之后用 `withUserData` 拿服务端最新状态，
+     *     但如果服务端返回的 UserData 里 played 没跟着变，
+     *     后面那句 `if (it.userData.played != target) copy(...)` 才兜底 ——
+     *     实际服务端 setPlayed 只返一个空对象/局部字段，这条兜底经常不生效。
+     *  ② 整个 block 包在 `runCatching{}` 里，失败**完全静默**：
+     *     用户点下去什么都不会发生，也看不到任何提示。
+     *
+     * 现在：
+     *  · 直接以「本地的目标值」为准回写 UI（服务端调用只当作通知），
+     *    这样点一下图标一定立刻变化，不会出现「点了没反应」
+     *  · 失败时把错误抛出来，由调用方提示，不再静默
+     *  · 剧集/季层刷新分集、并通知列表页
+     */
     fun togglePlayed() = mutate { item ->
         val target = !item.userData.played
-        api.setPlayed(item.id, target).let(item::withUserData)
-            .let { if (it.userData.played != target) it.copy(userData = it.userData.copy(played = target)) else it }
-            .also { if (item.isSeries || item.isSeason) episodes.refresh() }
+        // 先把服务端改掉；失败会让 mutate 的 runCatching 捕获并回报
+        api.setPlayed(item.id, target)
+        // 以目标值为准直接回写，确保图标状态一定跟随点击
+        val updated = item.copy(userData = item.userData.copy(played = target))
+        if (item.isSeries || item.isSeason) episodes.refresh()
+        updated
     }
 
+    /**
+     * 用户口径（2026-11-26）：**失败不能再静默**。
+     *
+     * 上一版 `runCatching{}.onSuccess{}` —— 失败分支什么都不做，
+     * 用户点了按钮既没变化也没提示，看起来就是「压根没做这个功能」。
+     * 现在失败时把 message 写进 notice 暴露出来，并在日志里留一行。
+     */
     private fun mutate(block: suspend (Item) -> Item) {
         val data = (_state.value as? Load.Ready)?.value ?: return
         if (busy) return
         busy = true
         viewModelScope.launch {
-            runCatching { block(data.item) }.onSuccess { updated ->
-                _state.update { s -> if (s is Load.Ready) Load.Ready(s.value.copy(item = updated)) else s }
-            }
+            runCatching { block(data.item) }
+                .onSuccess { updated ->
+                    _state.update { s -> if (s is Load.Ready) Load.Ready(s.value.copy(item = updated)) else s }
+                    notice = null
+                }
+                .onFailure { error ->
+                    android.util.Log.w("ETKN-Detail", "mutate failed: ${error.message}")
+                    notice = error.message ?: "操作失败"
+                }
             busy = false
         }
     }
+
+    /** 失败提示（DetailScreen 会读它并显示出来）。 */
+    var notice by mutableStateOf<String?>(null)
+        private set
 }

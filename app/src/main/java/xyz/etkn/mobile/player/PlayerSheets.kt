@@ -256,9 +256,26 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
     val current = ui.item ?: return
     val seriesId = current.seriesId ?: return
     val graph = LocalContext.current.graph
-    var episodes by remember(current.seasonId) { mutableStateOf<List<Item>?>(null) }
-    LaunchedEffect(current.seasonId) {
-        episodes = runCatching { graph.api.episodePage(seriesId, current.seasonId, start = 0, limit = 200).items }.getOrDefault(emptyList())
+    /**
+     * 用户口径（2026-11-26）**修「选集菜单打开定位不到当前集」**。
+     *
+     * 根因：原来固定 `start = 0, limit = 200` —— 只拉前 200 集。
+     * 《蜡笔小新》有 1200+ 集，当前播到 1265，列表里根本没有它，
+     * 所以 `indexOfFirst { it.id == current.id }` 返回 -1 → 定位到第 0 条。
+     * 用户在截图里看到停在 1075-1081，就是「只加载了前 200 条」的后果。
+     *
+     * 修法：用服务端的 `AnchorId` 以当前集为锚点请求，
+     * 拿到的是「当前集前后各若干集」，当前集一定在结果里，定位就准了。
+     */
+    var episodes by remember(current.seasonId, current.id) { mutableStateOf<List<Item>?>(null) }
+    LaunchedEffect(current.seasonId, current.id) {
+        episodes = runCatching {
+            graph.api.episodePage(
+                seriesId, current.seasonId,
+                anchorId = current.id,
+                limit = 200,
+            ).items
+        }.getOrDefault(emptyList())
     }
     Text(current.seasonName ?: "选集", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
     val list = episodes
@@ -267,8 +284,32 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
         return
     }
     val urls = images()
-    val listState = rememberLazyListState(list.indexOfFirst { it.id == current.id }.coerceAtLeast(0))
-    LazyColumn(state = listState, contentPadding = PaddingValues(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    /**
+     * 用户口径（2026-11-26）：当前集不要顶在第 0 条，往上留几条，
+     * 这样「当前集 + 它上面几集 + 下面几集」都能一眼看到。
+     */
+    val currentIndex = list.indexOfFirst { it.id == current.id }
+    val listState = rememberLazyListState(
+        (currentIndex - 3).coerceAtLeast(0),
+    )
+    /**
+     * 展开后再校正一次：数据异步到达时上面的初值可能还算不出来，
+     * 这里等 list 变化后主动滚一次，保证一定落在当前集附近。
+     */
+    LaunchedEffect(list.size, current.id) {
+        if (currentIndex >= 0) listState.scrollToItem((currentIndex - 3).coerceAtLeast(0))
+    }
+    /**
+     * 用户口径（2026-11-26）：`Modifier.weight(1f)` 让列表在面板高度上限内
+     * 占满剩余空间。不加 weight 时 LazyColumn 在「按内容包裹」的父容器里
+     * 会被量成刚好装下全部内容，滚动与惯性都会失效（OPPO 平板上表现为只能一格格扒）。
+     */
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.weight(1f),
+        contentPadding = PaddingValues(horizontal = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         items(list, key = { it.id }) { episode ->
             val selected = episode.id == current.id
             Row(

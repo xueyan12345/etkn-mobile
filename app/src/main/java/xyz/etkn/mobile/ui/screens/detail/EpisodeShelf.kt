@@ -88,12 +88,48 @@ internal fun EpisodeShelf(
     // Position to scroll to once it is loaded (range chips, jump to last).
     var pending by remember { mutableIntStateOf(-1) }
     val ranges = if (state.total > RANGE + RANGE / 2) (state.total + RANGE - 1) / RANGE else 0
-    val range by remember { derivedStateOf { row.firstVisibleItemIndex / RANGE } }
-
-    fun jump(index: Int) {
-        pending = index
-        list.loadThrough(index)
+    /**
+     * 用户口径（2026-11-26）**修「单集页点其他集，选集分页区间乱跳」**。
+     *
+     * 现象：《蜡笔小新》S1E417（分页 401-420）点 E419 后，
+     * 集标题正确切到 E419，但分页选中项跳到 61-80、横条显示 E77-E80。
+     *
+     * 根因：这里原来写的是
+     *     row.firstVisibleItemIndex / RANGE
+     * `firstVisibleItemIndex` 是**当前已加载列表里的下标**，不是全局集号。
+     * 蜡笔小新 1200+ 集、列表只按需加载了一部分，
+     * 切集之后 `items` 的子集和滚动位置一变，下标记就算到了别的区间。
+     *
+     * 正确算法：用当前集在全集中的**集号**（IndexNumber）算区间，
+     * 而不是已加载列表里的下标。
+     */
+    val range by remember(state.items, currentId) {
+        derivedStateOf {
+            val idx = currentId?.let { id -> state.items.indexOfFirst { it.id == id } } ?: -1
+            if (idx >= 0) {
+                // 用该集在整季里的真实序号（从 1 开始），算它属于第几个 20 集区间
+                val number = state.items[idx].indexNumber ?: (idx + 1)
+                ((number - 1) / RANGE).coerceAtLeast(0)
+            } else {
+                // 找不到当前集时退回「按滚动位置」，保持原有行为不至于失效
+                row.firstVisibleItemIndex / RANGE
+            }
+        }
     }
+
+    /**
+     * 用户口径（2026-11-26）：jump 统一按「位置」语义，但调用方传进来的
+     * 是「集号 - 1」这种全局序号。列表是全集时两者等价；
+     * 是子集时用 loadThrough 把目标位置所在页拉进来，再滚过去。
+     */
+    fun jump(index: Int) {
+        val at = index.coerceAtLeast(0)
+        pending = at
+        list.loadThrough(at)
+    }
+
+    /** 按「集号」跳（用于区间 chip）：换算成位置后复用 jump。 */
+    fun jumpToNumber(number: Int) = jump((number - 1).coerceAtLeast(0))
 
     LaunchedEffect(state.seasonId, state.anchorIndex >= 0) {
         if (state.anchorIndex >= 0) row.scrollToItem(state.anchorIndex)
@@ -151,7 +187,7 @@ internal fun EpisodeShelf(
             LazyRow(state = chips, contentPadding = PaddingValues(horizontal = Etkn.space.screen), horizontalArrangement = Arrangement.spacedBy(PillGap)) {
                 items(ranges) { index ->
                     val start = index * RANGE + 1
-                    PillToggle(checked = index == range, onClick = { jump(index * RANGE) }) {
+                    PillToggle(checked = index == range, onClick = { jumpToNumber(index * RANGE + 1) }) {
                         Text("$start-${minOf(start + RANGE - 1, state.total)}")
                     }
                 }

@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.heightIn
 
 /**
  * 用户口径（2026-11-26）**播放器右侧面板 —— 第四版，彻底换实现方式**。
@@ -64,13 +65,27 @@ fun PlayerSidePanel(onDismiss: () -> Unit, content: @Composable () -> Unit) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val panelWidth = (maxWidth * 0.51f).coerceIn(260.dp, 520.dp)
                 val edgeGap = maxWidth * 0.054f
+                /**
+                 * 用户口径（2026-11-26）**修「选集列表只能一格格扒、没有惯性」**（OPPO 平板）。
+                 *
+                 * 根因：面板用了 `wrapContentHeight()` —— 高度等于内容高度。
+                 * 面板里的 LazyColumn 因此被量成「刚好装下所有项」的高度，
+                 * 本身不认为自己可滚动，就没有 fling/惯性，只能靠逐格拖动。
+                 * 手机上内容少、或者外层有额外约束时表现不明显，所以你说手机正常。
+                 *
+                 * 改法：面板高度改为「最多画布高的 88%，按内容包裹」——
+                 * 用 `heightIn(max = ...)` 给一个上限，
+                 * 内容多时面板会被这个上限截住，LazyColumn 在里面正常滚动 + 有惯性；
+                 * 内容少时仍然按内容包裹（不会变成一个空的大框）。
+                 */
+                val maxPanelHeight = maxHeight * 0.88f
                 Box(
                     Modifier
                         // 画布坐标系的「右端」就是用户看到的画面右侧
                         .align(Alignment.CenterEnd)
                         .padding(end = edgeGap)
                         .width(panelWidth)
-                        .wrapContentHeight()
+                        .heightIn(max = maxPanelHeight)
                         .clip(RoundedCornerShape(12.dp))
                         .background(surface.copy(alpha = 0.92f))
                         // 消费面板内部的点击，避免冒泡到下面那层把它关掉

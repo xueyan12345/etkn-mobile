@@ -142,6 +142,7 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Tune
+import xyz.etkn.mobile.data.model.MediaStream
 
 @Composable
 fun DetailScreen(id: String) {
@@ -705,10 +706,48 @@ private fun ActionRow(
     }
     fun play(resume: Boolean) = target?.let { nav.play(it, resume, sourceId = if (it.id == item.id) source else null) }
 
+    /**
+     * 用户口径（2026-11-26）**三条信息常驻，并放在播放按钮行的上方**。
+     *
+     * 层级规则（用户明确）：
+     *  · series（剧集详情页）→ 显示
+     *  · movie（电影详情页）→ 显示
+     *  · episode（单集页）→ 显示
+     *  · season（季详情页）→ **不显示**
+     *
+     * 原来这三条藏在「影片信息」胶囊后面、点开才浮出来 —— 用户要求删掉那个入口，
+     * 三条直接铺在播放按钮上面（「从头播放」那一行的上方）。
+     *
+     * 数据取哪一份：
+     *  · series / season 层要播的是 target（下一集），技术参数应取 target 的版本
+     *  · movie / episode 层就是自己
+     *  所以统一用 techSource(data)（它已经按「选中的版本或下一集」解析好了）。
+     */
+    val showTechRows = item.isSeries || item.isMovie || item.isEpisode
+    val techSrc = techSource(data)
+    // 用户在「版本」里选了哪个源：techSource 已含这个逻辑，这里只用于多版本判断
+    val selectedIndex = data.selectedSource
+
     Column(
         Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen).padding(top = 14.dp),
         horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
     ) {
+        /**
+         * 三条常驻信息（视频 / 音频 / 字幕）—— 在播放按钮行上方。
+         * 有多个选项时可点击展开切换；只有一个时只显示不展开。
+         */
+        if (showTechRows && techSrc != null) {
+            MediaTechRows(
+                item = item,
+                source = techSrc,
+                sourceCount = item.mediaSources.size,
+                selectedIndex = selectedIndex,
+                onSelectSource = { vm.selectSource(it) },
+                onSelected = { /* 音轨/字幕切换在播放器里做，详情页只展示 */ },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+
         // 用户口径（2026-11-23）：三个点（更多）移到「继续播放」大按钮右边。
         // 收藏/已播放/下载已移到右上角，这里不再重复。
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -744,44 +783,10 @@ private fun ActionRow(
                 }
             }
         }
-        /**
-         * 用户口径（2026-11-24）**影片信息 / 音频 / 字幕 入口**。
-         *
-         * 单集页才显示（参考图就是单集页的右侧浮层）。
-         * 点开后在页面右侧浮出设置面板，可切换版本 / 音轨 / 字幕。
-         */
-        if (item.isEpisode) {
-            var settingsOpen by remember { mutableStateOf(false) }
-            Row(
-                Modifier.padding(top = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilledTonalButton(
-                    onClick = { settingsOpen = true },
-                    modifier = Modifier.height(SmallAction),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                ) {
-                    Icon(Icons.Rounded.Tune, null, Modifier.size(17.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("影片信息", style = MaterialTheme.typography.labelMedium)
-                }
-            }
-            if (settingsOpen) {
-                MediaSettingsPanel(
-                    item = item,
-                    source = item.mediaSources.getOrNull(data.selectedSource) ?: item.mediaSources.firstOrNull(),
-                    onDismiss = { settingsOpen = false },
-                )
-            }
-        }
 
         /**
-         * 用户口径（2026-11-24）**「S1:E8 - 集名」放到这里**：
-         * 播放按钮下面、简介上面。
-         *
-         * 只有单集页才有（item.isEpisode）。样式：中等字重、正常色，
-         * 比剧名小、比简介标题大，作为「当前看的是哪一集」的明确标识。
+         * 用户口径（2026-11-24）**「S1:E8 - 集名」放到这里**：播放按钮下方、简介上方。
+         * 只有单集页才有。
          */
         if (item.isEpisode) {
             val episodeLine = listOfNotNull(item.episodeCode, item.name).joinToString(" - ")
@@ -1176,172 +1181,166 @@ private fun SeasonCard(
 }
 
 /**
- * 用户口径（2026-11-24）**单集页右侧「影片信息 / 音频 / 字幕」设置浮层**。
+ * 用户口径（2026-11-26）**详情页常驻的三条信息：视频 / 音频 / 字幕**。
  *
- * 照参考图逐项对齐（实测规格）：
- *  · 位置：屏幕右侧浮层，右侧留约 3% 边距，垂直居中，不贴边
- *  · 外观：浅色半透明毛玻璃卡片，圆角 12dp，行间极细分割线
- *  · 三个主行，**没有分组小标题**，每行「图标 + 当前值」：
- *      ① 视频：主标题「4K HEVC」+ 副标题「4K HEVC / 2.2 GB / 13.2 Mbps」
- *         副标题 11-12sp 浅灰；有多个版本时右侧带 ▼ 可展开
- *      ② 音频：音轨名 + 「(默认)」后缀，右侧 ▼ 可展开
- *      ③ 字幕：当前字幕名，右侧 ▼/▲ 可展开
- *  · 展开列表：纯文本行，选中项左侧勾选，不可用项极浅灰不可点
+ * 位置：播放按钮行的上方（「从头播放」那一行的上面）
+ * 层级：series（剧集详情页）/ movie（电影详情页）/ episode（单集页）显示；season 不显示
+ *
+ * 视觉（照参考图）：
+ *  · 每行「图标 + 主文字」，下面可带一行小字
+ *  · 视频行：主「4K HEVC」，副「4K / HEVC / 3.2 GB / 4 Mbps」
+ *  · 音频行：「国语 DDP stereo (默认)」
+ *  · 字幕行：「无字幕」或字幕名
+ *  · 该项有多条可选时右侧带箭头，点一下就地展开列表；只有一条时不给箭头
+ *  · 展开的列表：选中项左侧勾选，点其它项切换
+ *
+ * 注意「(默认)」：服务端 DisplayTitle 本身已经带「(默认)」，
+ * 客户端不能再拼一次（之前显示成「国语 DDP stereo (默认) (默认)」）。
  */
 @Composable
-private fun MediaSettingsPanel(
+private fun MediaTechRows(
     item: Item,
     source: MediaSource?,
-    onDismiss: () -> Unit,
+    sourceCount: Int,
+    selectedIndex: Int,
+    onSelectSource: (Int) -> Unit,
+    onSelected: () -> Unit,
 ) {
-    val surface = MaterialTheme.colorScheme.surface
     val onPanel = MaterialTheme.colorScheme.onSurface
-    val muted = onPanel.copy(alpha = 0.62f)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     var expanded by remember { mutableStateOf(0) }   // 0 无 / 1 视频 / 2 音频 / 3 字幕
 
-    // 视频信息（主标题 + 副标题）
-    val video = source?.video
+    if (source == null) return
+
+    val video = source.video
     val resLabel = video?.let { resolutionLabel(it.width, it.height) }
     val codecLabel = video?.codec?.takeIf { it.isNotEmpty() }?.uppercase()
     val videoMain = listOfNotNull(resLabel, codecLabel).joinToString(" ").ifBlank { "视频" }
     val videoSub = buildList {
         if (resLabel != null) add(resLabel)
         if (codecLabel != null) add(codecLabel)
-        source?.size?.takeIf { it > 0 }?.let { add(formatBytes(it)) }
-        source?.bitrate?.takeIf { it > 0 }?.let { add("${it / 1_000_000} Mbps") }
+        source.size.takeIf { it > 0 }?.let { add(formatBytes(it)) }
+        source.bitrate.takeIf { it > 0 }?.let { add("${it / 1_000_000} Mbps") }
     }.joinToString(" / ")
 
-    val audios = source?.audio.orEmpty()
-    val subs = source?.subtitles.orEmpty()
-    val defaultAudio = audios.firstOrNull { it.isDefault } ?: audios.firstOrNull()
-    val defaultSub = subs.firstOrNull { it.isDefault } ?: subs.firstOrNull()
-    val audioLabel = defaultAudio?.let { a ->
-        val name = a.displayTitle.ifBlank { a.codec.uppercase() }
-        if (a.isDefault) "$name (默认)" else name
-    } ?: "无音轨"
-    val subLabel = defaultSub?.displayTitle?.ifBlank { null } ?: (if (subs.isEmpty()) "无字幕" else subs.size.toString() + " 条字幕")
+    val audios = source.audio
+    val subs = source.subtitles
+    val currentAudio = audios.firstOrNull { it.isDefault } ?: audios.firstOrNull()
+    val currentSub = subs.firstOrNull { it.isDefault }
 
-    Box(Modifier.fillMaxSize().clickable(onClick = onDismiss)) {
-        Box(
-            Modifier
-                .align(Alignment.CenterEnd)
-                .width(300.dp)
-                .padding(end = 12.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(surface.copy(alpha = 0.94f))
-                .clickable(enabled = false) {}
-                .padding(vertical = 6.dp),
-        ) {
-            Column {
-                // ① 视频行
-                SettingsRow(
-                    icon = Icons.Rounded.Movie,
-                    main = videoMain,
-                    sub = videoSub.takeIf { it.isNotBlank() },
+    Column(Modifier.fillMaxWidth()) {
+        // ① 视频
+        MediaTechRow(
+            icon = Icons.Rounded.Movie,
+            main = videoMain,
+            sub = videoSub.takeIf { it.isNotBlank() },
+            onPanel = onPanel,
+            muted = muted,
+            expandable = sourceCount > 1,
+            expanded = expanded == 1,
+            onClick = if (sourceCount > 1) { { expanded = if (expanded == 1) 0 else 1 } } else null,
+        )
+        if (expanded == 1) {
+            item.mediaSources.forEachIndexed { i, src ->
+                MediaTechOption(
+                    label = src.name.ifBlank { src.slotLabel },
+                    selected = i == selectedIndex,
                     onPanel = onPanel,
-                    muted = muted,
-                    trailing = if (item.mediaSources.size > 1) {
-                        if (expanded == 1) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore
-                    } else null,
-                    onClick = if (item.mediaSources.size > 1) {
-                        { expanded = if (expanded == 1) 0 else 1 }
-                    } else null,
+                    onClick = { onSelectSource(i); expanded = 0 },
                 )
-                if (expanded == 1) {
-                    item.mediaSources.forEachIndexed { i, src ->
-                        SettingsOption(
-                            label = src.name.ifBlank { "版本 ${i + 1}" },
-                            selected = i == 0,
-                            enabled = true,
-                            onPanel = onPanel,
-                            onClick = onDismiss,
-                        )
-                    }
-                }
-                Divider(color = onPanel.copy(alpha = 0.12f))
-                // ② 音频行
-                SettingsRow(
-                    icon = Icons.Rounded.VolumeUp,
-                    main = audioLabel,
-                    sub = null,
+            }
+        }
+        Divider(color = onPanel.copy(alpha = 0.10f))
+
+        // ② 音频
+        MediaTechRow(
+            icon = Icons.Rounded.VolumeUp,
+            main = currentAudio?.cleanTitle() ?: "无音轨",
+            sub = null,
+            onPanel = onPanel,
+            muted = muted,
+            expandable = audios.size > 1,
+            expanded = expanded == 2,
+            onClick = if (audios.size > 1) { { expanded = if (expanded == 2) 0 else 2 } } else null,
+        )
+        if (expanded == 2) {
+            audios.forEach { a ->
+                MediaTechOption(
+                    label = a.cleanTitle(),
+                    selected = a.isDefault,
                     onPanel = onPanel,
-                    muted = muted,
-                    trailing = if (audios.size > 1) {
-                        if (expanded == 2) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore
-                    } else null,
-                    onClick = if (audios.size > 1) {
-                        { expanded = if (expanded == 2) 0 else 2 }
-                    } else null,
+                    onClick = { expanded = 0; onSelected() },
                 )
-                if (expanded == 2) {
-                    audios.forEach { a ->
-                        SettingsOption(
-                            label = a.displayTitle.ifBlank { a.codec.uppercase() } + if (a.isDefault) " (默认)" else "",
-                            selected = a.isDefault,
-                            enabled = true,
-                            onPanel = onPanel,
-                            onClick = onDismiss,
-                        )
-                    }
-                }
-                Divider(color = onPanel.copy(alpha = 0.12f))
-                // ③ 字幕行
-                SettingsRow(
-                    icon = Icons.Rounded.Subtitles,
-                    main = subLabel,
-                    sub = null,
+            }
+        }
+        Divider(color = onPanel.copy(alpha = 0.10f))
+
+        // ③ 字幕
+        MediaTechRow(
+            icon = Icons.Rounded.Subtitles,
+            main = when {
+                subs.isEmpty() -> "无字幕"
+                currentSub != null -> currentSub.cleanTitle()
+                else -> "关闭"
+            },
+            sub = null,
+            onPanel = onPanel,
+            muted = muted,
+            expandable = subs.isNotEmpty(),
+            expanded = expanded == 3,
+            onClick = if (subs.isNotEmpty()) { { expanded = if (expanded == 3) 0 else 3 } } else null,
+        )
+        if (expanded == 3) {
+            MediaTechOption(label = "关闭", selected = currentSub == null, onPanel = onPanel, onClick = { expanded = 0; onSelected() })
+            subs.forEach { sub ->
+                MediaTechOption(
+                    label = sub.cleanTitle(),
+                    selected = sub.isDefault,
                     onPanel = onPanel,
-                    muted = muted,
-                    trailing = if (expanded == 3) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                    onClick = { expanded = if (expanded == 3) 0 else 3 },
+                    onClick = { expanded = 0; onSelected() },
                 )
-                if (expanded == 3) {
-                    SettingsOption(
-                        label = "关闭",
-                        selected = subs.isEmpty(),
-                        enabled = true,
-                        onPanel = onPanel,
-                        onClick = onDismiss,
-                    )
-                    subs.forEach { sub ->
-                        SettingsOption(
-                            label = sub.displayTitle.ifBlank { sub.codec.uppercase() },
-                            selected = sub.isDefault,
-                            enabled = true,
-                            onPanel = onPanel,
-                            onClick = onDismiss,
-                        )
-                    }
-                }
             }
         }
     }
 }
 
+/**
+ * 用户口径（2026-11-26）**修「(默认)」重复**。
+ *
+ * 服务端 `DisplayTitle` 本身就带后缀（实测 `国语 DDP stereo (默认)`），
+ * 之前代码又拼了一次 → 「国语 DDP stereo (默认) (默认)」。
+ * 这里统一走这个函数：已经有「(默认)」就不再补。
+ */
+internal fun MediaStream.cleanTitle(): String {
+    val base = displayTitle.ifBlank { codec.uppercase() }.trim()
+    if (base.contains("(默认)") || base.contains("（默认）")) return base
+    return if (isDefault) "$base (默认)" else base
+}
+
 @Composable
-private fun SettingsRow(
+private fun MediaTechRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     main: String,
     sub: String?,
     onPanel: Color,
     muted: Color,
-    trailing: androidx.compose.ui.graphics.vector.ImageVector?,
+    expandable: Boolean,
+    expanded: Boolean,
     onClick: (() -> Unit)?,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, Modifier.size(20.dp), tint = onPanel.copy(alpha = 0.75f))
-        Spacer(Modifier.width(12.dp))
+        Icon(icon, null, Modifier.size(18.dp), tint = muted)
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 main,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.bodyMedium,
                 color = onPanel,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1357,38 +1356,39 @@ private fun SettingsRow(
                 )
             }
         }
-        if (trailing != null) {
-            Icon(trailing, null, Modifier.size(18.dp), tint = muted)
+        if (expandable) {
+            Icon(
+                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                null,
+                Modifier.size(16.dp),
+                tint = muted,
+            )
         }
     }
 }
 
 @Composable
-private fun SettingsOption(
+private fun MediaTechOption(
     label: String,
     selected: Boolean,
-    enabled: Boolean,
     onPanel: Color,
     onClick: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(start = 46.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
+            .clickable(onClick = onClick)
+            .padding(start = 40.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (!enabled) onPanel.copy(alpha = 0.3f)
-                    else if (selected) onPanel else onPanel.copy(alpha = 0.85f),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (selected) onPanel else onPanel.copy(alpha = 0.8f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        if (selected) {
-            Icon(Icons.Rounded.Check, null, Modifier.size(16.dp), tint = onPanel)
-        }
+        if (selected) Icon(Icons.Rounded.Check, null, Modifier.size(14.dp), tint = onPanel)
     }
 }

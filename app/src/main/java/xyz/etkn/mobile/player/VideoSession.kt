@@ -816,6 +816,11 @@ class VideoSession(
 
     fun playNext(completed: Boolean = false) {
         val next = _ui.value.next ?: return
+        /**
+         * 用户口径（2026-11-26）：顺序很重要 ——
+         * 先把「是否播完」写进去，再 stopReporting() 让 report("Stopped") 立刻读到；
+         * report 内部已经把值快照成局部变量，所以后面 playSource 重置这个标志也不会影响已发出的请求。
+         */
         completedBySkip = completed
         stopReporting()
         loadJob?.cancel()
@@ -1260,17 +1265,36 @@ class VideoSession(
 
     private fun stopReporting() {
         progressJob?.cancel()
+        /**
+         * 用户口径（2026-11-26）：只要已经起播过（started），退出/切集就要发一次 Stopped，
+         * 把当前进度落到服务端。这样「播了几集后退出」每一集都有各自的记录。
+         */
         if (source != null && !stopped && started) report("Stopped")
         stopped = true
     }
 
+    /**
+     * 用户口径（2026-11-26）**修「退出后进度不同步 / 播了好几集还停在旧集」**。
+     *
+     * 问题在这两处：
+     *  ① `report()` 内部异步（graph.scope）执行，但 payload 是在调用时同步构造的，
+     *     这一层没问题；真正的问题是下面第 ② 点会让「播完」标记丢失。
+     *  ② `positionMs` / `durationMs` 在**切集瞬间**读 —— 此时 player 可能已经绑到新集，
+     *     读出来是新集的 0 秒，于是上一集被上报成「播到 0 秒」，
+     *     记录看起来就像「停在很早的位置」。
+     *
+     * 现在：把这一刻的位置/时长/播完标记全部**先快照**成局部变量，
+     * 后续异步协程只用快照，不再回头读可能已经变了的 player / 标志位。
+     */
     private fun report(event: String) {
         if (offline) return
         val current = item ?: return
         val src = source ?: return
         val player = player ?: return
+        // 快照：位置、时长、播完标记（切集时这些都会被改掉）
         val positionMs = player.currentPosition.coerceAtLeast(0)
         val durationMs = player.duration.takeIf { it > 0 && it != C.TIME_UNSET }
+        val playedToEnd = event == "Stopped" && completedBySkip
         val payload = buildJsonObject {
             put("ItemId", current.id)
             put("UserId", session.userId)
@@ -1283,7 +1307,7 @@ class VideoSession(
             put("PlayMethod", "DirectStream")
             put("Client", AppGraph.CLIENT_NAME)
             put("TranscodeSessionId", "")
-            if (event == "Stopped" && completedBySkip) put("PlayedToCompletion", true)
+            if (playedToEnd) put("PlayedToCompletion", true)
             if (event != "Stopped" && danmakuAvailable == true && _danmakuStyle.value.enabled) put("DanmakuActive", true)
         }
         val expected = playSession
