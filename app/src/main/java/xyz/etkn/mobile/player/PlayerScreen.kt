@@ -822,6 +822,25 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 }
             }
         }
+            /**
+             * 用户口径（2026-11-24）**平板画布旋转时，字幕/音频/选集/弹幕/倍速等
+             * 选择浮层也必须跟着一起转**。
+             *
+             * 之前 PlayerSheet 写在旋转 Box 外面 —— 视频画面转了 90°，浮层还是竖屏，
+             * 用户看到的就是「画面横着、弹窗竖着」。
+             * 现在把它放进旋转容器内部，和视频/控制条同一坐标系，
+             * 平板和手机都自然正确（手机 rotated=false，行为完全不变）。
+             */
+            if (sheet != Sheet.None) {
+                PlayerSheet(
+                    sheet, ui, session,
+                    onSheet = { sheet = it },
+                    onDismiss = { sheet = Sheet.None },
+                    onRotate = { manualOrientation = true; applyOrientation(!(portrait ?: true)); touch() },
+                    portrait = portrait ?: false,
+                    rotated = forceRotate && needsCanvasRotation,
+                )
+            }
         }
     }
 

@@ -54,7 +54,21 @@ import xyz.etkn.mobile.R
  *  · 用 GradientDrawable+setStroke 描边 —— 那圈暗边就是它，永远删不干净
  */
 @Composable
-fun PlayerSidePanel(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+fun PlayerSidePanel(
+    onDismiss: () -> Unit,
+    /**
+     * 用户口径（2026-11-24）**平板画布旋转时浮层也要转**。
+     *
+     * 这个面板是独立的 Android Dialog（自己的 Window），
+     * 不在 Compose 的图形树里，所以播放器整层 rotationZ=90° 对它无效 ——
+     * 用户看到的就是「画面横着、弹窗竖着」。
+     *
+     * 解法：给 Dialog 的 decorView 也套一层同样的旋转（见 DisposableEffect）。
+     * 手机 rotated=false，走原来的路径，行为完全不变。
+     */
+    rotated: Boolean = false,
+    content: @Composable () -> Unit,
+) {
     val host = LocalView.current
     val parent = rememberCompositionContext()
     val currentContent by rememberUpdatedState(content)
@@ -112,13 +126,42 @@ fun PlayerSidePanel(onDismiss: () -> Unit, content: @Composable () -> Unit) {
             window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
 
             window.attributes = window.attributes.apply {
-                // 宽度 51% 屏宽，上限 420dp（横屏大屏时不至于占满）
-                width = (metrics.widthPixels * 0.51f).toInt()
+                /**
+                 * 用户口径（2026-11-24）：画布旋转时，Dialog 的坐标系也要按
+                 * 「宽高互换」来算 —— 屏幕逻辑上仍是竖屏（1680×2520），
+                 * 但用户看到的是横屏（2520×1680），所以面板宽度要按屏幕高度算。
+                 */
+                val logicalW = if (rotated) metrics.heightPixels else metrics.widthPixels
+                width = (logicalW * 0.51f).toInt()
                     .coerceIn((260 * dp).toInt(), (420 * dp).toInt())
                 // 高度按内容包裹：wrap_content 由 Column 决定，配合垂直居中 = 浮动卡片
                 height = WindowManager.LayoutParams.WRAP_CONTENT
                 x = gap
                 dimAmount = 0f
+            }
+
+            /**
+             * 关键：给 Dialog 的 decorView 套和播放器一样的旋转。
+             * 面板本来在右侧居中（Gravity.END|CENTER_VERTICAL），
+             * 旋转 90° 后需要把画布按「宽高互换 + 居中」重新摆放，
+             * 否则会跑到屏幕外或偏角。
+             */
+            if (rotated) {
+                val screenW = metrics.widthPixels.toFloat()
+                val screenH = metrics.heightPixels.toFloat()
+                val decor = window.decorView
+                // 画布按互换后的尺寸摆放（宽=屏幕高、高=屏幕宽）
+                decor.layoutParams = decor.layoutParams?.apply {
+                    width = screenH.toInt()
+                    height = screenW.toInt()
+                }
+                decor.pivotX = screenH / 2f
+                decor.pivotY = screenW / 2f
+                decor.rotation = 90f
+                // 旋转后整体位置需要补偿：绕中心转 90° 后，
+                // 原画布左上角会跑到屏幕外，用 translation 拉回来。
+                decor.translationX = (screenW - screenH) / 2f
+                decor.translationY = (screenH - screenW) / 2f
             }
             window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
 
