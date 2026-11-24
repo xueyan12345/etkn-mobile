@@ -100,3 +100,56 @@
 
 - `report()` 里所有关键值（`positionMs` / `durationMs` / `completedBySkip`）必须**先快照成局部变量**再构造 payload。切集瞬间 `player` 可能已绑到新集，异步读会读到新集的 0 秒，把上一集记成「播到很早的位置」。
 - 切集顺序：先写 `completedBySkip`，再 `stopReporting()`（它会同步发 `Stopped`），最后才 `load()`。`playSource` 内部会把 `completedBySkip` 重置为 false，靠快照隔离。
+
+## 选集定位（EpisodeShelf / EpisodeList）
+
+- **一律按「集号」定位，不按列表下标**。列表是按需分页拉的，下标 ≠ 集号。统一入口：
+  - `EpisodeList.ensureNumber(n)` —— 保证第 n 集（1-based）在列表里
+  - `EpisodeList.positionOfNumber(n)` —— 第 n 集在已加载列表里的位置（优先 `indexNumber` 精确匹配）
+  区间按钮、首尾跳转、切集跟随、打开定位全部走这两个，禁各自算下标。
+- **`loadThrough` 不能丢请求**：旧写法 `if (job?.isActive) return` 会把补页请求直接丢弃且不重试，
+  导致目标集永远进不了列表、定位退回 0（表现：点 462 集跳到最开头 E80）。
+  正确写法：目标写进 `wanted`，正在跑的循环每轮重读 `wanted` 继续跑到新目标。
+- **定位用 `scrollToItem` 不用 `animateScrollToItem`**：跨几百集的长距离动画会经过中间所有集，
+  视觉上就是「先跳到最前面再跳到目标集」。
+- **区间 chip 高亮跟随横条第一格**（`visibleRange`），不绑「当前播放的集」。
+  绑当前集会导致「点区间没反应 + 横条回到当前集附近又跳回来」。
+- **`EpisodePage` 的 `AnchorId` 与 `StartIndex` 不能混用**：两者同时传时服务端以 `StartIndex` 为准，
+  锚点被忽略，续页起点错位。
+
+## 详情页章节
+
+- 只显示 `markerType ∈ {IntroStart, IntroEnd, CreditsStart}` 三类，正片章节全部过滤。
+- 三类都没有 → 整块「章节」不渲染（标题也不出现），电影通常如此。
+- 有其中一部分就显示那一部分（`SKIP_MARKERS` 常量）。
+
+## 首页「继续观看」
+
+- `Shelf` / `shelf()` 支持 `resetKey`：值变化时横条滚回位置 0（无动画）。
+  续播传 `firstOrNull()?.id to size`，保证刚播完同步过来的那部直接出现在最左边。
+- **不要**给其它 shelf 传 `resetKey`，否则用户手动滚到的位置会被弹回去。
+
+## 探索页返回保位（踩过三次）
+
+- 真凶是 `LaunchedEffect(kind) { grid.scrollToItem(0) }` —— `LaunchedEffect` 在**每次组合进入**时都会跑，
+  从详情返回 → 页面重新组合 → 强制归零，把前面存的位置全覆盖。
+- 正确做法：`remember` 记住上一次的 kind，只有**分类真的变了**才回顶；同一个分类重新进入时读 ViewModel 里的位置。
+- 教训：修「位置保存」之前，先 grep 有没有别的地方**无条件归零**，否则白改。
+
+## 分页容器（TabPager）
+
+- `beyondViewportPageCount = 0`：只构建当前页。设 1 时会保留相邻页，
+  一旦 `currentPageOffsetFraction` 停在 0.5（手势被打断 / 转屏重测 / 动画取消），
+  两页各占一半同时画出来 —— 就是「两个页面并排、中间一条线能左右拖」。
+- 加归位保护：`snapshotFlow` 监听 `(offsetFraction, isScrollInProgress)`，
+  非滚动中且 `abs(fraction) > 0.02` 就 `animateScrollToPage` 到最近整数页。
+  `userScrollEnabled = false`，任何非零偏移都是异常，归位安全。
+
+## 宽屏判定必须加设备门槛
+
+- **只看窗口宽度会让手机横屏被当平板**（≥600dp 就进宽屏分支）→ 侧栏 Dock 出现、内容压窄、
+  更容易触发上面那种半页错乱。
+- 正确：`val wide = layout.wide && isTabletDevice()`，
+  `isTabletDevice()` 用 `LocalConfiguration.current.smallestScreenWidthDp >= 600`。
+- **必须用 `LocalConfiguration`**，不能用 `LocalContext.resources.configuration`：
+  后者不是配置感知的（旋屏拿旧值），Lint 直接报 `LocalContextConfigurationRead` 让构建失败。
