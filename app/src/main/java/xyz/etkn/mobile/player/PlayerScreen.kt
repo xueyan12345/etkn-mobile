@@ -747,15 +747,20 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                  * 竖屏视频（portrait==true）→ 两者都不转。
                  */
                 /**
-                 * 用户口径（2026-11-26）**mpv 的 video-rotate 固定 0**。
+                 * 用户口径（2026-11-26）**mpv 的 video-rotate 必须跟画布同角度**。
                  *
-                 * 原因：外层画布已经做了 rotationZ=90（见上面 rotated），
-                 * 如果 mpv 再自己转 90°，就是 180° 叠加 → 画面躺着的。
+                 * 两版实测把关系定死了（用户横过来看确认的方向）：
+                 *  · 1.4.8：画布 rotated=false（UI 竖排）+ video-rotate=90（画面转）
+                 *          → 画面横、UI 竖 ✘
+                 *  · 1.4.9：画布 rotated=true（UI 横）+ video-rotate=0（画面不转）
+                 *          → UI 横、画面躺 ✘
                  *
-                 * 日志实证：1.4.8 里 video-rotate=90 + canvasRotate=true 同时出现，
-                 * 用户截图就是「界面横排、画面躺」。
+                 * 结论：**两层都要转**。
+                 * 为什么：SurfaceView 的内容不参与 View 树旋转，
+                 * 画布转只让它的**布局框**变成横屏，内容仍然按原始方向绘制；
+                 * 所以内容必须靠 video-rotate 再转一次，角度与画布相同。
                  */
-                val mpvRotate = 0
+                val mpvRotate = if (rotated) 90 else 0
                 AndroidView(
                     factory = { (core.view.parent as? ViewGroup)?.removeView(core.view); core.view },
                     update = {
