@@ -36,8 +36,13 @@ val LocalWindowLayout = staticCompositionLocalOf { WindowLayout.Compact }
  */
 @Composable
 fun isTabletDevice(): Boolean {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    return ctx.resources.configuration.smallestScreenWidthDp >= 600
+    /**
+     * 用 `LocalConfiguration` 而不是 `LocalContext.resources.configuration`：
+     * 后者不是配置感知的（旋屏/改字号后会拿到旧值），Lint 也会直接报错
+     * （LocalContextConfigurationRead）。
+     */
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    return configuration.smallestScreenWidthDp >= 600
 }
 
 /**
