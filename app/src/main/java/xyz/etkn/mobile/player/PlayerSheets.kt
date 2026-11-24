@@ -283,12 +283,32 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
      */
     var episodes by remember(current.seasonId, current.id) { mutableStateOf<List<Item>?>(null) }
     LaunchedEffect(current.seasonId, current.id) {
+        /**
+         * 用户口径（2026-11-26）**服务端单页硬上限 80 条**（实测传 100/2000 都只返 80），
+         * 所以这里必须按 StartIndex 翻完整季，否则长剧（蜡笔小新 2377 集）
+         * 只能看到前 80 集，当前集之前的集全都看不到。
+         */
         episodes = runCatching {
-            graph.api.episodePage(
-                seriesId, current.seasonId,
-                start = 0,
-                limit = SEASON_EPISODE_LIMIT,
-            ).items
+            val first = graph.api.episodePage(seriesId, current.seasonId, start = 0, limit = EPISODE_PAGE)
+            val total = maxOf(first.total, first.items.size)
+            val restStarts = (first.items.size until total step EPISODE_PAGE).toList()
+            val rest = if (restStarts.isEmpty()) emptyList() else kotlinx.coroutines.coroutineScope {
+                restStarts.map { start ->
+                    kotlinx.coroutines.async {
+                        runCatching {
+                            graph.api.episodePage(seriesId, current.seasonId, start = start, limit = EPISODE_PAGE).items
+                        }.getOrDefault(emptyList())
+                    }
+                }.awaitAll()
+            }
+            (listOf(first.items) + rest)
+                .filter { it.isNotEmpty() }
+                .sortedBy { it.firstOrNull()?.indexNumber ?: Int.MAX_VALUE }
+                .flatten()
+                .let { all ->
+                    val seen = HashSet<String>(all.size)
+                    all.filter { seen.add(it.id) }
+                }
         }.getOrDefault(emptyList())
     }
     Text(current.seasonName ?: "选集", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
@@ -360,8 +380,7 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
 }
 
 /**
- * 用户口径（2026-11-26）：播放器选集一次取整季。
- * 一季通常 1000～2000 集（实测《蜡笔小新》1200+），一次拿全最省心，
- * 也不会出现「只拿到当前集往后一段」的情况。
+ * 用户口径（2026-11-26）：服务端 EpisodePage 单页硬上限是 80 条
+ * （实测 Limit 传 100/200/500/2000 都只返 80），所以按 80 翻页。
  */
-private const val SEASON_EPISODE_LIMIT = 2000
+private const val EPISODE_PAGE = 80

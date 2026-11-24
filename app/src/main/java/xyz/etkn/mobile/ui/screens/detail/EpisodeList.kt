@@ -11,6 +11,9 @@ import kotlinx.coroutines.launch
 import xyz.etkn.mobile.data.api.EtknApi
 import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.ui.common.userMessage
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
 
 /**
  * 用户口径（2026-11-26）**选集部分整体重写**。
@@ -112,29 +115,66 @@ class EpisodeList(private val api: EtknApi, private val scope: CoroutineScope) {
         _state.value = EpisodesState(seasonId = seasonId, anchorId = anchorId, loading = true)
         job = scope.launch {
             try {
-                val page = api.episodePage(seriesId, seasonId, start = 0, limit = SEASON_LIMIT)
-                var items = page.items
                 /**
-                 * 服务端一次最多给 [SEASON_LIMIT] 条。极少数超长季可能没给全，
-                 * 这时再补一次（续页起点用服务器返回的 nextStartIndex），
-                 * 但**总数封顶**，避免一季几千集时无限拉取。
+                 * 用户口径（2026-11-26）**修「长剧定位不到当前集」的真正根因**。
+                 *
+                 * 实测服务端（ETKN `/api/tv/Shows/{id}/EpisodePage`）：
+                 *  · **单次最多只返回 80 条**，传 Limit=100/200/500/2000 都是 80
+                 *  · 但 `StartIndex` 精确有效（start=400 → 首条就是第 401 集）
+                 *  · 单页 80 条约 0.27 秒
+                 *
+                 * 所以「一次请求取整季」根本不成立：
+                 * 《蜡笔小新》一季 2377 集，只拿到第 1-80 集，417 集压根不在列表里
+                 * → `indexOf(417)` 返回 -1 → 不滚动 → 画面停在最开头。
+                 * 而《谷雨》只有几十集，一页就够，所以一直是对的。
+                 *
+                 * 现在改成**按 StartIndex 翻完整季**：
+                 *  · 首页拿到总数后，算出还需要几页
+                 *  · 剩下的页**并发**请求（每页 0.27s，30 页并发约 1 秒内完成）
+                 *  · 按 StartIndex 排序拼回完整列表，顺序与服务器一致
+                 *  · 这样「列表下标」与「集号顺序」重新对齐，定位才能准
                  */
-                var next = page.nextStartIndex
-                var guard = 0
-                while (items.size < page.total && next > 0 && items.size < HARD_LIMIT && guard < 4) {
-                    guard++
-                    val more = api.episodePage(seriesId, seasonId, start = next, limit = SEASON_LIMIT)
-                    if (more.items.isEmpty()) break
-                    val seen = items.mapTo(HashSet()) { it.id }
-                    items = items + more.items.filter { seen.add(it.id) }
-                    next = more.nextStartIndex
-                    if (next <= 0) break
+                val first = api.episodePage(seriesId, seasonId, start = 0, limit = PAGE_SIZE)
+                val total = maxOf(first.total, first.items.size)
+
+                // 还需要补的起点列表（每次 80 条）
+                val starts = (first.items.size until total step PAGE_SIZE).toList()
+
+                /**
+                 * 并发拉剩余页，**分批**避免一次打 30 个请求：
+                 * 2377 集需要 30 页，一次全发出去对服务端和手机都不友好。
+                 * 每批 [CONCURRENCY] 个并发，一批约 0.3 秒，30 页约 2 秒完成。
+                 * 失败的那一页留空，不影响已经拿到的部分。
+                 */
+                val rest = mutableListOf<List<Item>>()
+                starts.chunked(CONCURRENCY).forEach { batch ->
+                    val part = coroutineScope {
+                        batch.map { start ->
+                            async {
+                                runCatching {
+                                    api.episodePage(seriesId, seasonId, start = start, limit = PAGE_SIZE).items
+                                }.getOrDefault(emptyList())
+                            }
+                        }.awaitAll()
+                    }
+                    rest += part
                 }
+
+                // 按「首条集号」排序拼接，保证顺序与服务器一致
+                val merged = (listOf(first.items) + rest)
+                    .filter { it.isNotEmpty() }
+                    .sortedBy { it.firstOrNull()?.indexNumber ?: Int.MAX_VALUE }
+                    .flatten()
+                    // 去重（服务器偶尔在页边界重复给同一条）
+                    .let { all ->
+                        val seen = HashSet<String>(all.size)
+                        all.filter { seen.add(it.id) }
+                    }
+
                 _state.value = EpisodesState(
                     seasonId = seasonId,
-                    items = items,
-                    // 最终以「实际拿到的条数」为准，避免服务器 total 与实际不一致时出现空位
-                    total = items.size,
+                    items = merged,
+                    total = merged.size,
                     anchorId = anchorId,
                     loading = false,
                 )
@@ -144,16 +184,29 @@ class EpisodeList(private val api: EtknApi, private val scope: CoroutineScope) {
         }
     }
 
-    /** 只刷新已看标记/进度，保持顺序不变。 */
+    /**
+     * 只刷新已看标记/进度，保持顺序不变。
+     *
+     * 用户口径（2026-11-26）：这里也必须按 80 条翻页。
+     * 旧写法 `limit = state.items.size` 会被服务端截成 80 条，
+     * 然后因为「返回条数 ≠ 原列表条数」被静默丢弃 —— 等于刷新永远不生效。
+     * 现在按同样的分页方式重新取一次，只替换每个条目的 userData。
+     */
     fun refresh() {
         val state = _state.value
         if (seriesId.isEmpty() || state.items.isEmpty() || job?.isActive == true) return
         job = scope.launch {
             runCatching {
-                api.episodePage(seriesId, state.seasonId, start = 0, limit = state.items.size.coerceAtLeast(1))
-            }.onSuccess { page ->
-                if (page.items.size == state.items.size) {
-                    _state.update { it.copy(items = page.items) }
+                val pages = (state.items.indices step PAGE_SIZE).map { start ->
+                    async { runCatching { api.episodePage(seriesId, state.seasonId, start = start, limit = PAGE_SIZE).items }.getOrDefault(emptyList()) }
+                }
+                pages.awaitAll().flatten()
+            }.onSuccess { fresh ->
+                if (fresh.isEmpty()) return@onSuccess
+                // 用最新数据覆盖对应条目，保持原有顺序
+                val byId = fresh.associateBy { it.id }
+                _state.update { cur ->
+                    cur.copy(items = cur.items.map { byId[it.id] ?: it })
                 }
             }
         }
@@ -168,10 +221,13 @@ class EpisodeList(private val api: EtknApi, private val scope: CoroutineScope) {
     fun contains(id: String) = _state.value.items.any { it.id == id }
 
     private companion object {
-        /** 一次请求的上限。1000～2000 集的长剧都能一次拿全。 */
-        const val SEASON_LIMIT = 2000
+        /**
+         * 服务端单页硬上限。实测传 100/200/500/2000 都只返回 80 条，
+         * 所以按 80 翻页才是有效做法。
+         */
+        const val PAGE_SIZE = 80
 
-        /** 极端情况下（超长季）最多拉到这个数量。 */
-        const val HARD_LIMIT = 6000
+        /** 每批并发数：长剧 30 页时分 5 批，避免一次打满服务端。 */
+        const val CONCURRENCY = 6
     }
 }
