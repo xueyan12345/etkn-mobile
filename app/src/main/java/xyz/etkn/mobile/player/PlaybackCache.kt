@@ -329,11 +329,26 @@ object PlaybackCache {
 
         val windowMs = maxWindowMs(settings)
         val windowBytes = maxWindowBytes(settings)
-        // 总长为 0 时无法按时间换算，只能用大小窗口
-        val bytesPerMs = if (durationMs > 0 && knownLength > 0) knownLength.toDouble() / durationMs else 0.0
-
-        val total = if (knownLength > 0) knownLength else Long.MAX_VALUE
-        val posBytes = if (bytesPerMs > 0) (positionMs * bytesPerMs).toLong() else 0L
+        /**
+         * 用户口径（2026-11-26）**修「完全不会自动缓存」的根因之一**。
+         *
+         * 日志实证（1.4.5，两部片子）：
+         *   cache hit=false complete=false bytes=0
+         *   ETKN-Cache 日志一条都没有（下载从未发生）
+         *
+         * 原因：strm 回源时服务端给的大小是 0（或 -1），于是
+         *   bytesPerMs = 0 → posBytes = 0 → byTime = MAX → 窗口长度算成 0
+         *   → `while (cur < windowEnd)` 一次都不进 → 什么都不下。
+         *
+         * 现在：总长未知时就**现场探一次**（带认证的 HEAD 请求）。
+         * 还是探不到（服务端不给 Content-Length）就退化成「只按字节窗口缓存」：
+         * 从当前位置的字节偏移开始，按 cacheMemoryMb 下这么多字节，
+         * 不依赖「总长 / 时长」换算。这样缓存永远能工作。
+         */
+        val probed = if (knownLength > 0) knownLength else probeLength(client, url)
+        val total = if (probed > 0) probed else Long.MAX_VALUE
+        val bpm = if (durationMs > 0 && probed > 0) probed.toDouble() / durationMs else 0.0
+        val posBytes = if (bpm > 0) (positionMs * bpm).toLong() else 0L
 
         /**
          * 用户口径（2026-11-26）**真正的滑动窗口：从播放位置开始往后下**。
@@ -351,11 +366,11 @@ object PlaybackCache {
          * 窗口始终跟着位置平移，而不是越攒越长。
          */
         // 回看余量：当前位置往前留 30 秒，方便小幅拖动回退
-        val lookBackBytes = if (bytesPerMs > 0) (30_000.0 * bytesPerMs).toLong() else 0L
+        val lookBackBytes = if (bpm > 0) (30_000.0 * bpm).toLong() else 0L
         val windowStart = (posBytes - lookBackBytes).coerceAtLeast(0L)
 
         // 窗口长度：两个条件取小者（任一条达成就不再扩，这是用户口径）
-        val byTime = if (bytesPerMs > 0) (windowMs * bytesPerMs).toLong() else Long.MAX_VALUE
+        val byTime = if (bpm > 0) (windowMs * bpm).toLong() else Long.MAX_VALUE
         val bySize = if (windowBytes > 0) windowBytes else Long.MAX_VALUE
         var windowLen = minOf(byTime, bySize)
         if (windowLen == Long.MAX_VALUE) windowLen = total - windowStart   // 没配阈值就按整集
@@ -397,6 +412,23 @@ object PlaybackCache {
          */
         val coveredEnd = cur.coerceAtMost(windowEnd)
         windows[itemId] = Window(start = windowStart, end = coveredEnd)
+        /**
+         * 用户口径（2026-11-26）：**加诊断日志**。
+         *
+         * 之前「缓存到底有没有在跑」完全看不出来（1.4.5 的日志里 ETKN-Cache 一条都没有），
+         * 只能靠猜。现在每次窗口推进都打一行，能直接看出：
+         *  · 总长有没有探到（total）
+         *  · 窗口从哪到哪（window）
+         *  · 这一轮实际下到哪（covered）
+         *  · 是不是已完成（done）
+         */
+        android.util.Log.i(
+            "ETKN-Cache",
+            "window item=$itemId pos=${positionMs / 1000}s " +
+                "total=${if (total == Long.MAX_VALUE) "unknown" else "${total / 1024 / 1024}MB"} " +
+                "win=${windowStart / 1024 / 1024}~${windowEnd / 1024 / 1024}MB " +
+                "covered=${coveredEnd / 1024 / 1024}MB",
+        )
 
         /**
          * 用户口径（2026-11-26）**「本集缓冲完成」的正确判定**。
@@ -471,12 +503,17 @@ object PlaybackCache {
         }
         val part = File(target.parentFile, target.name + ".part")
 
-        val total = if (nextLength > 0) nextLength else Long.MAX_VALUE
+        /**
+         * 用户口径（2026-11-26）：下一集总长探不到时，按字节配额下，
+         * 不依赖「总长 / 时长」换算（服务端对 strm 常常不给 Content-Length）。
+         */
+        val probedNext = if (nextLength > 0) nextLength else probeLength(client, nextUrl)
+        val total = if (probedNext > 0) probedNext else Long.MAX_VALUE
         val windowMs = maxWindowMs(settings)
         val windowBytes = maxWindowBytes(settings)
 
         // 配额（从第 0 秒起算）：时间窗口与大小窗口取小者
-        val bytesPerMs = if (durationMs > 0 && nextLength > 0) nextLength.toDouble() / durationMs else 0.0
+        val bytesPerMs = if (durationMs > 0 && probedNext > 0) probedNext.toDouble() / durationMs else 0.0
         val quotaByTime = if (windowMs > 0 && bytesPerMs > 0) (windowMs * bytesPerMs).toLong() else Long.MAX_VALUE
         val quotaBySize = if (windowBytes > 0) windowBytes else Long.MAX_VALUE
         var quotaBytes = minOf(quotaByTime, quotaBySize)
@@ -513,8 +550,35 @@ object PlaybackCache {
             }
         }
         runCatching { trim(context, settings, protect = part) }
-        // 用户口径：下一集【已开始缓冲、点下去能秒播】就亮气泡，不要求全缓存完
-        if (have > 0) nextComplete = true
+
+        /**
+         * 用户口径（2026-11-26）**修「缓冲条没到片尾却亮了预加载气泡」**。
+         *
+         * 旧判据是 `if (have > 0) nextComplete = true` ——
+         * 意思是「下一集只要下载了 1 个字节就亮气泡」。
+         * 实测就是这样：缓冲条还剩一大截，气泡已经亮了。
+         *
+         * 用户口径（原话）：
+         *  「不是下一集缓存完，是下一集已经开始缓冲了，
+         *    我点下一集马上就能秒播的时候，就可以把气泡亮了」
+         *
+         * 「马上能秒播」= 下一集**开头那一段**真的在本地了，不是 1 个字节。
+         * 门槛：至少下到「片头结束 + 1 分钟」或配额的一半（取小者），
+         * 太少（比如只有几 MB）不足以秒播，不算。
+         */
+        val enough = when {
+            introFloorBytes != null && introFloorBytes > 0 -> have >= introFloorBytes
+            quotaBytes > 0 -> have >= quotaBytes / 2
+            else -> have > 0
+        }
+        if (enough) {
+            nextComplete = true
+            android.util.Log.i(
+                "ETKN-Cache",
+                "next-ready item=$nextId have=${have / 1024 / 1024}MB " +
+                    "need=${(introFloorBytes ?: (quotaBytes / 2)) / 1024 / 1024}MB",
+            )
+        }
     }
 
     /** 兼容旧入口：按窗口拉一次。 */

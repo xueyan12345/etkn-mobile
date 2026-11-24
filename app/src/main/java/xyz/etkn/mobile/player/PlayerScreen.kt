@@ -150,30 +150,35 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 手机 / 普通平板系统方向正常，误开就会把画面压成中央小方块。
      */
     /**
-     * 用户口径（2026-11-26）：当前源是否 Dolby Vision。
+     * 用户口径（2026-11-26）：当前源是否 Dolby Vision / HDR。
      *
-     * 必须先声明，因为下面 needsCanvasRotation 要用它。
+     * ⚠️ 这两个状态**只用于打日志和选渲染器**，绝对不能用来关画布旋转。
+     * 原因见下面 needsCanvasRotation 的注释（v1.4.5 踩过的坑）。
      */
     val isDv by session.isDolbyVision.collectAsStateWithLifecycle()
+    val isHdr by session.isHdr.collectAsStateWithLifecycle()
 
     /**
-     * 用户口径（2026-11-26）**修「DV 片源画面正但 UI 躺」**。
+     * 用户口径（2026-11-26）**画布旋转绝不能被 DV/HDR 关掉（v1.4.5 的教训）**。
      *
-     * 上一版只把渲染器从 TextureView 换成 SurfaceView（解决黑屏），
-     * 但【画布旋转】没跟着关：
-     *   · TextureView 参与 View 树变换 → 转 90° 时画面和 UI 一起转（一致）
-     *   · SurfaceView 是独立硬件层 → UI 转了 90°，画面不转
-     *   · 结果：画面正、进度条/集数/按钮全躺（截图实证）
+     * v1.4.5 我为了让 DV 片源不出黑屏、也为了让「画面和 UI 方向一致」，
+     * 把 `needsCanvasRotation` 改成 `canvasCapable && !isDv`。结果平板上三个片子全坏：
+     *   · 走马上任：横屏了但画面方向不对
+     *   · 尚公主：  横屏了但黑屏（进度条还在走）
+     *   · 谷雨：    整体竖屏，怎么都转不过来
      *
-     * 现在把 DV 也纳入「不做画布旋转」的条件：
-     * 一次性影响三处（都读这个变量）——
-     *   ① rotated = forceRotate && needsCanvasRotation（是否 rotationZ）
-     *   ② canvasW/canvasH（是否宽高互换）
-     *   ③ applyWindowInsets = !rotated
-     * 于是 DV 源走「不旋转 + SurfaceView」，画面和 UI 方向自然一致。
+     * 为什么会这样（日志实证，每一份都有）：
+     *   ETKN-Rotate: round=1/2/3 want=L real=P ok=false
+     *   ETKN-Rotate: compat-switches ... setIgnoreOrientationRequest=false
+     *   → 请求横屏三次全部失败，系统就是不转
+     *   → 这台平板（Android 16 大屏 + ColorOS）**唯一**的横屏手段就是画布 rotationZ
+     *
+     * 所以：画布旋转是这台机器横屏的**生命线**，只能无条件保留。
+     * DV/HDR 的问题必须在「渲染器 / 解码路径」层面解决，
+     * 不能靠关掉画布旋转来绕。
      */
     val canvasCapable = remember { CanvasRotationSupport.enabled }
-    val needsCanvasRotation = canvasCapable && !isDv
+    val needsCanvasRotation = canvasCapable
     /**
      * 用户口径（2026-11-23）**起播方向必须一开始就是横屏**。
      *
@@ -191,7 +196,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
      * 用户口径（2026-11-26）：DV 源不做画布旋转，初值也跟着走。
      * （needsCanvasRotation 现在已排除 DV，这里保持一致，避免起播先闪一下旋转态。）
      */
-    var forceRotate by remember { mutableStateOf(CanvasRotationSupport.enabled && !isDv) }
+    var forceRotate by remember { mutableStateOf(CanvasRotationSupport.enabled) }
     /**
      * 用户口径（2026-11-23）OPPO Pad Mini 专项：这台平板上「旋转屏幕」按钮完全无效，
      * 只能跟随系统方向。SenPlayer / AfuseKit 同样如此 → 不是我们独有的 bug，
@@ -666,14 +671,13 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 )
             }
             /**
-             * 用户口径（2026-11-26）：把 `isDv` 也纳入 key。
+             * 用户口径（2026-11-26）**不再按 isDv 重建视图**。
              *
-             * DV 是在播放开始后才从 Tracks 里识别出来的（先有数据才有轨道信息）。
-             * `AndroidView` 的 factory 只在创建时执行一次，
-             * 所以不把它放进 key 的话，识别到 DV 也不会重建视图 → 仍然黑屏。
-             * 放进 key 后：识别到 DV → 重建为 SurfaceView → 画面出来。
+             * v1.4.5 把 isDv 放进 key，是想「识别到 DV 就重建为 SurfaceView」。
+             * 但 SurfaceView 与画布旋转冲突（画面不跟着转），且系统不给横屏，
+             * 结果三个片子全坏。现在渲染器不再按 DV 分叉，key 也就不需要它了。
              */
-            else -> key(core, isDv) {
+            else -> key(core) {
                 AndroidView(
                     factory = { ctx ->
                         /**
@@ -685,16 +689,14 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                          *    完全不需要旋转能力。
                          */
                         /**
-                         * 用户口径（2026-11-26）**Dolby Vision 片源必须用 SurfaceView**。
+                         * 用户口径（2026-11-26）**渲染器一律跟着画布旋转走**。
                          *
-                         * 平板日志实证：DV profile 5（dvhe.05.08）在 TextureView 下
-                         * 解码器能初始化、进度能走，但画面出不来（黑屏无声）。
-                         * 所以一旦识别为 DV，就放弃 TextureView（也就放弃画布旋转），
-                         * 换回 SurfaceView 保证出画 —— 画面可见优先于旋转。
-                         */
-                        /**
-                         * 用户口径（2026-11-26）：needsCanvasRotation 已经排除了 DV，
-                         * 所以这里只按它判断即可（DV → false → SurfaceView）。
+                         * v1.4.5 曾在这里按 isDv 切 SurfaceView（想让 DV 出画），
+                         * 但 SurfaceView 不参与 View 树变换 → 画布转了画面不转，
+                         * 而系统又不给横屏 → 三个片子全坏。
+                         *
+                         * 现在：只要需要画布旋转就用 TextureView，不再按 DV 分叉。
+                         * DV 黑屏改由「解码路径」解决（见 VideoSession 的 DV 处理）。
                          */
                         val useTexture = needsCanvasRotation
                         val pv = if (useTexture) {

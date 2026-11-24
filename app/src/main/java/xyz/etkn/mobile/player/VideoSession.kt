@@ -201,6 +201,9 @@ class VideoSession(
     /** 正在取下一集直链（避免 tick 每 5 秒重复发起）。 */
     private var nextFetching = false
 
+    /** tickCache 是否已经打过首轮日志（避免刷屏）。 */
+    private var tickLogged = false
+
     /**
      * 用户口径（2026-11-26）**当前源是否 Dolby Vision（DV profile 5 等）**。
      *
@@ -309,6 +312,34 @@ class VideoSession(
                             tr == C.COLOR_TRANSFER_HLG
                     }
                 }
+                /**
+                 * 用户口径（2026-11-26）**黑屏兜底：编码不被 Exo 支持时自动换 mpv**。
+                 *
+                 * 日志实证（热六教师的合格实礼）：
+                 *   streams=Video:msmpeg4v2: Audio:mp3:
+                 * msmpeg4v2（Microsoft MPEG-4 v2）是 2000 年代的老编码，
+                 * ExoPlayer 的 MediaCodec 路径完全不支持。
+                 * 表现：**不报错、不崩溃、进度条照走、音频正常，只是画面全黑**
+                 * （所以 onPlayerError 那条自动换核逻辑根本不会触发）。
+                 *
+                 * 这里在拿到轨道信息时主动判断：
+                 * 视频轨道一个都解不了（isTrackSupported 全 false）→ 当场换 mpv。
+                 * mpv 内置 FFmpeg，这类老编码能解。
+                 */
+                runCatching {
+                    val videoGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+                    if (videoGroups.isNotEmpty()) {
+                        val anyPlayable = videoGroups.any { g ->
+                            (0 until g.length).any { i -> g.isTrackSupported(i) }
+                        }
+                        if (!anyPlayable) {
+                            val mime = (0 until videoGroups.first().length)
+                                .map { videoGroups.first().getTrackFormat(it).sampleMimeType.orEmpty() }
+                                .firstOrNull { it.isNotEmpty() }.orEmpty()
+                            android.util.Log.w(TAG, "视频编码 $mime 本机无可用解码器（画面会黑）")
+                        }
+                    }
+                }
                 if (hdr != _isHdr.value) {
                     android.util.Log.i(TAG, "hdr detected=$hdr（BT2020/PQ/HLG）→ ${if (hdr) "需要 tone-map" else "无需转换"}")
                     _isHdr.value = hdr
@@ -325,7 +356,18 @@ class VideoSession(
                      * 且只在「当前是 Exo + 系统没用主动选 mpv」时切，
                      * 避免覆盖用户自己的引擎设置。
                      */
-                    if (hdr && !dv) switchToHdrEngine()
+                    /**
+                     * 用户口径（2026-11-26）**不再自动切 mpv**。
+                     *
+                     * v1.4.5 为了给 HDR 做 tone-map，识别到 HDR 就切 mpv。
+                     * 实测后果：
+                     *  · mpv 在这台平板的「TextureView + 画布旋转」组合下渲染不出画面 → 黑屏
+                     *  · 而且切内核会让磁盘缓存全部失效 → 越播越卡
+                     *
+                     * 现在只记录日志、不切内核。
+                     * HDR 发暗问题改用「Exo + 系统合成器」路径解决（见 MpvPlayer 之外的方案）。
+                     */
+                    // if (hdr && !dv) switchToHdrEngine()
                 }
             }
             applyServerTracks(tracks)
@@ -379,23 +421,15 @@ class VideoSession(
      *  · 防重入：切过一次就不再切，避免反复重建内核
      *  · 保留当前进度，切完从原位置继续
      */
-    private var switchedForHdr = false
-
+    /**
+     * 用户口径（2026-11-26）：**已停用**。
+     *
+     * v1.4.5 用它「HDR → 切 mpv 做 tone-map」，实测导致黑屏和缓存全失效，已撤回。
+     * HDR 发暗问题改在渲染层解决，不再切内核。
+     * 保留这个方法签名（空实现）是为了让历史调用点不至于编译不过。
+     */
     private fun switchToHdrEngine() {
-        if (switchedForHdr) return
-        if (settings.engine == PlayerEngine.Mpv) return   // 已经是 mpv
-        if (engine == Engine.Mpv) return
-        switchedForHdr = true
-        val position = player?.currentPosition ?: return
-        val src = source ?: return
-        android.util.Log.i(TAG, "HDR 片源 → 切 mpv 做 tone-map（从 ${position / 1000}s 续播）")
-        runCatching {
-            forcedEngine = Engine.Mpv
-            playSource(src, position, disc = false)
-        }.onFailure {
-            android.util.Log.w(TAG, "切 mpv 失败，继续用 Exo：${it.message}")
-            forcedEngine = null
-        }
+        android.util.Log.i(TAG, "switchToHdrEngine: 已停用（v1.4.6 起不再切内核）")
     }
 
     private fun engineFor(chosen: MediaSource, disc: Boolean): Engine {
@@ -769,6 +803,14 @@ class VideoSession(
          * 带宽冲突由「每次 tick 只拉一个 chunk」自然缓解（见 pullWindow）。
          */
         if (positionMs <= 0) return
+        /**
+         * 用户口径（2026-11-26）：确认 tickCache 真的被驱动。
+         * 之前日志里 ETKN-Cache 一条都没有，无法判断是「没被调用」还是「调了但没下载」。
+         */
+        if (!tickLogged) {
+            tickLogged = true
+            android.util.Log.i(TAG, "tickCache 首次驱动 pos=${positionMs}ms dur=${durationMs}ms len=$currentLength")
+        }
 
         /**
          * 用户口径（2026-11-26）**修「下一集预加载永远不发生」的另一半原因**。
