@@ -629,7 +629,8 @@ class VideoSession(
          * 写设置只是持久化偏好，即使这次被取消，下面的手动重播仍然生效。
          */
         scope.launch {
-            runCatching { settings.setEngine(target) }
+            // setEngine 在 AppSettings（持久化层）上，不是读出来的 Settings 快照
+            runCatching { graph.settings.setEngine(target) }
         }
         forcedEngine = null
         val cur = source

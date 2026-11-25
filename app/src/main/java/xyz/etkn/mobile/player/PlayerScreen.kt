@@ -921,6 +921,25 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             )
         }
 
+        /**
+         * 用户口径（2026-11-26）右上角内核按钮的显示文字。
+         *
+         * 自动模式下显示**实际在跑的那个**（Exo / mpv），
+         * 否则只看设置值分不清现在用的是谁。
+         */
+        val engineToggleLabel: String = remember(player, enginePref) {
+            val running = when (player) {
+                is MpvPlayer -> "mpv"
+                null -> null
+                else -> "Exo"
+            }
+            when (enginePref) {
+                xyz.etkn.mobile.data.settings.PlayerEngine.Exo -> "Exo"
+                xyz.etkn.mobile.data.settings.PlayerEngine.Mpv -> "mpv"
+                xyz.etkn.mobile.data.settings.PlayerEngine.Auto -> running ?: "自动"
+            }
+        }
+
         if (!inPip) {
             AnimatedVisibility(controls && !locked, enter = fadeIn(), exit = fadeOut()) {
                 Controls(
@@ -956,19 +975,7 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                      * 已有的 LaunchedEffect(enginePref) 会立刻 reloadEngineFromSettings()
                      * → 从当前位置续播，不用退出播放器。
                      */
-                    engineLabel = run {
-                        val running = when (player) {
-                            is MpvPlayer -> "mpv"
-                            null -> null
-                            else -> "Exo"
-                        }
-                        when (enginePref) {
-                            PlayerEngine.Exo -> "Exo"
-                            PlayerEngine.Mpv -> "mpv"
-                            // 自动：显示实际跑的那个，让人知道现在用的是谁
-                            PlayerEngine.Auto -> running ?: "自动"
-                        }
-                    },
+                    engineLabel = engineToggleLabel,
                     onToggleEngine = {
                         session.toggleEngine()
                         touch()
