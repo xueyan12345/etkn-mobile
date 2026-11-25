@@ -84,9 +84,20 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                     val detailed = if (base.isPlayable && base.mediaSources.isEmpty()) {
                         async { runCatching { api.item(requested, EtknApi.DETAIL_FIELDS) }.getOrNull() }
                     } else null
+                    /**
+                     * 用户口径（2026-11-27）**单集页也要拿到 seriesId**。
+                     *
+                     * 修的 bug：剧集层现在会自动跳到具体某一集（见下面的 jumpTo），
+                     * 而这里原来只认 Series / Season 两种，Episode 进来是 null →
+                     * `seasons` 和 `target` 都不请求 → 季卡区整块不渲染，
+                     * 用户看到「详情页看不到季的模块」。
+                     *
+                     * Episode 的父级就是 series，直接用它的 seriesId 即可。
+                     */
                     val seriesId = when {
                         base.isSeries -> base.id
                         base.isSeason -> base.seriesId
+                        base.isEpisode -> base.seriesId
                         else -> null
                     }
                     val item = base
