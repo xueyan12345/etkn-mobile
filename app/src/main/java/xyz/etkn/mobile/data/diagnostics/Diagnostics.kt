@@ -112,7 +112,19 @@ object Diagnostics {
     fun setEnabled(context: Context, on: Boolean): Boolean {
         if (on == enabled) return enabled
         if (on) {
-            enabled = startSession(context)
+            /**
+             * 用户口径（2026-11-27）**日志采集绝不能把 App 搞崩**。
+             *
+             * 修的 bug：1.7.5 里加了 `logcat -c` 清缓冲，实测导致闪退
+             * （用户反馈「闪退了」，crash.log 里只有时间没有堆栈，
+             * 说明是 logcat 子进程相关异常把主流程带崩的）。
+             *
+             * 现在：整段包在 try/catch 里 —— 采集失败最多是「没有日志」，
+             * 绝不影响播放和任何功能。
+             */
+            enabled = runCatching { startSession(context) }
+                .onFailure { Log.w(TAG, "log session crashed, disabled", it) }
+                .getOrDefault(false)
             if (!enabled) Log.w(TAG, "log session failed to start")
         } else {
             enabled = false
@@ -178,14 +190,6 @@ object Diagnostics {
          */
         runCatching { file.writeText("") }
 
-        /**
-         * 清空系统日志缓冲：这样后面跟随的日志不含任何历史记录。
-         * 用户要的是「我开启之后发生的」，不是缓冲里之前留下的。
-         */
-        runCatching {
-            ProcessBuilder(listOf("logcat", "-c")).redirectErrorStream(true).start().waitFor()
-        }.onFailure { Log.w(TAG, "logcat -c failed", it) }
-
         // ② 开常驻进程持续跟随（只跟新日志）
         val process = runCatching {
             /**
@@ -205,12 +209,14 @@ object Diagnostics {
              * 再不带 -T 跟随 —— 从清空那一刻起写的每行都是本次真实记录。
              * 代价：会清掉系统日志缓冲（只影响调试，不影响功能）。
              */
-            ProcessBuilder(listOf("logcat", "-v", "threadtime,year") + filter)
+            val from = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-T", from) + filter)
                 .redirectErrorStream(true).start()
         }.onFailure {
             Log.w(TAG, "log recorder (pid filter) unavailable", it)
         }.getOrNull() ?: runCatching {
-            ProcessBuilder(listOf("logcat", "-v", "threadtime,year") + FALLBACK_FILTER)
+            val from = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-T", from) + FALLBACK_FILTER)
                 .redirectErrorStream(true).start()
         }.onFailure {
             Log.w(TAG, "log recorder unavailable", it)
