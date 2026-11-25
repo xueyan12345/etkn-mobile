@@ -984,7 +984,17 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                      */
                     engineLabel = engineToggleLabel,
                     onToggleEngine = {
-                        session.toggleEngine()
+                        /**
+                         * 用户口径（2026-11-26）**加点击日志**。
+                         *
+                         * 用户反馈「黑屏时点切换内核没有任何反应」，
+                         * 但日志里完全没有「手动切换内核」记录 ——
+                         * 说明要么点击没触发，要么触发了但提前 return。
+                         * 这里先打一条，确认点击是否真的到达。
+                         */
+                        android.util.Log.i("ETKN-Play", "点击内核按钮（当前=${engineToggleLabel}）")
+                        runCatching { session.toggleEngine() }
+                            .onFailure { android.util.Log.w("ETKN-Play", "toggleEngine 失败: ${it.message}") }
                         touch()
                     },
                     onToggleDanmaku = {

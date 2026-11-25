@@ -421,12 +421,34 @@ object PlaybackCache {
             already != null -> already.end.coerceIn(windowStart, windowEnd)
             else -> windowStart
         }
-        val chunk = 12L * 1024 * 1024
+        /**
+         * 用户口径（2026-11-26）**缓冲条要丝滑：分片缩小 + 每片完成立刻更新窗口**。
+         *
+         * 修的问题：「有时候不动，然后突然特别长」。
+         *
+         * 根因：原来分片 12MB，且 windows 只在【整个 while 循环结束后】写一次。
+         * 走马上任一集 3495MB / 约 30 分钟 ≈ 116MB/分钟
+         * → 12MB ≈ 6 秒视频，一次跳 6 秒，看起来就是「猛地一长段」；
+         * 而在下这 12MB 的过程中缓冲条完全静止。
+         *
+         * 现在：
+         *  · 分片 12MB → 1MB（约 0.5 秒视频），步进细得多
+         *  · 每下完一片就把「已到达的右边界」写进 windows
+         *  · 写之前做 250ms 节流，避免过于频繁触发重组（省电、不抖）
+         */
+        val chunk = 1L * 1024 * 1024
+        var lastPublish = 0L
         while (cur < windowEnd) {
             val until = minOf(windowEnd, cur + chunk)
             val ok = downloadInto(client, url, part, from = cur, until = until)
             if (!ok) break          // 这一段没下到 → 停止，已下部分仍然有效
             cur = until
+            // 每片完成立刻让缓冲条前进（节流 250ms，最后一次一定写）
+            val nowTick = System.currentTimeMillis()
+            if (nowTick - lastPublish >= 250L || cur >= windowEnd) {
+                windows[itemId] = Window(start = windowStart, end = cur)
+                lastPublish = nowTick
+            }
         }
 
         /**

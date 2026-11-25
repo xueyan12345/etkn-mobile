@@ -132,7 +132,11 @@ fun MeScreen() {
                 Entry(Icons.Rounded.SystemUpdate, "检查更新", "v${BuildConfig.VERSION_NAME} · ${if (settings.autoUpdate) "自动" else "手动"}") {
                     nav.to(SettingsRoute(SettingsPage.Update.name))
                 }
-                Entry(Icons.Rounded.BugReport, "导出日志") { exportingLog = true }
+                /**
+                 * 用户口径（2026-11-26）**入口改名「播放器日志」**。
+                 * 需求原文：「导出日志功能改成播放日志」
+                 */
+                Entry(Icons.Rounded.BugReport, "播放器日志") { exportingLog = true }
             }
         }
         item {
@@ -151,7 +155,7 @@ fun MeScreen() {
     }
     }
 
-    if (exportingLog) LogExportSheet(onDismiss = { exportingLog = false })
+    if (exportingLog) PlayerLogsScreen(onDismiss = { exportingLog = false }, graph = graph)
 
     // 用户口径（2026-11-23）：点击搜索框后覆盖一层完整搜索界面（复刻原搜索页）
     if (showSearch) {

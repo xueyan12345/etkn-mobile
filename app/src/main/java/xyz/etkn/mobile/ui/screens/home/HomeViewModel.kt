@@ -106,7 +106,24 @@ class HomeViewModel(
             val pool = cached.latest.flatMap { it.items }.filter(::hasBackdrop).distinctBy { it.id }
             val byId = pool.associateBy { it.id }
             val fromSnapshot = shown?.ids?.mapNotNull { byId[it] }.orEmpty()
-            val hero = if (fromSnapshot.isNotEmpty()) fromSnapshot else fallbackHero(cached)
+            /**
+             * 用户口径（2026-11-26）**首屏这一帧也必须是「第 1 位=继续播放」**。
+             *
+             * 修的问题（用户截图实证）：进首页第一眼看到的轮播第 1 个
+             * 不是「继续观看」里的任何一部，要等网络数据回来才变对。
+             *
+             * 根因：loadHero 已经改成「第 1 位插继续播放」，但 showCached 是
+             * 另一条独立代码路径，它直接照搬快照 ids 顺序 / fallbackHero，
+             * 所以首屏那一帧永远是旧顺序。
+             *
+             * 现在这里也做同样的处理：
+             *  · 快照有货 → 沿用其顺序，但把「继续播放随机 1 部」提到最前
+             *  · 快照第 1 位本来就不是继续播放的（改版前存的旧快照）→ 直接重排
+             *  · 快照没货 → fallbackHero 兜底，同样插继续播放位
+             */
+            val base = if (fromSnapshot.isNotEmpty()) fromSnapshot else fallbackHero(cached)
+            val seedNow = shown?.at ?: 0L
+            val hero = if (base.isEmpty()) base else pickResumeFirst(cached, base, seedNow)
             /**
              * 用户口径（2026-11-26）**绝不让 hero 变空**。
              *
@@ -245,7 +262,14 @@ class HomeViewModel(
             val accountKey = sessionKey()
             lastHeroAccountKey = accountKey
             val shown = HeroSnapshot.read(context, accountKey)
-            if (shown != null && System.currentTimeMillis() - shown.at < HERO_TTL_MS) {
+            /**
+             * 用户口径（2026-11-26）**下拉刷新 = 明确要求换一批**。
+             *
+             * 原来 manual（下拉刷新）时也复用快照，只要没过期就直接 return，
+             * 用户体感是「刷新了还是那几张」。
+             * 现在 manual 一律跳过快照、重新抽签并刷新时间戳。
+             */
+            if (!quiet && shown != null && System.currentTimeMillis() - shown.at < HERO_TTL_MS) {
                 /**
                  * 未过期：沿用上次那 8 个 id。
                  * 但要先剔除「已看完 / 已删除」的 —— 用户明确要求轮播只推没看完的。
@@ -406,7 +430,14 @@ class HomeViewModel(
     private const val HERO_RANDOM_SIZE = HERO_SIZE - 1
         private const val HERO_POOL_PER_LIBRARY = 30
         /** 轮播图「多久换一批」：满 12 小时（按上次生成时间算，不跟日历走）。 */
-        private const val HERO_TTL_MS = 12L * 60L * 60L * 1000L
+        /**
+     * 用户口径（2026-11-26）**快照有效期 12 小时 → 2 小时**。
+     *
+     * 用户反馈「推荐效果不好，总是读到之前的缓存，下拉刷新才换新」。
+     * 12 小时太长：上午抽的一批，晚上还在用，跟你当天看了什么完全脱节。
+     * 2 小时能在「稳定」和「跟得上」之间取平衡。
+     */
+    private const val HERO_TTL_MS = 2L * 60L * 60L * 1000L
         private val NON_LATEST = setOf("music", "boxsets", "playlists", "livetv", "folders")
     }
 }

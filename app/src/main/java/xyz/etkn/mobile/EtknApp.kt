@@ -19,9 +19,21 @@ class EtknApp : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
-        Diagnostics.start(this)
         graph = AppGraph(this)
         graph.sessions.restore()
+        /**
+         * 用户口径（2026-11-26）**日志默认不记录，由开关控制**。
+         *
+         * 这里只做「如果上次开着，就继续开着」的恢复；默认值是关。
+         * 真正的启动/停止在 Diagnostics.setEnabled() 里。
+         * 注意：要在 graph 建好之后再恢复（要读设置里的开关状态）。
+         */
+        runCatching {
+            val on = kotlinx.coroutines.runBlocking {
+                runCatching { graph.settings.flow.first().diagnosticsEnabled }.getOrDefault(false)
+            }
+            if (on) Diagnostics.setEnabled(this, true)
+        }
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader =

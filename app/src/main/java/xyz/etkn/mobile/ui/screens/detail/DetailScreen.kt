@@ -575,7 +575,12 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(horizontal = Etkn.space.screen)
-                    .padding(bottom = 12.dp),
+                    /**
+                     * 用户口径（2026-11-26）**剧名位置稍微往下**。
+                     * 需求原文：「这个名位置也稍微有点靠上，稍微往下点」
+                     * 12dp → 6dp，整块标题往下压一点，不贴底也不悬空。
+                     */
+                    .padding(bottom = 6.dp),
                 horizontalAlignment = align,
             ) {
                 /**
@@ -592,7 +597,20 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         item.seriesName?.takeIf { item.isEpisode || item.isSeason } ?: item.name,
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        /**
+                         * 用户口径（2026-11-26）**剧名字号加大**。
+                         *
+                         * 需求原文：「这个详情界面的电影名或者是电视剧名，字体有点小，稍微大点」
+                         *
+                         * 原来是 MaterialTheme.typography.titleLarge（M3 默认 22sp），
+                         * 现在直接写 26sp —— 比默认大 4sp，是「稍微大点」而不是猛加一档。
+                         * 不用 typography 是为了不受主题各档位影响，保证这里恒定。
+                         */
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 26.sp,
+                            lineHeight = 32.sp,
+                        ),
                         // 渐变托底是深色，文字固定浅色（不跟主题走，否则浅色主题会出现深字压深底）
                         color = Color.White,
                         maxLines = 2,

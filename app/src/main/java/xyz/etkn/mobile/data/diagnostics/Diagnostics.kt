@@ -76,12 +76,64 @@ object Diagnostics {
         "ETKN-Play", "ETKN-Player", "ETKN-Rotate",
     ).map { "$it:I" } + "*:E"
 
-    fun start(context: Context) {
+    /**
+     * 用户口径（2026-11-26）**日志改成「开关控制 + 每次一个文件」**。
+     *
+     * 需求背景（用户原话）：
+     *  「导出的日志越来越大了……加个开关只有开关打开才会保存日志记录，
+     *    这样只有有问题的时候才记录日志，还能保证日志比较小导出也比较方便」
+     *
+     * 所以：
+     *  · 默认【不记录】—— 不打开开关就完全不写盘，一点空间都不占
+     *  · 打开开关 → 开始记录，文件按会话命名 `exo_log_26-10-29_08-07-08.log`
+     *  · 每个会话一个文件，不再是一直往同一个日志里追加
+     *  · 单个会话文件限制 8MB，超了就停（避免又变巨大）
+     */
+    @Volatile private var recorder: Process? = null
+
+    /** 开关状态（内存镜像；持久化在设置里，见 AppSettings.diagnosticsEnabled）。 */
+    @Volatile var enabled: Boolean = false
+        private set
+
+    /** 当前会话的日志文件（关闭时为空）。 */
+    @Volatile private var sessionFile: File? = null
+
+    /** 本次会话的日志文件路径，供导出页列出。 */
+    fun currentFile(): File? = sessionFile?.takeIf { it.isFile }
+
+    /**
+     * 打开/关闭日志记录。
+     * @return 开关后的实际状态（打开成功为 true）
+     */
+    fun setEnabled(context: Context, on: Boolean): Boolean {
+        if (on == enabled) return enabled
+        if (on) {
+            enabled = startSession(context)
+            if (!enabled) Log.w(TAG, "log session failed to start")
+        } else {
+            enabled = false
+            stopSession()
+        }
+        return enabled
+    }
+
+    private fun sessionFileName(): String {
+        val stamp = SimpleDateFormat("yy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+        return "exo_log_$stamp.log"
+    }
+
+    private fun startSession(context: Context): Boolean {
+        if (recorder != null) return true
         val dir = directory(context)
-        File(context.filesDir, "diagnostics").deleteRecursively() // 0.5.3's unfiltered mirror
         cleanup(dir)
+        val file = File(dir, sessionFileName())
         val since = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-        val base = listOf("logcat", "-v", "threadtime,year", "-T", since, "-f", File(dir, LOG).path, "-r", "256", "-n", FILES.toString())
+        /**
+         * 单个会话文件上限 8MB（-r 8192 = 8MB 轮转一次）。
+         * 开关模式下只在排障时开，8MB 足够定位一次播放问题，
+         * 又不会像以前那样无上限增长。
+         */
+        val base = listOf("logcat", "-v", "threadtime,year", "-T", since, "-f", file.path, "-r", "8192", "-n", "2")
         /**
          * 先按 PID 抓（能收全本进程所有日志）；起不来再退回 tag 白名单。
          * 两者的区别只在「漏不漏日志」，不影响功能。
@@ -89,10 +141,12 @@ object Diagnostics {
         val started = runCatching { ProcessBuilder(base + filter).redirectErrorStream(true).start() }
             .onFailure { Log.w(TAG, "log recorder (pid filter) unavailable", it) }
             .getOrNull()
-        if (started == null) {
-            runCatching { ProcessBuilder(base + FALLBACK_FILTER).redirectErrorStream(true).start() }
+            ?: runCatching { ProcessBuilder(base + FALLBACK_FILTER).redirectErrorStream(true).start() }
                 .onFailure { Log.w(TAG, "log recorder unavailable", it) }
-        }
+                .getOrNull()
+                ?: return false
+        recorder = started
+        sessionFile = file
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching {
@@ -105,6 +159,14 @@ object Diagnostics {
         Log.i(TAG, "start ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) ${Build.MANUFACTURER} ${Build.MODEL} API ${Build.VERSION.SDK_INT}")
         // Native crashes / ANRs of earlier runs (no Java handler sees them): from Android's exit records.
         Thread({ ExitRecords.record(context.applicationContext, File(dir, CRASH)) }, "etkn-exit-records").start()
+        return true
+    }
+
+    /** 关掉录制进程（开关关闭时调用）。日志文件保留，供导出/查看。 */
+    private fun stopSession() {
+        runCatching { recorder?.destroy() }
+        recorder = null
+        sessionFile = null
     }
 
     /**
@@ -118,6 +180,30 @@ object Diagnostics {
         process.waitFor(5, TimeUnit.SECONDS)
         lines.filter { DAY.matches(it.take(10)) }
     }.getOrDefault(emptyList())
+
+    /**
+     * 用户口径（2026-11-26）**列出本次+历史的日志会话文件**（新的在前）。
+     *
+     * 开关模式下每次打开开关生成一个 exo_log_*.log，
+     * 导出页就按这个列表展示，每个可单独导出。
+     */
+    fun sessionFiles(context: Context): List<File> =
+        directory(context).listFiles()
+            ?.filter { it.isFile && it.name.startsWith("exo_log_") }
+            ?.sortedByDescending { it.lastModified() }
+            .orEmpty()
+
+    /** 导出指定日志文件到用户选的位置（自动脱敏）。 */
+    fun exportFile(context: Context, target: Uri, file: File) {
+        val text = runCatching { file.readText() }.getOrDefault("")
+        val head = buildString {
+            header(context, this)
+            appendLine()
+            appendLine("== ${file.name} ==")
+        }
+        val output = context.contentResolver.openOutputStream(target, "wt") ?: error("无法写入所选位置")
+        output.use { it.write(redact(head + text).toByteArray()) }
+    }
 
     /** Days that have log lines, newest first. */
     fun days(context: Context): List<LocalDate> {

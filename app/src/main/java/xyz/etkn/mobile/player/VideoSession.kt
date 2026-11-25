@@ -402,8 +402,34 @@ class VideoSession(
                 /**
                  * 只有「设置=自动」且「本次没手动切过」才允许自动决策。
                  */
+                /**
+                 * 用户口径（2026-11-26）**「视频轨道解析不出来」必须交给 mpv**。
+                 *
+                 * 修的问题（日志实证 item-24861 热穴教师的合格贺礼）：
+                 * ```
+                 * 自动选核 → ExoPlayer（dv5=false hdr=false dv=false codec=）  ← codec 空
+                 * ETKN-Player: audio id=1, mimeType=audio/mpeg              ← 只有音频！
+                 * ready on ExoPlayer after 214 ms
+                 * ```
+                 * 这部是 msmpeg4v2 老编码，Exo 连视频轨道都没解析出来，
+                 * 只认出了 mp3 音轨 → 画面全黑、进度条正常走。
+                 * 之前的判断逻辑（dv5/hdr/dv）在 codec 为空时全部 false，
+                 * 落到 else → 选了 Exo → 必然黑屏。
+                 *
+                 * 现在把「没有视频轨道」放在第一条判断：
+                 *  · 有视频轨道但 codec 为空 → 同样是提取器不认识，交给 mpv
+                 *  · mpv 内置 FFmpeg，msmpeg4v2 / wmv 这类老编码都能解
+                 */
+                val hasVideoTrack = tracks.groups.any { g ->
+                    g.type == C.TRACK_TYPE_VIDEO && g.length > 0
+                }
+                if (!hasVideoTrack || (videoFormat != null && codec.isEmpty())) {
+                    android.util.Log.i(TAG, "无视频轨道/编码未知（hasVideo=$hasVideoTrack codec=$codec）→ 需要 mpv")
+                }
                 if (autoSwitchAllowed && !userPickedEngineThisPlayback && !autoPickDone) {
                     val want = when {
+                        // ⓪ 视频轨道缺失 / 编码未知 → mpv（Exo 解不了老编码）
+                        !hasVideoTrack || (videoFormat != null && codec.isEmpty()) -> Engine.Mpv
                         dv5 -> Engine.Exo          // ① DV profile5 → Exo（mpv 偏色）
                         hdr -> Engine.Mpv          // ② HDR10/HLG → mpv（Exo 发暗）
                         dv -> Engine.Exo           // DV 非 profile5 → Exo

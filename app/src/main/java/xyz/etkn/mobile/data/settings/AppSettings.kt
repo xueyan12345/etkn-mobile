@@ -126,6 +126,11 @@ data class Settings(
     val danmaku: DanmakuStyle = DanmakuStyle(),
     val autoUpdate: Boolean = true,
     val updateSource: UpdateSource = UpdateSource.Proxy,
+    /**
+     * 用户口径（2026-11-26）**播放日志开关**：默认关闭，只有排障时才打开。
+     * 打开后才会有日志文件产生，避免日志无限增长。
+     */
+    val diagnosticsEnabled: Boolean = false,
     // 用户口径（2026-11-23）：缓存与预加载六项（照参考图的缓存设置页）
     /** 预加载下一集（把下一集提前写进磁盘缓存）。 */
     val preloadNext: Boolean = true,
@@ -257,6 +262,7 @@ class AppSettings(private val context: Context) {
         val dmTheme = booleanPreferencesKey("danmaku_theme_color")
         val autoUpdate = booleanPreferencesKey("auto_update")
         val updateSource = stringPreferencesKey("update_source")
+        val diagnosticsEnabled = booleanPreferencesKey("diagnostics_enabled")
         val heroMode = stringPreferencesKey("hero_mode")
         val preloadNext = booleanPreferencesKey("preload_next")
         val cacheMemoryMb = intPreferencesKey("cache_memory_mb")
@@ -295,6 +301,7 @@ class AppSettings(private val context: Context) {
         },
         autoUpdate = this[Keys.autoUpdate] ?: true,
         updateSource = enumOr(this[Keys.updateSource], UpdateSource.Proxy),
+        diagnosticsEnabled = this[Keys.diagnosticsEnabled] ?: false,
         heroMode = enumOr(this[Keys.heroMode], HeroMode.Auto),
         preloadNext = this[Keys.preloadNext] ?: true,
         cacheMemoryMb = this[Keys.cacheMemoryMb] ?: 400,
@@ -330,6 +337,9 @@ class AppSettings(private val context: Context) {
     suspend fun setCacheClearOnFinish(value: Boolean) = context.settingsDataStore.edit { it[Keys.cacheClearOnFinish] = value }
 
     suspend fun setAutoUpdate(value: Boolean) = context.settingsDataStore.edit { it[Keys.autoUpdate] = value }
+    suspend fun setDiagnosticsEnabled(value: Boolean) =
+        context.settingsDataStore.edit { it[Keys.diagnosticsEnabled] = value }
+
     suspend fun setUpdateSource(value: UpdateSource) = context.settingsDataStore.edit { it[Keys.updateSource] = value.name }
 
     suspend fun setDanmaku(style: DanmakuStyle) = context.settingsDataStore.edit {
