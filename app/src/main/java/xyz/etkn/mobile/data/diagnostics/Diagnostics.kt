@@ -89,7 +89,11 @@ object Diagnostics {
      *  · 每个会话一个文件，不再是一直往同一个日志里追加
      *  · 单个会话文件限制 8MB，超了就停（避免又变巨大）
      */
-    @Volatile private var recorder: Process? = null
+    /**
+     * 注意：这里必须是 java.lang.Process（进程对象），
+     * 不是 android.os.Process（那个是静态工具类，已单独 import）。
+     */
+    @Volatile private var recorder: java.lang.Process? = null
 
     /** 开关状态（内存镜像；持久化在设置里，见 AppSettings.diagnosticsEnabled）。 */
     @Volatile var enabled: Boolean = false

@@ -11,6 +11,7 @@ import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.allowHardware
 import coil3.request.crossfade
 import okio.Path.Companion.toOkioPath
+import kotlinx.coroutines.flow.first
 import xyz.etkn.mobile.data.diagnostics.Diagnostics
 
 class EtknApp : Application(), SingletonImageLoader.Factory {
@@ -28,12 +29,19 @@ class EtknApp : Application(), SingletonImageLoader.Factory {
          * 真正的启动/停止在 Diagnostics.setEnabled() 里。
          * 注意：要在 graph 建好之后再恢复（要读设置里的开关状态）。
          */
-        runCatching {
-            val on = kotlinx.coroutines.runBlocking {
-                runCatching { graph.settings.flow.first().diagnosticsEnabled }.getOrDefault(false)
+        /**
+         * 用同步方式读一次「上次是否开着」，读不到就按关闭处理。
+         * 这里在主线程做一次极短的磁盘读取（DataStore 首次读有小开销），
+         * 用 runBlocking 是为了保证「日志开关状态」在 UI 起来前就绪。
+         */
+        val wasOn = runCatching {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(1_500L) {
+                    graph.settings.flow.first().diagnosticsEnabled
+                } ?: false
             }
-            if (on) Diagnostics.setEnabled(this, true)
-        }
+        }.getOrDefault(false)
+        if (wasOn) runCatching { Diagnostics.setEnabled(this, true) }
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader =

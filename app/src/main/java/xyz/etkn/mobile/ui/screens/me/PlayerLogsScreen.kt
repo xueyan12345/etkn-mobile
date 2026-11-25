@@ -37,7 +37,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import xyz.etkn.mobile.data.diagnostics.Diagnostics
-import xyz.etkn.mobile.data.settings.LocalSettings
 import xyz.etkn.mobile.ui.components.GlassBackBar
 import xyz.etkn.mobile.ui.components.GlassSheet
 import xyz.etkn.mobile.ui.theme.Etkn
@@ -66,7 +65,7 @@ fun PlayerLogsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val settings = LocalSettings.current
+    val settings = xyz.etkn.mobile.ui.theme.LocalSettings.current
     var enabled by remember(settings.diagnosticsEnabled) { mutableStateOf(settings.diagnosticsEnabled) }
     var files by remember { mutableStateOf<List<File>>(emptyList()) }
     var exporting by remember { mutableStateOf<File?>(null) }
