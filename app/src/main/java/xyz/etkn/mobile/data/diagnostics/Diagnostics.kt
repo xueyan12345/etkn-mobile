@@ -53,7 +53,17 @@ object Diagnostics {
      * 代价：文件写入量比只抓 ETKN*:I 略大（但原来是 *:E 抓全系统错误，总量并不小），
      * 轮转仍是 256KB × 8，够用。
      */
-    private val FILTER = listOf("--pid=${Process.myPid()}")
+    /**
+     * 用户口径（2026-11-26）**必须用 get() 惰性求值，不能在字段初始化时调 Process.myPid()**。
+     *
+     * 原因：`object Diagnostics` 的静态初始化在单元测试环境里也会执行，
+     * 那里 `Process.myPid()` 的行为和 Android 运行时不同，
+     * 直接写在字段初始化表达式里会让整个 object 初始化失败
+     * （表现为 `ExceptionInInitializerError` → 所有引用 Diagnostics 的测试全挂）。
+     *
+     * 改成 getter 之后：只有真正 start() 抓日志时才求值，测试环境不触发。
+     */
+    private val filter: List<String> get() = listOf("--pid=${Process.myPid()}")
 
     /**
      * 兜底用的 tag 白名单：仅当 PID 过滤不可用时才用（例如某些定制 ROM 的 logcat
@@ -76,7 +86,7 @@ object Diagnostics {
          * 先按 PID 抓（能收全本进程所有日志）；起不来再退回 tag 白名单。
          * 两者的区别只在「漏不漏日志」，不影响功能。
          */
-        val started = runCatching { ProcessBuilder(base + FILTER).redirectErrorStream(true).start() }
+        val started = runCatching { ProcessBuilder(base + filter).redirectErrorStream(true).start() }
             .onFailure { Log.w(TAG, "log recorder (pid filter) unavailable", it) }
             .getOrNull()
         if (started == null) {
@@ -102,7 +112,7 @@ object Diagnostics {
      * format and filter: the recorder dies with the process and usually misses exactly these.
      */
     internal fun processLog(pid: Int): List<String> = runCatching {
-        val process = ProcessBuilder(listOf("logcat", "-d", "-v", "threadtime,year", "--pid=$pid", "-t", "300") + FILTER)
+        val process = ProcessBuilder(listOf("logcat", "-d", "-v", "threadtime,year", "--pid=$pid", "-t", "300"))
             .redirectErrorStream(true).start()
         val lines = process.inputStream.bufferedReader().use { it.readLines() }
         process.waitFor(5, TimeUnit.SECONDS)
