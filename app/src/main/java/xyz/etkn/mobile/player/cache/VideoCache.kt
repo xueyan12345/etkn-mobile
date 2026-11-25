@@ -75,8 +75,6 @@ object VideoCache {
     /** 当前正在跑的缓存任务。 */
     @Volatile private var writerJob: Job? = null
     @Volatile private var writerItemId: String = ""
-    @Volatile private var writerTargetBytes: Long = 0L
-    @Volatile private var writerStartBytes: Long = 0L
 
     // ---------------------------------------------------------------- 生命周期
 
@@ -151,56 +149,118 @@ object VideoCache {
         limitMs: Long,
     ) {
         val store = cache ?: return
-        val upstream = upstreamFactory ?: return
         if (totalBytes <= 0 || limitBytes <= 0) return
 
         // 换算「应该缓存到哪个字节」
         val posBytes = if (durationMs > 0) {
             (totalBytes.toDouble() * positionMs.toDouble() / durationMs.toDouble()).toLong()
         } else 0L
-        val bytesBySize = limitBytes
         val bytesByTime = if (durationMs > 0 && limitMs > 0) {
             (totalBytes.toDouble() * limitMs.toDouble() / durationMs.toDouble()).toLong()
         } else Long.MAX_VALUE
         // 两个阈值谁先到谁停
-        val target = (posBytes + minOf(bytesBySize, bytesByTime)).coerceAtMost(totalBytes)
-
-        // 已经缓存到哪了
-        val alreadyCachedTo = runCatching {
-            posBytes + store.getCachedBytes(itemId, posBytes, target - posBytes)
-        }.getOrDefault(posBytes)
+        val target = (posBytes + minOf(limitBytes, bytesByTime)).coerceAtMost(totalBytes)
 
         /**
-         * 已经够 → 什么都不做（这就是「达到阈值就暂时不疯狂下载」）。
-         * 容差 2MB，避免每秒钟都重启任务。
+         * 用户口径（2026-11-27）**只更新参数，绝不重启任务**。
+         *
+         * 修的 bug（日志实证 799 条 cache-writer，cached 在 137↔0↔89↔0 之间乱跳）：
+         * 之前每次 tick 算出的 target 都会随着播放位置前进而变大，
+         * 而我用「target 变了就 cancel 旧任务、新建任务」——
+         * 于是每秒任务被取消重启一次，进度计数器永远从 0 开始，
+         * 永远下不完 400MB。
+         *
+         * 日志证据：同一秒内多个线程都在打 cache-writer，cached 频繁归零。
+         *
+         * 现在改成：
+         *  · 一个任务常驻，目标值写在 volatile 字段里
+         *  · tick 只更新字段（目标变大就多下，变小就等）
+         *  · 任务自己在循环里读最新目标，一直干到「已缓存 >= 目标」才休眠
+         *  · 切集才取消任务
          */
-        if (alreadyCachedTo >= target - 2L * 1024 * 1024) return
+        synchronized(this) {
+            this.targetBytes = target
+            this.limitBytesCfg = limitBytes
+            this.limitMsCfg = limitMs
+            this.totalBytesOf = totalBytes
+            this.durationMsOf = durationMs
+            this.urlOf = url
 
-        // 同一集且目标没变 → 正在跑的任务继续跑，别重复启动
-        if (writerJob?.isActive == true && writerItemId == itemId && writerTargetBytes == target) return
+            if (writerItemId != itemId) {
+                // 换集 → 取消旧任务，起新任务
+                writerJob?.cancel()
+                writerItemId = itemId
+                val upstream = upstreamFactory ?: return
+                writerJob = scope.launch {
+                    runCacheLoop(itemId, upstream, store)
+                }
+                Log.i(TAG, "cache-window start item=$itemId target=${target / 1048576}MB")
+            }
+            // 同集 → 什么都不做，任务自己会读到新的 targetBytes
+        }
+    }
 
-        // 目标变了 → 换新任务（旧任务先取消）
-        writerJob?.cancel()
-        writerItemId = itemId
-        writerTargetBytes = target
-        writerStartBytes = alreadyCachedTo
+    /** 缓存任务的参数（由 tick 更新，任务自己读）。 */
+    @Volatile private var targetBytes: Long = 0L
+    @Volatile private var limitBytesCfg: Long = 0L
+    @Volatile private var limitMsCfg: Long = 0L
+    @Volatile private var totalBytesOf: Long = 0L
+    @Volatile private var durationMsOf: Long = 0L
+    @Volatile private var urlOf: String = ""
 
-        writerJob = scope.launch {
-            val ds = CacheDataSource.Factory()
-                .setCache(store)
-                .setUpstreamDataSourceFactory(upstream)
-                .setCacheKeyFactory(keyFactory)
-                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-                .createDataSource() as CacheDataSource
+    /**
+     * 常驻缓存循环：一直把「播放位置往后」的数据补齐到目标，然后休眠等待。
+     * 只有切集才会被取消。
+     */
+    private suspend fun runCacheLoop(
+        itemId: String,
+        upstream: DataSource.Factory,
+        store: SimpleCache,
+    ) {
+        var lastLog = 0L
+        while (scope.isActive) {
+            val url = urlOf
+            val total = totalBytesOf
+            val target = targetBytes
+            if (url.isBlank() || total <= 0 || target <= 0) {
+                delay(500)
+                continue
+            }
+
+            // 已经缓存到哪（官方 API，CacheWriter 自己也用它）
+            val cached = runCatching { store.getCachedBytes(itemId, 0L, total) }.getOrDefault(0L)
+            if (cached >= target - 1L * 1024 * 1024) {
+                // 达到目标 → 休眠（这就是「暂时不疯狂下载」）
+                if (android.os.SystemClock.elapsedRealtime() - lastLog > 10_000L) {
+                    lastLog = android.os.SystemClock.elapsedRealtime()
+                    Log.i(TAG, "cache-window hold item=$itemId cached=${cached / 1048576}MB target=${target / 1048576}MB")
+                }
+                delay(1_000)
+                continue
+            }
+
+            /**
+             * 一次性把「已缓存 → 目标」这段写完。
+             * 用官方 CacheWriter，它会自动跳过已缓存的洞，只补缺的部分。
+             */
+            val from = cached
+            val want = (target - from).coerceAtLeast(1L)
+            val ds = runCatching {
+                CacheDataSource.Factory()
+                    .setCache(store)
+                    .setUpstreamDataSourceFactory(upstream)
+                    .setCacheKeyFactory(keyFactory)
+                    .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                    .createDataSource() as CacheDataSource
+            }.getOrNull() ?: break
 
             val spec = DataSpec.Builder()
                 .setUri(android.net.Uri.parse(url))
-                .setKey(itemId)                     // 与播放时同一个 key
-                .setPosition(alreadyCachedTo)       // 从「还没缓存到的位置」开始
-                .setLength(target - alreadyCachedTo)
+                .setKey(itemId)
+                .setPosition(from)
+                .setLength(want)
                 .build()
 
-            var lastLogged = 0L
             val writer = CacheWriter(
                 ds,
                 spec,
@@ -208,12 +268,12 @@ object VideoCache {
                 object : CacheWriter.ProgressListener {
                     override fun onProgress(requestLength: Long, bytesCached: Long, newBytesCached: Long) {
                         val now = android.os.SystemClock.elapsedRealtime()
-                        if (now - lastLogged > 5_000L) {
-                            lastLogged = now
+                        if (now - lastLog > 5_000L) {
+                            lastLog = now
                             Log.i(
                                 TAG,
                                 "cache-writer item=$itemId cached=${bytesCached / 1048576}MB " +
-                                    "target=${(target - alreadyCachedTo) / 1048576}MB",
+                                    "chunk=${want / 1048576}MB target=${target / 1048576}MB",
                             )
                         }
                     }
@@ -221,18 +281,20 @@ object VideoCache {
             )
             try {
                 writer.cache()
-                Log.i(
-                    TAG,
-                    "cache-writer done item=$itemId upTo=${target / 1048576}MB",
-                )
             } catch (e: java.io.InterruptedIOException) {
-                Log.i(TAG, "cache-writer cancelled item=$itemId")
+                // 切集/停止 → 正常退出
+                runCatching { ds.close() }
+                break
             } catch (t: Throwable) {
                 Log.w(TAG, "cache-writer failed item=$itemId", t)
-            } finally {
                 runCatching { ds.close() }
+                delay(1_000)
+                continue
             }
+            runCatching { ds.close() }
+            // 目标可能又变大了，回到循环顶部重新评估
         }
+        Log.i(TAG, "cache-window exit item=$itemId")
     }
 
     /** 停止当前缓存任务（切集/退出播放器）。 */
@@ -240,8 +302,8 @@ object VideoCache {
         writerJob?.cancel()
         writerJob = null
         writerItemId = ""
-        writerTargetBytes = 0L
-        writerStartBytes = 0L
+        targetBytes = 0L
+        urlOf = ""
     }
 
     // ---------------------------------------------------------------- 查询
