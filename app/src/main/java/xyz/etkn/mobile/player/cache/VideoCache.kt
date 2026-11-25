@@ -182,6 +182,8 @@ object VideoCache {
         } else Long.MAX_VALUE
         // 两个阈值谁先到谁停
         val target = (posBytes + minOf(limitBytes, bytesByTime)).coerceAtMost(totalBytes)
+        // 记下窗口起点：循环里必须从这里量「已缓存多少」，不能从 0 量（前面可能有洞）
+        posBytesOf = posBytes
 
         /**
          * 用户口径（2026-11-27）**只更新参数，绝不重启任务**。
@@ -229,6 +231,8 @@ object VideoCache {
     @Volatile private var totalBytesOf: Long = 0L
     @Volatile private var durationMsOf: Long = 0L
     @Volatile private var urlOf: String = ""
+    /** 当前窗口起点（播放位置对应的字节），循环从这里量已缓存量。 */
+    @Volatile private var posBytesOf: Long = 0L
 
     /**
      * 常驻缓存循环：一直把「播放位置往后」的数据补齐到目标，然后休眠等待。
@@ -241,6 +245,8 @@ object VideoCache {
     ) {
         var lastLog = 0L
         var lastKeyLog = 0L
+        var lastFrom = -1L
+        var noProgress = 0
         while (scope.isActive) {
             val url = urlOf
             val total = totalBytesOf
@@ -250,8 +256,23 @@ object VideoCache {
                 continue
             }
 
-            // 已经缓存到哪（官方 API，CacheWriter 自己也用它）
-            val cached = runCatching { store.getCachedBytes(itemId, 0L, total) }.getOrDefault(0L)
+            /**
+             * 用户口径（2026-11-27）**必须从窗口起点量，不能从 0 量**。
+             *
+             * 这是刚才 OOM 卡死的根因：
+             *  从 0 量时，播放位置之前（比如 643MB 处）本来就没缓存数据，
+             *  getCachedBytes(key, 0, total) 中间有洞 → 永远返回 0
+             *  → 循环认为「一点都没缓存」→ 每秒重新建一个 CacheDataSource+CacheWriter
+             *  → 对象爆炸 → Java 堆撑满 256MB → OutOfMemoryError → 卡死
+             *
+             * 日志证据：cache-writer cached=0MB chunk=1MB target=1043MB 反复出现、
+             * 同时 calc 里 aheadB=398MB（说明数据其实有，只是量错了位置）。
+             */
+            val from0 = posBytesOf
+            val cachedAhead = if (target > from0) {
+                runCatching { store.getCachedBytes(itemId, from0, target - from0) }.getOrDefault(0L)
+            } else 0L
+            val cached = from0 + cachedAhead
             /**
              * 用户口径（2026-11-27）**必须能看见缓存里的真实 key 和占用**。
              *
@@ -276,6 +297,30 @@ object VideoCache {
                 lastKeyLog = android.os.SystemClock.elapsedRealtime()
                 Log.i(TAG, "cache-progress item=$itemId cached=${cached / 1048576}MB target=${target / 1048576}MB")
             }
+            /**
+             * 无进展保护：如果这次算出来的起点和上次一样，
+             * 说明写不进去（key 冲突/上游拒绝），必须休眠等，不能空转。
+             */
+            if (cached == lastFrom) {
+                noProgress++
+                if (noProgress >= 3) {
+                    if (android.os.SystemClock.elapsedRealtime() - lastLog > 10_000L) {
+                        lastLog = android.os.SystemClock.elapsedRealtime()
+                        Log.w(
+                            TAG,
+                            "cache-window stuck item=$itemId at=${cached / 1048576}MB " +
+                                "target=${target / 1048576}MB（写不进去，休眠等待）",
+                        )
+                    }
+                    delay(3_000)
+                    noProgress = 0
+                    continue
+                }
+            } else {
+                noProgress = 0
+            }
+            lastFrom = cached
+
             if (cached >= target - 1L * 1024 * 1024) {
                 // 达到目标 → 休眠（这就是「暂时不疯狂下载」）
                 if (android.os.SystemClock.elapsedRealtime() - lastLog > 10_000L) {
