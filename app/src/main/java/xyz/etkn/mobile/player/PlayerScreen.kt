@@ -888,14 +888,28 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 FilledTonalButton(onClick = onBack) { Text("返回") }
             }
         }
+        /**
+         * 用户口径（2026-11-27）**浮层位置统一：距顶部 = 原来的一倍（28dp → 56dp）**。
+         *
+         * 需求原文：
+         *  · 长按倍速（2.0X）：「这个显示倍率的有点太往上了……
+         *    你现在屏幕最上边距离这个倍速的距离，再整体往下再平移这一个距离就行，
+         *    相当于这个倍速改完之后，距离屏幕最上边的距离是现在的两倍」
+         *  · 拖动快进快退：「把这个时间显示的位置改成跟刚才倍速那个调整之后的位置一致」
+         *
+         * 所以两个浮层现在都是 「TopCenter + 56dp」：
+         *  · Speed（长按倍速）
+         *  · Seek（拖动快进快退，带黑色底框）
+         * Level（亮度/音量）保持居中不变 —— 它是进度条形状，放顶部不合适。
+         */
         gesture?.let { feedback ->
-            // Notices sit high, clear of faces and subtitles; seek and level readouts stay central.
-            // 长按调速（Speed）也算 notice：放顶部，且 5 秒后自动消失，不长期挡画面。
-            val isNotice = feedback is GestureFeedback.Text || feedback is GestureFeedback.Speed
-            val place = if (isNotice) {
-                // 旋转画布已扣除安全区，这里不再重复补偿（否则双重偏移）
-                Modifier.align(Alignment.TopCenter).padding(top = 28.dp)
-            } else Modifier.align(Alignment.Center)
+            val place = when (feedback) {
+                is GestureFeedback.Text,
+                is GestureFeedback.Speed,
+                is GestureFeedback.Seek,
+                -> Modifier.align(Alignment.TopCenter).padding(top = 56.dp)
+                else -> Modifier.align(Alignment.Center)
+            }
             GestureBadge(feedback, place)
         }
         // 用户口径（2026-11-22）：倍速徽标持续 5 秒后自动隐藏。

@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -254,10 +255,33 @@ internal fun GestureBadge(feedback: GestureFeedback, modifier: Modifier) {
         contentAlignment = Alignment.Center,
     ) {
         when (feedback) {
-            is GestureFeedback.Seek -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(formatClock(feedback.targetMs), color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            /**
+             * 用户口径（2026-11-27）**大字时间与加减秒数放同一行，底部对齐**。
+             *
+             * 需求原文：
+             *  「上面的大字是进度，下边的小字是加减多少时间，你把这个小字和大字移到一行，
+             *    前面是大字时间，那个加减多少时间放在那个大字的后边，还是保持一样的大小就行。
+             *    大字在前面，小字在后边，跟在后边。然后这两个字的底部保持在同一条直线上就行」
+             *
+             * 实现：Row + verticalAlignment = Alignment.Bottom（底部对齐）
+             * 各自字号不变（headlineSmall / labelLarge）。
+             */
+            is GestureFeedback.Seek -> Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    formatClock(feedback.targetMs),
+                    color = Color.White,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
                 val sign = if (feedback.deltaMs >= 0) "+" else "-"
-                Text("$sign${formatClock(abs(feedback.deltaMs))}", color = Color.White.copy(alpha = 0.75f), style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "$sign${formatClock(abs(feedback.deltaMs))}",
+                    color = Color.White.copy(alpha = 0.75f),
+                    style = MaterialTheme.typography.labelLarge,
+                )
             }
             is GestureFeedback.Level -> Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(feedback.icon, null, tint = Color.White)

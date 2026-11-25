@@ -242,6 +242,8 @@ class VideoSession(
     private var currentUrl: String? = null
     /** 当前集资源总字节数（-1 = 未知）。 */
     private var currentLength: Long = -1L
+    /** 下一集资源总字节数（-1 = 未知，预加载时现场探）。 */
+    private var nextLength: Long = -1L
     /** 下一集的 (episodeId, url)，用于流水线预加载。 */
     private var nextUrl: Pair<String, String>? = null
     /**
@@ -466,11 +468,7 @@ class VideoSession(
         override fun onPlayerError(error: PlaybackException) {
             val current = source
             val position = player?.currentPosition ?: 0L
-            // An ISO the server did not mark as one: give the disc reader one try.
-            if (error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED && !discTried && current != null) {
-                playSource(current, position, disc = true)
-                return
-            }
+            // 用户口径（2026-11-27）：ISO 支持已移除，不再有「当成盘再试一次」的分支。
             Log.e(TAG, "playback error on ${engine?.label} ${error.errorCodeName}", error)
             if (engine == Engine.Exo && recoverAudio(error)) return
             // One core gave up: the other plays the same source from the same place.
@@ -605,6 +603,7 @@ class VideoSession(
 
     private fun engineFor(chosen: MediaSource, disc: Boolean): Engine {
         forcedEngine?.let { return it }
+        // 用户口径（2026-11-27）：disc 恒为 false（ISO 已移除），这行留着只为兼容旧调用点。
         if (disc) return Engine.Exo
         return when (settings.engine) {
             PlayerEngine.Exo -> Engine.Exo
@@ -629,6 +628,23 @@ class VideoSession(
     }
 
     /** Swaps cores only when the wanted one differs; an mpv that cannot start falls back to ExoPlayer. */
+    /**
+     * 用户口径（2026-11-27）**统一创建 Exo 播放器，并把「当前这一集」的缓存上下文传下去**。
+     *
+     * 缓存数据源需要知道 itemId（决定读写哪个缓存目录）和总字节数
+     * （决定最后一块多长）。这两个值会随换集变化，所以传回调而不是值。
+     */
+    private fun videoPlayer(): Player =
+        PlayerFactory.video(
+            context = context,
+            client = graph.http.media,
+            userAgent = graph.identity.userAgent,
+            decoder = settings.decoder,
+            settings = settings,
+            cacheItemId = { item?.id ?: "" },
+            cacheTotalBytes = { currentLength },
+        )
+
     private fun ensurePlayer(wanted: Engine): Player {
         val existing = _player.value
         if (existing != null && engine == wanted) return existing
@@ -659,9 +675,9 @@ class VideoSession(
             }
                 .onFailure { Log.e(TAG, "mpv unavailable", it) }
                 .getOrNull()
-                ?: (Engine.Exo to PlayerFactory.video(context, graph.http.media, graph.identity.userAgent, settings.decoder, settings))
+                ?: (Engine.Exo to videoPlayer())
         } else {
-            Engine.Exo to PlayerFactory.video(context, graph.http.media, graph.identity.userAgent, settings.decoder, settings)
+            Engine.Exo to videoPlayer()
         }
         engine = created.first
         val next = created.second
@@ -804,7 +820,17 @@ class VideoSession(
         }
     }
 
-    private fun playSource(chosen: MediaSource, startMs: Long, disc: Boolean = PlaybackAddress.isDisc(chosen)) {
+    /**
+     * 用户口径（2026-11-27）**不再支持 ISO 蓝光盘播放**。
+     *
+     * 用户明确表示没有 ISO 片源，且盘播放牵扯 libbluray、盘内标题/章节、
+     * DV p7→p8.1 蓝光路径，会让缓存代理多一条完全不同的分支。
+     * 去掉之后所有片源只剩「普通视频流」一种形态，缓存数据源只处理 Range 请求。
+     *
+     * [disc] 参数保留但恒为 false（外部还有调用点），蓝光相关类文件不删，
+     * 万一以后要用重新接回来即可。
+     */
+    private fun playSource(chosen: MediaSource, startMs: Long, disc: Boolean = false) {
         val current = item ?: return
         if (source !== chosen) {
             discTried = false
@@ -894,7 +920,7 @@ class VideoSession(
          *                        下次进来才是真命中
          */
         // 用户口径（2026-11-23）：缓存文件按 itemId 命名，这里也按 id 查
-        val cachedLocal = if (!disc) PlaybackCache.localFileById(context, current.id) else null
+        val cachedLocal = PlaybackCache.localFileById(context, current.id)
         val cacheComplete = cachedLocal != null
         val subtitles = chosen.subtitles.filter { it.isExternal && it.deliveryUrl != null && !offline }.mapNotNull { stream ->
             val address = PlaybackAddress.subtitle(stream.deliveryUrl!!, session.server, session.token) ?: return@mapNotNull null
@@ -1109,17 +1135,24 @@ class VideoSession(
                 url = nextUrl?.second ?: "",
                 introEndMs = nextIntroEndMs,
                 durationMs = nextDurationMs,
+                lengthBytes = nextLength,
             ).takeIf { it.itemId.isNotEmpty() && it.url.isNotEmpty() }
 
-            val job = PlaybackCache.pipeline(
+            /**
+             * 用户口径（2026-11-27）**旧的「另起一条流写整文件」已停用**。
+             *
+             * 停用原因：现在缓存由 CachedDataSource 负责（播放器要什么就拉什么、顺手写块），
+             * 如果再让旧流水线同时下当前集，就是两条流抢带宽、重复下载，
+             * 还会把 .part 文件写乱。
+             *
+             * 所以这里只保留「下一集预加载」这一个能力（它仍然有用：
+             * 提前把下一集头部铺好，点下一集能秒开）。
+             */
+            val job = PlaybackCache.preloadNextOnly(
                 client = graph.http.media,
                 context = graph.app,
                 settings = settings,
                 currentEpisodeId = currentItem.id,
-                currentUrl = cur,
-                currentPositionMs = positionMs,
-                currentDurationMs = durationMs,
-                currentLength = length,
                 next = nextInfo,
             )
             job?.join()
@@ -1133,12 +1166,21 @@ class VideoSession(
              * 现在按真实落盘文件换算：当前集缓存到第几毫秒。
              * 这是滑动窗口的结果，所以会随播放位置一起前进 —— 单集内缓冲条恒长。
              */
-            val cachedMs = PlaybackCache.cachedPositionMs(
-                context = graph.app,
-                itemId = currentItem.id,
-                durationMs = durationMs,
-                totalBytes = currentLength,
-            )
+            /**
+             * 用户口径（2026-11-27）**缓冲条改用播放器自己的 bufferedPosition**。
+             *
+             * 这是本次重构最关键的一处改动。
+             *
+             * 之前：`PlaybackCache.cachedPositionMs` 是我们自己按字节区间算的，
+             * 跟播放器实际能播到哪毫无关系 → 用户看到「越来越少，然后突然变长」。
+             * 改过 4 次（12MB 分片 → 1MB → 窗口平移 → 连续区间）都是在这个数上打转。
+             *
+             * 现在：缓存已经是播放器的数据源（CachedDataSource），
+             * 所以 bufferedPosition 就是「真实能播到哪」——
+             * 本地有块就是满的，缺的会边拉边补，天然不会出现
+             * 「进度追上缓冲」这种矛盾。
+             */
+            val cachedMs = player?.bufferedPosition?.coerceAtLeast(0L) ?: 0L
             /**
              * 用户口径（2026-11-24）**气泡不亮的根因就在这里**。
              *

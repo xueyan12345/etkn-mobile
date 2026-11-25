@@ -1,5 +1,6 @@
 package xyz.etkn.mobile.player
 
+import xyz.etkn.mobile.player.cache.BlockStore
 import android.content.Context
 import android.net.Uri
 import androidx.media3.datasource.DataSource
@@ -809,6 +810,113 @@ object PlaybackCache {
      *
      * @param next 下一集 (itemId, url, introEndMs:-1 无片头, durationMs)
      */
+    /**
+     * 用户口径（2026-11-27）**只做「下一集预加载」，当前集交给缓存数据源**。
+     *
+     * 为什么改成这样：
+     *  · 当前集已经由 CachedDataSource 边播边缓存（播放器要什么就拉什么）
+     *    再让这里下一次就是两条流抢带宽 + 重复下载
+     *  · 而下一集没有任何「播放」在驱动它，必须主动去铺
+     *
+     * 判据（这是用户反馈「预加载有时候不准」的正解）：
+     *  · 按「块」判断，不看「下了多少字节」这种估算
+     *  · 门槛 = 覆盖到「下一集起播点 + 片头结束点」
+     *    —— 这是能直接验证的事实：点下一集确实能立刻出画
+     *  · 已经覆盖就直接返回（不重复下）
+     */
+    fun preloadNextOnly(
+        client: OkHttpClient,
+        context: Context,
+        settings: Settings,
+        currentEpisodeId: String,
+        next: NextEpisode?,
+    ): Job? {
+        if (!settings.preloadNext) return null
+        val target = next ?: return null
+        if (target.itemId.isBlank() || target.url.isBlank()) return null
+        if (preloading.contains(target.itemId)) return null
+
+        val job = workScope.launch {
+            preloading.add(target.itemId)
+            try {
+                val store = BlockStore.get(context)
+                // 总长未知 → 现场探一次（HEAD 请求拿 Content-Length）
+                val total = if (target.lengthBytes > 0) target.lengthBytes else probeLength(client, target.url)
+                /**
+                 * 预加载目标字节位置：
+                 *  · 有片头且片头结束时间已知 → 铺到「片头结束 + 1 分钟」
+                 *  · 否则 → 按配额（时间/大小取小者）的一半
+                 * 两种情况都换算成块，再多铺一块兜底（避免刚好差一点点）。
+                 */
+                val durationMs = target.durationMs
+                val bpm = if (durationMs > 0 && total > 0) total.toDouble() / durationMs else 0.0
+                val needMs = when {
+                    target.introEndMs > 0 -> target.introEndMs + 60_000L
+                    else -> maxWindowMs(settings) / 2
+                }
+                val needBytes = if (bpm > 0) {
+                    (needMs * bpm).toLong()
+                } else {
+                    // 时长未知 → 按大小配额的一半
+                    maxWindowBytes(settings) / 2
+                }
+                val endBlock = (needBytes / BlockStore.DEFAULT_BLOCK_SIZE) + 1
+
+                var filled = 0
+                for (i in 0 until endBlock) {
+                    val end = minOf(store.blockStart(i) + BlockStore.DEFAULT_BLOCK_SIZE, total)
+                    if (end <= 0) break
+                    if (store.hasBlock(target.itemId, i, total)) continue
+                    val ok = fetchAndStoreBlock(client, store, target.itemId, target.url, i, total)
+                    if (!ok) break
+                    filled++
+                }
+                val covered = store.contiguousBytesFrom(target.itemId, 0, total)
+                val ready = covered >= needBytes.coerceAtLeast(1L)
+                android.util.Log.i(
+                    "ETKN-Cache",
+                    "preload next=${target.itemId} blocks=$filled covered=${covered / 1048576}MB " +
+                        "need=${needBytes / 1048576}MB ready=$ready",
+                )
+                if (ready) nextComplete = true
+            } catch (t: Throwable) {
+                android.util.Log.w("ETKN-Cache", "preload failed", t)
+            } finally {
+                preloading.remove(target.itemId)
+            }
+        }
+        return job
+    }
+
+    /** 下载并落盘「下一集」的某一块（先写 .part 不改名，直接按块文件写）。 */
+    private fun fetchAndStoreBlock(
+        client: OkHttpClient,
+        store: BlockStore,
+        itemId: String,
+        url: String,
+        index: Long,
+        total: Long,
+    ): Boolean {
+        val start = store.blockStart(index)
+        val expected = store.expectedSize(index, total).toInt()
+        if (expected <= 0) return false
+        val request = Request.Builder()
+            .url(url)
+            .header("Range", "bytes=$start-${start + expected - 1}")
+            .build()
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use false
+                val bytes = response.body?.bytes() ?: return@use false
+                if (bytes.isEmpty()) return@use false
+                store.writeBlock(itemId, index, bytes, bytes.size)
+            }
+        }.getOrDefault(false)
+    }
+
+    /** 正在预加载的 itemId（防重复）。 */
+    private val preloading = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     fun pipeline(
         client: OkHttpClient,
         context: Context,
@@ -878,6 +986,8 @@ object PlaybackCache {
         val introEndMs: Long,
         /** 这一集总时长（毫秒）；0 = 未知。 */
         val durationMs: Long,
+        /** 这一集总字节数；-1 = 未知（预加载时现场探）。 */
+        val lengthBytes: Long = -1L,
     )
 
     /**

@@ -14,6 +14,9 @@ import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import okhttp3.OkHttpClient
 import xyz.etkn.mobile.data.settings.DecoderPreference
 import xyz.etkn.mobile.player.bluray.BlurayMediaSourceFactory
+import xyz.etkn.mobile.player.cache.BlockStore
+import xyz.etkn.mobile.player.cache.CachedDataSource
+import xyz.etkn.mobile.player.cache.httpFactory
 import java.util.Locale
 
 /**
@@ -101,6 +104,12 @@ object PlayerFactory {
         decoder: DecoderPreference,
         /** 用户口径（2026-11-23）：带上设置，播放走磁盘缓存（预加载的内容直接命中）。 */
         settings: xyz.etkn.mobile.data.settings.Settings? = null,
+        /**
+         * 用户口径（2026-11-27）：缓存数据源需要知道「当前播的是哪一集、总长多少」。
+         * 用回调而不是值：换集时 VideoSession 更新这两个字段，Exo 不用重建。
+         */
+        cacheItemId: () -> String = { "" },
+        cacheTotalBytes: () -> Long = { -1L },
     ): ExoPlayer {
         DolbyVision.init(context)
         val renderers = NextRenderersFactory(context)
@@ -147,7 +156,7 @@ object PlayerFactory {
         return ExoPlayer.Builder(context, renderers)
             .setTrackSelector(selector)
             .setLoadControl(load)
-            .setMediaSourceFactory(videoSources(context, client, userAgent, settings))
+            .setMediaSourceFactory(videoSources(context, client, userAgent, settings, cacheItemId, cacheTotalBytes))
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .setAudioAttributes(
@@ -182,15 +191,70 @@ object PlayerFactory {
      * the default extractors. Both play Dolby Vision profile 7 as 8.1 where the device can, else as
      * its HEVC HDR10 base layer.
      */
+    /**
+     * 用户口径（2026-11-27）**缓存插到数据源层（这是本次重构的核心）**。
+     *
+     * 原来（作者的注释也写了）：SimpleCache 的 key 带 token 永远命中不了，
+     * 所以缓存改成「另起一条流写整文件」，播放器完全不知道有缓存。
+     * 结果：拖到已缓存区间也不秒播、缓冲条还忽长忽短。
+     *
+     * 现在：不再用 SimpleCache（它的 key 问题确实存在），
+     * 改成自建的 [CachedDataSource]（按块存，key = itemId，不带 token）。
+     * 播放器要数据时先问本地块，没有再拉上游 —— 所以两个内核都能「下到哪播到哪」。
+     *
+     * [cacheItemId] / [cacheTotalBytes] 是「当前正在播哪一集、总长多少」的回调，
+     * 因为 Exo 的 MediaItem 里不方便带这两个值（换集时由 VideoSession 更新）。
+     */
     private fun videoSources(
         context: Context,
         client: OkHttpClient,
         userAgent: String,
         settings: xyz.etkn.mobile.data.settings.Settings?,
+        cacheItemId: () -> String = { "" },
+        cacheTotalBytes: () -> Long = { -1L },
     ): BlurayMediaSourceFactory {
-        // 用户口径（2026-11-23）：缓存不做在数据源层（SimpleCache 的 key 带 token 永远命中不了），
-        // 改成落地成整文件：命中时 VideoSession 直接把 file:// 交给播放器。
-        val data: DataSource.Factory = dataSource(client, userAgent)
+        val plain: DataSource.Factory = dataSource(client, userAgent)
+        /**
+         * 只有「普通视频」走缓存数据源；file:// 仍然直读，
+         * 由 CachedDataSource 内部判断（它只处理 http/https 上游）。
+         */
+        val data: DataSource.Factory = object : DataSource.Factory {
+            private val cached = CachedDataSource.Factory(
+                upstream = httpFactory(client, userAgent),
+                store = BlockStore.get(context),
+                itemId = cacheItemId,
+                totalBytes = cacheTotalBytes,
+            )
+            private val file = androidx.media3.datasource.FileDataSource.Factory()
+
+            override fun createDataSource(): DataSource =
+                object : DataSource {
+                    private var active: DataSource? = null
+                    private var isFile = false
+
+                    override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
+                        val wantFile = dataSpec.uri.scheme.equals("file", true)
+                        val cur = active
+                        if (cur == null || wantFile != isFile) {
+                            runCatching { cur?.close() }
+                            active = if (wantFile) file.createDataSource() else cached.createDataSource()
+                            isFile = wantFile
+                        }
+                        return active!!.open(dataSpec)
+                    }
+
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                        active!!.read(buffer, offset, length)
+
+                    override fun getUri(): android.net.Uri? = active?.uri
+                    override fun getResponseHeaders(): Map<String, List<String>> =
+                        active?.responseHeaders ?: emptyMap()
+                    override fun close() {
+                        runCatching { active?.close() }
+                        active = null
+                    }
+                }
+        }
         val ordinary = DefaultMediaSourceFactory(ResolvedRedirects(data), BlurayMediaSourceFactory.baseLayerExtractors())
         return BlurayMediaSourceFactory(ordinary, client, userAgent, data)
     }
