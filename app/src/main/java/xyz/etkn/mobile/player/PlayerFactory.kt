@@ -110,6 +110,7 @@ object PlayerFactory {
          */
         cacheItemId: () -> String = { "" },
         cacheTotalBytes: () -> Long = { -1L },
+        cacheDurationMs: () -> Long = { 0L },
     ): ExoPlayer {
         DolbyVision.init(context)
         val renderers = NextRenderersFactory(context)
@@ -143,20 +144,45 @@ object PlayerFactory {
          *  · forPlayback 起播要攒够多少才出首帧  ← 这条直接决定「点开多久能看到画面」
          *  · afterRebuffer 卡顿后要攒够多少继续播
          */
+        /**
+         * 用户口径（2026-11-27）**缓冲上限交给缓存策略决定，不再由播放器砍到 60 秒**。
+         *
+         * 用户实证：「缓冲条感觉偏短」。
+         *
+         * 根因：这里 max = 60_000 —— 播放器最多只缓冲 60 秒就停止请求数据。
+         * 用户设的「400MB / 1200 秒」根本轮不到生效，缓冲条永远只有 60 秒长
+         * （一部 45 分钟的片子只占 2%），所以看着特别短。
+         *
+         * 现在：把播放器的 max 放到足够大（1 小时），让它不再是刹车；
+         * 真正的刹车由 CachedDataSource + 缓存策略（字节/时长双阈值，谁先到谁停）负责。
+         *
+         * 保留 min / forPlayback 不动：起播速度仍然很快。
+         * afterRebuffer 也不动：卡顿恢复行为不变。
+         */
+        val bufferedMaxMs = settings?.let {
+            // 用户设的时长阈值 + 5 分钟余量；至少 5 分钟，避免设很小值时反而卡顿
+            (it.cacheMemorySeconds.coerceIn(30, 7200).toLong() * 1000L + 5 * 60_000L)
+                .coerceAtLeast(5 * 60_000L)
+        } ?: (60 * 60_000L)
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 /* min */ 8_000,
-                /* max */ 60_000,
+                /* max */ bufferedMaxMs,
                 /* forPlayback */ 200,
                 /* afterRebuffer */ 1_500,
             )
             // 按字节判断是否够播会让大码率片源起播更慢，改成只看时间
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
+        android.util.Log.i(
+            "ETKN-Play",
+            "loadControl min=8s max=${bufferedMaxMs / 1000}s " +
+                "(缓存阈值 ${settings?.cacheMemoryMb ?: -1}MB / ${settings?.cacheMemorySeconds ?: -1}s)",
+        )
         return ExoPlayer.Builder(context, renderers)
             .setTrackSelector(selector)
             .setLoadControl(load)
-            .setMediaSourceFactory(videoSources(context, client, userAgent, settings, cacheItemId, cacheTotalBytes))
+            .setMediaSourceFactory(videoSources(context, client, userAgent, settings, cacheItemId, cacheTotalBytes, cacheDurationMs))
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .setAudioAttributes(
@@ -212,6 +238,8 @@ object PlayerFactory {
         settings: xyz.etkn.mobile.data.settings.Settings?,
         cacheItemId: () -> String = { "" },
         cacheTotalBytes: () -> Long = { -1L },
+        /** 当前集总时长（毫秒），用于把「时长阈值」换算成字节。 */
+        cacheDurationMs: () -> Long = { 0L },
     ): BlurayMediaSourceFactory {
         val plain: DataSource.Factory = dataSource(client, userAgent)
         /**
@@ -224,6 +252,35 @@ object PlayerFactory {
                 store = BlockStore.get(context),
                 itemId = cacheItemId,
                 totalBytes = cacheTotalBytes,
+                /**
+                 * 用户口径（2026-11-27）**两个阈值谁先到谁停**。
+                 *
+                 * 这是「缓冲条长度对不对」的正解：
+                 *  · 字节阈值（cacheMemoryMb）→ 直接是字节上限
+                 *  · 时长阈值（cacheMemorySeconds）→ 按当前片子的码率换算成字节
+                 *  · 取两者较小值
+                 *
+                 * 举例：片子 1000MB / 45 分钟，设 400MB + 1200 秒
+                 *  · 400MB 对应 40%
+                 *  · 1200 秒对应 1200/2700 ≈ 44%
+                 *  · 取小 → 400MB → 缓冲条占 40%（与用户预期一致）
+                 *
+                 * totalBytes <= 0（还没探到）→ 不限，先让它正常缓冲。
+                 */
+                cacheLimitBytes = {
+                    val total = cacheTotalBytes()
+                    val cfg = settings
+                    if (total <= 0 || cfg == null) {
+                        -1L
+                    } else {
+                        val bySize = cfg.cacheMemoryMb.coerceIn(32, 8192).toLong() * 1024L * 1024L
+                        val seconds = cfg.cacheMemorySeconds.coerceIn(30, 7200).toLong()
+                        // 时长阈值换算成字节：需要 duration，由 cacheDurationMs 提供
+                        val dur = cacheDurationMs()
+                        val byTime = if (dur > 0) (total.toDouble() * seconds * 1000.0 / dur.toDouble()).toLong() else Long.MAX_VALUE
+                        minOf(bySize, byTime).coerceAtMost(total)
+                    }
+                },
             )
             private val file = androidx.media3.datasource.FileDataSource.Factory()
 

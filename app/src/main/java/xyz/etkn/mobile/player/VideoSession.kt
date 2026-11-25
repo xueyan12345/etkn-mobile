@@ -114,6 +114,15 @@ data class VideoUi(
 )
 
 private const val TAG = "ETKN-Play"
+
+/**
+ * 用户口径（2026-11-27）**剩余多少时长就开始预加载下一集**。
+ *
+ * 5 分钟：足够铺好下一集「片头 + 1 分钟」，又不会太早去抢当前集带宽。
+ * 这是「缓冲条到不了片尾」时的兜底 —— 保证临到片尾一定已经开始铺，
+ * 不用用户把进度条拉到最末尾才触发。
+ */
+private const val PRELOAD_LEAD_MS = 5 * 60 * 1000L
 private const val MAX_OFFSET_MS = 600_000
 
 /** The two video cores. */
@@ -451,8 +460,27 @@ class VideoSession(
                         forcedEngine = want
                         val cur = source
                         val pos = player?.currentPosition ?: 0L
-                        if (cur != null) {
-                            main.post { if (!released && source === cur) playSource(cur, pos) }
+                        /**
+                         * 用户口径（2026-11-27）**自动选核也要真的切过去**。
+                         *
+                         * 用户实证：「黑屏那个视频还是打不开，我手动切换了一下内核
+                         * 才显示，自动的那个没生效」——
+                         * 说明自动决策算对了（日志有「自动选核 → mpv」），
+                         * 但那次切换没执行。
+                         *
+                         * 根因和之前手动切换那个 bug 完全一样：
+                         * 切换动作被包在 main.post 里，投递没有真正跑（或跑之前
+                         * source 已变），于是 forcedEngine 设了但播放器没重建。
+                         *
+                         * 现在：直接在回调线程调 playSource。
+                         * onTracksChanged 本身就在主线程（Exo 的内部播放线程投递到
+                         * 应用线程），不需要再 post 一次。
+                         */
+                        if (cur != null && !released) {
+                            runCatching { playSource(cur, pos) }
+                                .onFailure { android.util.Log.e(TAG, "自动选核重建失败", it) }
+                        } else {
+                            android.util.Log.w(TAG, "自动选核跳过重建：source=${cur != null} released=$released")
                         }
                     }
                 }
@@ -477,7 +505,24 @@ class VideoSession(
              * 用户口径（2026-11-26）：手动选了内核就不许自动换。
              * 之前这里无条件换，会把用户选的 Exo/mpv 覆盖掉。
              */
-            if (current != null && forcedEngine == null && failed != null && !discTried && autoSwitchAllowed) {
+            /**
+             * 用户口径（2026-11-27）**这里保留 main.post，但修掉一个会吞掉切换的条件**。
+             *
+             * 为什么必须 post：回调返回后失败的内核才被 release，
+             * 同步重建会和正在释放的实例打架。这一条是有意为之，不改。
+             *
+             * 但原来条件是 `forcedEngine == null`：
+             *  · 自动选核已经把 forcedEngine 设成 mpv 了
+             *  · 这时 Exo 报错想切 mpv → 条件不成立 → 不再动作（正确）
+             *  · 但反过来说明：只要 forcedEngine 有值就完全不补救，
+             *    万一 forcedEngine 指向的内核也失败，就永远不换
+             *
+             * 现在改成判断「failed 是否已经等于我想要的内核」：
+             * 失败的就是目标内核 → 没得换（避免来回切）；
+             * 失败的还不是目标 → 换过去。
+             */
+            val target = forcedEngine
+            if (current != null && failed != null && failed != target && !discTried && autoSwitchAllowed) {
                 val other = if (failed == Engine.Exo) Engine.Mpv else Engine.Exo
                 forcedEngine = other
                 showNotice("已切换到 ${other.label} 内核")
@@ -643,6 +688,7 @@ class VideoSession(
             settings = settings,
             cacheItemId = { item?.id ?: "" },
             cacheTotalBytes = { currentLength },
+            cacheDurationMs = { player?.duration?.coerceAtLeast(0L) ?: 0L },
         )
 
     private fun ensurePlayer(wanted: Engine): Player {
@@ -941,16 +987,36 @@ class VideoSession(
          *
          * 这里改成两步：① 先算出一个合法的播放 URI，② 打日志把真实值记下来。
          */
-        val playUri: android.net.Uri = run {
-            val local = cachedLocal
-            if (local != null) {
-                // file:// 必须是绝对路径且不能带查询串；用 fromFile 生成后再校验一次
-                val u = android.net.Uri.fromFile(local)
-                val bad = !u.scheme.equals("file", true) || u.path.isNullOrEmpty()
-                if (bad) url.let { android.net.Uri.parse(it) } else u
-            } else {
-                android.net.Uri.parse(url)
-            }
+        /**
+         * 用户口径（2026-11-27）**两个内核统一走本机缓存代理**。
+         *
+         * 之前：Exo 有数据源缓存，mpv 只能等「整集下完的旧文件」——
+         * 两套缓存互不相通，mpv 下永远半截不能用。
+         *
+         * 现在：
+         *  · 启动本机代理（127.0.0.1 随机端口，只服务 /item/<id>）
+         *  · 把这一集的上游地址登记进去
+         *  · Exo 和 mpv 都播 http://127.0.0.1:<port>/item/<id>
+         *    → 谁都能「本地有就读本地、没有就边拉边存」
+         *
+         * 代理起不来（极罕见）→ 退回直连上游，功能不受影响，只是没缓存加速。
+         */
+        val proxyStore = xyz.etkn.mobile.player.cache.BlockStore.get(context)
+        val proxyPort = xyz.etkn.mobile.player.cache.LocalProxy.start(proxyStore, graph.http.media)
+        if (proxyPort > 0) {
+            xyz.etkn.mobile.player.cache.LocalProxy.register(current.id, url, currentLength)
+        }
+        val proxied = xyz.etkn.mobile.player.cache.LocalProxy.urlFor(current.id)
+
+        val playUri: android.net.Uri = if (proxied != null) {
+            android.net.Uri.parse(proxied)
+        } else if (cachedLocal != null) {
+            // 代理不可用时的兜底：整集文件直读（老路径）
+            val u = android.net.Uri.fromFile(cachedLocal)
+            val bad = !u.scheme.equals("file", true) || u.path.isNullOrEmpty()
+            if (bad) android.net.Uri.parse(url) else u
+        } else {
+            android.net.Uri.parse(url)
         }
         /**
          * 用户口径（2026-11-26）**这一行是「退出再进有没有命中缓存」的唯一判据**。
@@ -1123,6 +1189,23 @@ class VideoSession(
         if (settings.preloadNext && nextUrl == null) {
             startNextIfIdle(currentItem)
         }
+
+        /**
+         * 用户口径（2026-11-27）**预加载的触发条件：当前集快播完了才开始铺下一集**。
+         *
+         * 修的问题（用户原话）：「我这都已经片尾了，它还不触发下一集预加载，
+         * 难道我要等拉到最后吗」
+         *
+         * 原来没有任何位置条件，靠 currentComplete（缓冲条铺到片尾）来卡，
+         * 但缓冲条常常到不了片尾（Exo 上限 + 缓存阈值），于是永远不触发。
+         *
+         * 现在用两个条件里任意一个成立就开始：
+         *  ① 当前集已缓冲到片尾（最快路径，缓冲够大时成立）
+         *  ② 剩余时长不足 [PRELOAD_LEAD_MS]（兜底，保证临到片尾一定开始）
+         * 并且加防重入：本轮已经在铺就不再发起。
+         */
+        val nearEnd = durationMs > 0 && (durationMs - positionMs) <= PRELOAD_LEAD_MS
+        val shouldPreload = settings.preloadNext && (PlaybackCache.currentCompleteFlag() || nearEnd)
 
         val length = currentLength
         scope.launch {

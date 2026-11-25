@@ -29,6 +29,18 @@ class CachedDataSource(
     private val store: BlockStore,
     private val itemId: () -> String,
     private val totalBytes: () -> Long,
+    /**
+     * 用户口径（2026-11-27）**两个阈值，谁先到谁停**。
+     *
+     * 返回已经「允许缓存到」的绝对字节位置；超过这个位置就不再往磁盘写，
+     * 但仍会照常把数据给播放器（否则播放会断）。
+     *
+     * 这样缓冲条长度 = 用户设的阈值对应的真实比例：
+     *   设 400MB 的片 → 缓冲条占 40%
+     *   设 1200 秒的片 → 缓冲条占对应比例
+     *   谁先到停在谁那里
+     */
+    private val cacheLimitBytes: () -> Long = { -1L },
 ) : BaseDataSource(/* isNetwork = */ true) {
 
     companion object {
@@ -59,6 +71,24 @@ class CachedDataSource(
         bytesRemaining = dataSpec.length
         val id = itemId()
         val total = totalBytes()
+
+        /**
+         * 用户口径（2026-11-27）**本机代理地址必须透传，不能再套一层缓存**。
+         *
+         * 现在 Exo 和 mpv 都播 http://127.0.0.1:<port>/item/<id>（见 LocalProxy）。
+         * 缓存由代理那一层负责。如果这里再对 localhost 做一次块缓存，
+         * 就会有两层缓存 + 两个写入者往同一批块文件写 → 数据可能写坏。
+         *
+         * 所以：目标是本机回环地址时，直接透传给上游 HTTP 源，本类不介入。
+         */
+        if (isLocalProxy(dataSpec.uri)) {
+            val ds = upstream()
+            val openedLength = ds.open(dataSpec)
+            opened = true
+            if (bytesRemaining == C.LENGTH_UNSET.toLong()) bytesRemaining = openedLength
+            transferStarted(dataSpec)
+            return openedLength
+        }
 
         /**
          * 先问本地：从 readPosition 起连续多少字节可用。
@@ -108,6 +138,18 @@ class CachedDataSource(
         val id = itemId()
         val total = totalBytes()
 
+        // 本机代理地址 → 纯透传，不碰缓存（同 open 的说明）
+        if (uri?.contains("127.0.0.1") == true) {
+            val src = upstream ?: return C.RESULT_END_OF_INPUT
+            val read = src.read(buffer, offset, want)
+            if (read > 0) {
+                readPosition += read
+                if (bytesRemaining != C.LENGTH_UNSET.toLong()) bytesRemaining -= read
+                bytesTransferred(read)
+            }
+            return read
+        }
+
         // ① 本地优先（每次都重新问：上游边读边写块，覆盖面会变大）
         if (id.isNotEmpty()) {
             val have = store.contiguousBytesFrom(id, readPosition, total)
@@ -144,6 +186,12 @@ class CachedDataSource(
      */
     private fun feed(id: String, position: Long, buffer: ByteArray, offset: Int, length: Int, total: Long) {
         if (id.isEmpty() || total <= 0) return
+        /**
+         * 超过用户设的缓存阈值 → 不再写盘（但数据照常返回给播放器，播放不中断）。
+         * 这是「达到阈值就停止缓存」的实现点。
+         */
+        val limit = cacheLimitBytes()
+        if (limit > 0 && position >= limit) return
         runCatching {
             var pos = position
             var off = offset
@@ -219,6 +267,10 @@ class CachedDataSource(
         }
     }
 
+    /** 是不是我们自己起的本机代理地址。 */
+    private fun isLocalProxy(uri: android.net.Uri): Boolean =
+        uri.host?.let { it == "127.0.0.1" || it == "localhost" } == true
+
     private fun upstream(): HttpDataSource =
         upstream ?: upstreamFactory.createDataSource().also { upstream = it }
 
@@ -230,9 +282,10 @@ class CachedDataSource(
         private val store: BlockStore,
         private val itemId: () -> String,
         private val totalBytes: () -> Long,
+        private val cacheLimitBytes: () -> Long = { -1L },
     ) : DataSource.Factory {
         override fun createDataSource(): DataSource =
-            CachedDataSource(upstream, store, itemId, totalBytes)
+            CachedDataSource(upstream, store, itemId, totalBytes, cacheLimitBytes)
     }
 }
 

@@ -93,7 +93,21 @@ object PlaybackCache {
      * 三个条件同时满足才为 true。
      */
     fun isNextReady(): Boolean {
-        val ready = currentComplete && nextComplete
+        /**
+         * 用户口径（2026-11-27）**气泡只看「下一集铺好了」，不再要求当前集缓冲到头**。
+         *
+         * 修的问题（用户原话）：「如果这个缓冲它不到头的话，它就无法触发下一集预加载，
+         * 可是我这都已经片尾了，它还不触发下一集预加载，难道我要等拉到最后吗」
+         *
+         * 根因：原来 ready = currentComplete && nextComplete，
+         * 而 currentComplete 要求「缓冲条铺到片尾」——
+         * 但 Exo 有 60 秒上限（且缓存阈值也有限），缓冲条常常到不了片尾，
+         * 于是 currentComplete 永远 false → 气泡永远不亮、下一集永远不预加载。
+         *
+         * 现在：只看 nextComplete（下一集是否真的铺到能秒播），
+         * 因为「下一集能不能秒播」和「当前集缓冲完没完」是两件独立的事。
+         */
+        val ready = nextComplete
         /**
          * 用户口径（2026-11-24）**修「缓冲满了气泡还是不亮」**。
          *
@@ -112,6 +126,13 @@ object PlaybackCache {
     }
 
     /** 用户口径（2026-11-24）：由 tickCache 按真实缓冲位置直接写「当前集是否已到片尾」。 */
+    /**
+     * 用户口径（2026-11-27）**供外部读取「当前集是否已缓冲到片尾」**。
+     *
+     * 预加载触发条件要用它：缓冲到头了就不用等，立刻开始铺下一集。
+     */
+    fun currentCompleteFlag(): Boolean = currentComplete
+
     fun markCurrentComplete(done: Boolean) {
         currentComplete = done
     }
