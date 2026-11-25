@@ -1,6 +1,15 @@
 package xyz.etkn.mobile.player.cache
 
 import android.util.Log
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlin.coroutines.coroutineContext
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
@@ -57,6 +66,18 @@ object VideoCache {
 
     private const val TAG = "ETKN-Cache"
 
+    /**
+     * cache key 规则：优先用 DataSpec 里显式指定的 key（= itemId），
+     * 拿不到才退回完整 URL。这是「token 一换就命中不了」的解法。
+     */
+    private val keyFactory = object : CacheKeyFactory {
+        override fun buildCacheKey(dataSpec: DataSpec): String {
+            val explicit = dataSpec.key
+            if (!explicit.isNullOrBlank()) return explicit
+            return dataSpec.uri.toString()
+        }
+    }
+
     @Volatile private var cache: SimpleCache? = null
     @Volatile private var maxBytes: Long = 0L
 
@@ -105,15 +126,7 @@ object VideoCache {
         return CacheDataSource.Factory()
             .setCache(store)
             .setUpstreamDataSourceFactory(upstream)
-            .setCacheKeyFactory(
-                object : CacheKeyFactory {
-                    override fun buildCacheKey(dataSpec: DataSpec): String {
-                        val explicit = dataSpec.key
-                        if (!explicit.isNullOrBlank()) return explicit
-                        return dataSpec.uri.toString()
-                    }
-                },
-            )
+            .setCacheKeyFactory(keyFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 
@@ -205,7 +218,7 @@ object VideoCache {
         var lastLog = 0L
         var stuck = 0
         var lastFrom = -1L
-        while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+        while (coroutineContext.isActive) {
             val target = preloadTargetBytes
             val posB = preloadPosBytes
             val url = preloadUrl
