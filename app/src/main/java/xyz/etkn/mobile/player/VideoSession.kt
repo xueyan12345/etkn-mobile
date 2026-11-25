@@ -1132,8 +1132,25 @@ class VideoSession(
          * 所以起一个只绑 127.0.0.1 的极薄代理，它内部用官方 CacheDataSource 读。
          * 两个内核共用同一份缓存文件，谁缓存的另一方都能秒开。
          */
+        /**
+         * 用户口径（2026-11-27）**Exo 直连上游，只有 mpv 走本机代理**。
+         *
+         * 修的 bug（日志实证）：
+         * 上一版不管什么内核都用代理地址（playUri=http://127.0.0.1:39741/...），
+         * 而 Exo 的数据源遇到回环地址是「透传不缓存」——
+         * 于是 Exo 播放全程不往 SimpleCache 写任何东西，
+         * 缓冲条自然一点不动。
+         *
+         * 现在按内核分流：
+         *  · Exo → 直连上游 URL，CacheDataSource 自动边播边写缓存（正常路径）
+         *  · mpv → 走代理，代理内部用同一个 CacheDataSource 读写缓存
+         *
+         * 两边共用同一个 SimpleCache 和同一个 cache key（itemId），
+         * 所以谁缓存的另一方都能命中。
+         */
+        val engineNow = engine
         val cacheMaxBytes = settings.cacheDiskGb.coerceIn(0, 200).toLong() * 1024L * 1024L * 1024L
-        val playUri: android.net.Uri = if (cacheMaxBytes > 0) {
+        val playUri: android.net.Uri = if (cacheMaxBytes > 0 && engineNow == Engine.Mpv) {
             val port = xyz.etkn.mobile.player.cache.LocalProxy.start(
                 xyz.etkn.mobile.player.cache.VideoCache.dataSource(
                     context = context,
@@ -1146,12 +1163,13 @@ class VideoSession(
             if (port > 0) {
                 xyz.etkn.mobile.player.cache.LocalProxy.register(current.id, url)
                 val proxied = xyz.etkn.mobile.player.cache.LocalProxy.urlFor(current.id)
-                android.util.Log.i(TAG, "proxy uri=${proxied ?: url}")
+                android.util.Log.i(TAG, "engine=mpv proxy uri=${proxied ?: url}")
                 if (proxied != null) android.net.Uri.parse(proxied) else android.net.Uri.parse(url)
             } else {
                 android.net.Uri.parse(url)
             }
         } else {
+            android.util.Log.i(TAG, "engine=${engineNow?.label} direct url (CacheDataSource 负责缓存)")
             android.net.Uri.parse(url)
         }
 

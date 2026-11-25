@@ -322,11 +322,26 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
      * 不会触发任何清理 —— 用户把 5GB 改了，实际占用还是 12.7GB，
      * 看上去就是「设置没生效」。现在改完当场 trim + 重新统计。
      */
+    /**
+     * 用户口径（2026-11-27）**占用/清空必须读官方缓存（VideoCache），不是旧目录**。
+     *
+     * 修的 bug（用户截图实测）：日志里 disk usage=620MB，设置页却显示 0 MB。
+     *
+     * 根因：缓存已经全部迁到官方 SimpleCache（cacheDir/videocache），
+     * 而这里还在读 PlaybackCache.diskUsage() —— 那是旧的自建目录 mediafiles/，
+     * 早就没数据了。所以显示永远是 0，清空也清不到地方。
+     */
     LaunchedEffect(settings.cacheDiskGb) {
         withContext(kotlinx.coroutines.Dispatchers.IO) {
+            // 先确保缓存实例按新上限建立（这样占用才读得到）
+            xyz.etkn.mobile.player.cache.VideoCache.get(
+                context.applicationContext,
+                settings.cacheDiskGb.coerceIn(0, 200).toLong() * 1024L * 1024L * 1024L,
+            )
+            // 旧的整文件缓存目录清一次（历史遗留）
             xyz.etkn.mobile.player.PlaybackCache.trim(context, settings)
         }
-        usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage(context)
+        usage = xyz.etkn.mobile.player.cache.VideoCache.usedBytes()
     }
     SwitchRow("预加载", settings.preloadNext) { scope.launch { graph.settings.setPreloadNext(it) } }
     NumberRow("最大缓存大小", settings.cacheMemoryMb, "MB", listOf(200, 400, 600, 800, 1200)) {
@@ -347,8 +362,13 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
     ) {
         TextButton(
             onClick = {
+                /**
+                 * 用户口径（2026-11-27）**清空要真的清官方缓存**。
+                 * 之前清的是旧目录 mediafiles/，用户的 620MB 一点没动。
+                 */
+                xyz.etkn.mobile.player.cache.VideoCache.clearAll(context)
                 xyz.etkn.mobile.player.PlaybackCache.clearDisk(context)
-                usage = xyz.etkn.mobile.player.PlaybackCache.diskUsage(context)
+                usage = xyz.etkn.mobile.player.cache.VideoCache.usedBytes()
             },
         ) { Text("清空磁盘缓存") }
         Spacer(Modifier.weight(1f))

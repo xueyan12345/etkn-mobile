@@ -134,24 +134,29 @@ object VideoCache {
      */
     fun availableBytesFrom(itemId: String, fromBytes: Long, length: Long): Long {
         val store = cache ?: return 0L
-        val spans = runCatching { store.getCachedSpans(itemId)?.toList() }.getOrNull().orEmpty()
-        if (spans.isEmpty()) return 0L
-        // 找覆盖 fromBytes 的那一段，然后往后连
-        var cursor = fromBytes
-        var total = 0L
-        val wantedEnd = if (length > 0) fromBytes + length else Long.MAX_VALUE
-        // span 已按位置排序
-        for (span in spans) {
-            if (span.position > cursor) break                  // 中间有洞
-            val end = span.position + span.length
-            if (end <= cursor) continue
-            val take = minOf(end, wantedEnd) - cursor
-            if (take <= 0) break
-            total += take
-            cursor += take
-            if (cursor >= wantedEnd) break
-        }
-        return total
+        /**
+         * 用户口径（2026-11-27）**必须用官方 getCachedLength，不能自己遍历 span**。
+         *
+         * 修的 bug（用户实测：「缓冲条一点也不动，有时候能看着，有时候一点也看不着」）：
+         *
+         * 之前自己遍历 getCachedSpans() 并累加。但 SimpleCache 里
+         * **正在下载的区域是 hole（CacheSpan.isHoleSpan=true），不在 getCachedSpans 的结果里**，
+         * 而播放位置后面那段恰恰多数还在 hole 中 ——
+         * 于是 availableBytesFrom 恒返回 0，缓冲条永远停在播放点不动。
+         *
+         * 官方 getCachedLength(key, position, length) 的语义：
+         *  · 返回正数 = 从 position 起**连续可用**的字节数
+         *  · 返回负数 = 这里是洞，长度是它的绝对值
+         * 它内部把 span 和 hole 一起算了，这正是我们要的。
+         */
+        return runCatching {
+            val cached = store.getCachedLength(
+                itemId,
+                fromBytes,
+                if (length > 0) length else androidx.media3.common.C.LENGTH_UNSET.toLong(),
+            )
+            if (cached > 0) minOf(cached, if (length > 0) length else cached) else 0L
+        }.getOrDefault(0L)
     }
 
     /** 整集是否已完整缓存。 */
