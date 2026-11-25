@@ -84,10 +84,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.rounded.VideoLibrary
+import xyz.etkn.mobile.data.settings.HiddenLibrariesPerAccount
 
 @Composable
 fun MeScreen() {
-    val graph = LocalContext.current.graph
+    val context = LocalContext.current
+    val graph = context.graph
     val nav = LocalNav.current
     val scope = rememberCoroutineScope()
     val settings by graph.settings.flow.collectAsStateWithLifecycle(initialValue = Settings())
@@ -127,6 +130,24 @@ fun MeScreen() {
         item {
             SettingsGroup {
                 Entry(Icons.Rounded.Palette, "外观", settings.themeMode.label) { nav.to(SettingsRoute(SettingsPage.Appearance.name)) }
+                /**
+                 * 用户口径（2026-11-27）**「媒体库设置」入口**（外观和播放之间）。
+                 *
+                 * 之前漏了这一步：只给 SettingsPage 枚举加了 MediaLibrary、也写好了分支，
+                 * 但这几行入口是**硬编码**的（不是按枚举遍历），所以界面上根本进不去，
+                 * 用户看到的就是「咋没有」。
+                 *
+                 * 摘要显示当前状态，和其他项风格一致：
+                 * 首页推荐模式 + 隐藏媒体库是否开启。
+                 */
+                // 注意：buildString 是普通 lambda，里面不能调 @Composable（collectAsStateWithLifecycle），
+                // 所以先在外面把 key 取出来再拼。
+                val mLibSessionKey = (graph.sessions.state.collectAsStateWithLifecycle().value as? SessionState.SignedIn)?.session?.key
+                val mLibSummary = settings.heroMode.label +
+                    if (HiddenLibrariesPerAccount.read(context, mLibSessionKey)) " · 已隐藏" else ""
+                Entry(Icons.Rounded.VideoLibrary, "媒体库设置", mLibSummary) {
+                    nav.to(SettingsRoute(SettingsPage.MediaLibrary.name))
+                }
                 Entry(Icons.Rounded.PlayCircle, "播放", "解码 · ${settings.decoder.label}") { nav.to(SettingsRoute(SettingsPage.Playback.name)) }
                 Entry(Icons.Rounded.ChatBubble, "弹幕", if (settings.danmaku.enabled) "开启" else "关闭") { nav.to(SettingsRoute(SettingsPage.Danmaku.name)) }
                 Entry(Icons.Rounded.SystemUpdate, "检查更新", "v${BuildConfig.VERSION_NAME} · ${if (settings.autoUpdate) "自动" else "手动"}") {

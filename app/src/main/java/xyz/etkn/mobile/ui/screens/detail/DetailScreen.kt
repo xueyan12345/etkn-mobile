@@ -502,8 +502,29 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
         val height = if (maxWidth >= 600.dp) (maxWidth * 0.42f).coerceIn(340.dp, 520.dp) else (maxWidth * 1.08f).coerceIn(360.dp, 560.dp)
         val widthPx = maxWidth.px()
         Box(Modifier.fillMaxWidth().height(height)) {
+            /**
+             * 用户口径（2026-11-27）**切集时头顶这张大图必须保持不变**。
+             *
+             * 原来这里是 `backdrop(item) ?: landscape(item) ?: poster(item)`，
+             * 而 `backdrop()` 的第一条就是「本集自己的 backdrop」、
+             * `landscape()` 的第二条也是「本集自己的 Primary 剧照」，
+             * 服务端给每集都生成了剧照 → 每次切集图都变，看着很跳。
+             *
+             * 现在单集页一律走 `seriesCover()`：
+             *  ① 父级横版 Thumb（整部剧的 16:9 图）
+             *  ② 父级 Backdrop
+             *  ③ 系列海报
+             * 全部是「整部剧」层级的图，切集时同一张，不会跳。
+             * 电影 / Video（没有 seriesId）仍按原来的三级回退，不受影响。
+             */
+            val headerArt = if (item.isEpisode || item.isSeason) {
+                urls.seriesCover(item, widthPx)
+                    ?: urls.backdrop(item, widthPx) ?: urls.poster(item, widthPx)
+            } else {
+                urls.backdrop(item, widthPx) ?: urls.landscape(item, widthPx) ?: urls.poster(item, widthPx)
+            }
             Artwork(
-                urls.backdrop(item, widthPx) ?: urls.landscape(item, widthPx) ?: urls.poster(item, widthPx),
+                headerArt,
                 Modifier.fillMaxSize(),
                 item.name,
                 placeholder = Icons.Rounded.Movie,
@@ -525,7 +546,11 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
              *  · 集标题被放大到比剧名还大
              *  · 文字直接压在人物上、断行难看
              */
-            val heroLogo = urls.logo(item, 720)
+            /**
+             * 用户口径（2026-11-27）**艺术字也跟着「整部剧」走**，切集时不许跳。
+             * 单集页优先取父级（剧）的 Logo，电影/Video 走原来的 logo()。
+             */
+            val heroLogo = if (item.isEpisode) urls.seriesLogo(item, 720) else urls.logo(item, 720)
             Column(
                 Modifier
                     .align(Alignment.TopStart)

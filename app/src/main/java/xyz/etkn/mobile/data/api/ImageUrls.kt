@@ -79,6 +79,22 @@ class ImageUrls(private val server: String, private val userId: String) {
         return null
     }
 
+    /**
+     * 用户口径（2026-11-27）**只取「整部剧」的艺术字**，供单集页头部使用。
+     *
+     * 为什么需要单独一个：`logo(item)` 第一条取的是**本集自己的** Logo，
+     * 只有本集没有 Logo 时才退到父级。少数分集自带 Logo →
+     * 用户在集间切换时希望头部图完全不动，艺术字却跟着换 → 视觉跳动。
+     *
+     * 顺序：① 父级 Logo（整部剧）  ② 本集 Logo（父级没有时兜底）
+     */
+    fun seriesLogo(item: Item, widthPx: Int): String? {
+        if (item.parentLogoItemId != null && item.parentLogoTag != null) {
+            return image(item.parentLogoItemId, "Logo", widthPx, item.parentLogoTag)
+        }
+        return item.imageTags["Logo"]?.let { image(item.id, "Logo", widthPx, it) }
+    }
+
     fun logo(item: Item, widthPx: Int): String? {
         item.imageTags["Logo"]?.let { return image(item.id, "Logo", widthPx, it) }
         if (item.parentLogoItemId != null && item.parentLogoTag != null) {

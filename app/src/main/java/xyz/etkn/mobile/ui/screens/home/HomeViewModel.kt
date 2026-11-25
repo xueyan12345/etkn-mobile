@@ -121,9 +121,23 @@ class HomeViewModel(
              *  · 快照第 1 位本来就不是继续播放的（改版前存的旧快照）→ 直接重排
              *  · 快照没货 → fallbackHero 兜底，同样插继续播放位
              */
+            /**
+             * 用户口径（2026-11-27）**轮播必须一次出满 10 个，不许「先给几个再补」**。
+             *
+             * 用户实证：「切换账号后轮播不直接出 10 个，感觉有三四个是后加载出来的，
+             * 像是代码固定 6 个、再打个补丁检测不够就补 4 个」—— 判断完全正确。
+             *
+             * 原逻辑的病灶：
+             *  · showCached 用快照 ids 直接出图（快照可能是旧的、可能只有 6 个）
+             *  · 300ms 后网络回来，主路径凑满 10 个 → 画面跳变补上 4 个
+             *
+             * 现在：**凑不满 10 个就不出这一帧**，直接等主路径一次 publish 满 10 个。
+             * `keepOld` 那段会兜住「上一次已经在显示的 hero」，所以不会出现白闪。
+             */
             val base = if (fromSnapshot.isNotEmpty()) fromSnapshot else fallbackHero(cached)
             val seedNow = shown?.at ?: 0L
             val hero = if (base.isEmpty()) base else pickResumeFirst(cached, base, seedNow)
+            val enough = hero.size >= HERO_SIZE
             /**
              * 用户口径（2026-11-26）**绝不让 hero 变空**。
              *
@@ -135,7 +149,12 @@ class HomeViewModel(
              * 就保留上一次已经在显示的 hero，宁可短暂显示旧图也不闪。
              */
             val keepOld = (_state.value as? Load.Ready)?.value?.hero.orEmpty()
-            _state.value = Load.Ready(cached.copy(hero = hero.ifEmpty { keepOld }))
+            /**
+             * 够 10 个才用新的；不够就保留上一次的（通常也是满 10 个），
+             * 绝不让首页顶部先出 6 个再跳变。
+             */
+            val useHero = if (enough) hero else keepOld.ifEmpty { hero }
+            _state.value = Load.Ready(cached.copy(hero = useHero))
         }
     }
 
@@ -348,11 +367,32 @@ class HomeViewModel(
                     }
                 }.awaitAll().flatten()
             }
-            val candidates = pool.asSequence()
+            /**
+             * 用户口径（2026-11-27）**凑不满 10 个时放宽 backdrop 要求**。
+             *
+             * 原来硬性 `filter(::hasBackdrop)`：没有横版背景图的条目直接丢掉，
+             * 小库 / 新账号扣完就剩不到 10 个 → 轮播数量永远不够。
+             *
+             * 现在两级：
+             *  ① 优先「有 backdrop 且没看完」—— 效果最好
+             *  ② 不足 HERO_SIZE 个 → 把上一轮被过滤掉的也加进来
+             *     （HeroCarousel 那边本来就有海报兜底，取不到横图会用竖版）
+             */
+            val strict = pool.asSequence()
                 .filter(::hasBackdrop)
                 .filter { !isFinished(it) }
                 .distinctBy { it.id }
                 .toList()
+            val candidates = if (strict.size >= HERO_SIZE) {
+                strict
+            } else {
+                val extra = pool.asSequence()
+                    .filter { !isFinished(it) }
+                    .filter { cand -> strict.none { it.id == cand.id } }
+                    .distinctBy { it.id }
+                    .toList()
+                strict + extra
+            }
             if (candidates.isNotEmpty()) {
                 /**
                  * 用户口径（2026-11-26）**主路径也必须插「继续播放位」**。
@@ -473,7 +513,14 @@ class HomeViewModel(
 
     /** 后面「全库随机」那把要凑几个（总 10 - 第 1 个继续播放位）。 */
     private const val HERO_RANDOM_SIZE = HERO_SIZE - 1
-        private const val HERO_POOL_PER_LIBRARY = 30
+        /**
+     * 用户口径（2026-11-27）**每库多取一些，保证一定能凑满 HERO_SIZE**。
+     *
+     * 原来 30 条，扣掉「已看完」+「没有 backdrop」之后，新账号或小库可能剩不到 10 个，
+     * 于是主路径也只能给出 6~7 个 → 用户看到的就是「不够 10 个」。
+     * 提到 60：多取一点只是一次列表请求，代价很小，但能保证凑满。
+     */
+    private const val HERO_POOL_PER_LIBRARY = 60
         /** 轮播图「多久换一批」：满 12 小时（按上次生成时间算，不跟日历走）。 */
         /**
      * 用户口径（2026-11-26）**快照有效期 12 小时 → 2 小时**。
