@@ -68,6 +68,8 @@ class CachedDataSource(
     private var pendingBlockIndex = -1L
     private var pending = ByteArray(0)
     private var pendingFilled = 0
+    /** 这一块里哪些字节已经到了（允许乱序，齐了才落盘）。 */
+    private var pendingBlocks = BooleanArray(0)
 
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
@@ -103,14 +105,27 @@ class CachedDataSource(
             val have = store.contiguousBytesFrom(id, readPosition, total)
             if (have > 0) {
                 opened = true
-                val want = if (bytesRemaining == C.LENGTH_UNSET.toLong()) have else minOf(have, bytesRemaining)
+                /**
+                 * 用户口径（2026-11-27）**bytesRemaining 必须是「请求的总长度」，
+                 * 不能改成本次本地能提供的长度**。
+                 *
+                 * 原来这里把 bytesRemaining 赋成 have（本地只有这么多）——
+                 * 那么本地这段读完之后 read() 会因为 bytesRemaining==0 直接返回
+                 * RESULT_END_OF_INPUT → 播放器以为文件结束了 → 播到一半停住。
+                 *
+                 * 正确做法：bytesRemaining 保持 open() 时拿到的「本次请求长度」，
+                 * 本地能给的先给，剩下的在 read() 里自动从上游补（已经实现）。
+                 */
+                val canGive = if (bytesRemaining == C.LENGTH_UNSET.toLong()) have else minOf(have, bytesRemaining)
                 Log.i(
                     TAG,
-                    "local-hit item=$id from=${readPosition / 1048576}MB have=${want / 1048576}MB " +
+                    "local-hit item=$id from=${readPosition / 1048576}MB have=${have / 1048576}MB " +
+                        "give=${canGive / 1048576}MB " +
                         "total=${if (total > 0) "${total / 1048576}MB" else "?"}",
                 )
                 transferStarted(dataSpec)
-                return want
+                // 返回「本地这段能立刻提供多少」，Exo 读满这些后会再次 read() 要更多
+                return canGive
             }
         }
 
@@ -160,7 +175,12 @@ class CachedDataSource(
             val have = store.contiguousBytesFrom(id, readPosition, total)
             if (have > 0) {
                 val n = minOf(want.toLong(), have).toInt()
-                val got = store.read(id, readPosition, n, buffer, total)
+                /**
+                 * 用户口径（2026-11-27）**必须把 offset 传进去**。
+                 * 之前漏了，数据一律写到 buffer[0]，而 Exo 要求写到 buffer[offset]
+                 * → 字节流错位 → 「Top bit not zero」→ 播放失败。
+                 */
+                val got = store.read(id, readPosition, n, buffer, offset, total)
                 if (got > 0) {
                     readPosition += got
                     if (bytesRemaining != C.LENGTH_UNSET.toLong()) bytesRemaining -= got
@@ -228,20 +248,30 @@ class CachedDataSource(
                     pendingBlockIndex = idx
                     pending = ByteArray(expected)
                     pendingFilled = 0
+                    pendingBlocks = BooleanArray(expected)
                 }
 
                 val room = expected - inBlock
                 val n = minOf(left, room)
                 if (n <= 0) break
-                // 只接受「从头开始连续」的数据（跳过中间洞，避免拼错）
-                if (inBlock == pendingFilled) {
-                    System.arraycopy(buffer, off, pending, inBlock, n)
-                    pendingFilled = inBlock + n
-                    if (pendingFilled >= expected) {
-                        store.writeBlock(id, idx, pending, expected)
-                        pendingBlockIndex = -1L
-                        pendingFilled = 0
-                    }
+                /**
+                 * 用户口径（2026-11-27）**允许从块中间开始攒，不要求从头连续**。
+                 *
+                 * 修的 bug（和 LocalProxy 同一个）：
+                 * 原来只有 `inBlock == pendingFilled` 才收数据，
+                 * 而播放器 seek 后请求的起点落在块中间（inBlock != 0）
+                 * → 数据全被丢弃 → 一块都存不下来。
+                 *
+                 * 现在按真实偏移放进缓冲区，用 pendingBlocks 记录哪些字节到了，
+                 * 整块齐了才落盘。
+                 */
+                System.arraycopy(buffer, off, pending, inBlock, n)
+                for (k in inBlock until inBlock + n) pendingBlocks[k] = true
+                pendingFilled += n
+                if (pendingFilled >= expected && pendingBlocks.all { it }) {
+                    store.writeBlock(id, idx, pending, expected)
+                    pendingBlockIndex = -1L
+                    pendingFilled = 0
                 }
                 pos += n
                 off += n
@@ -256,16 +286,28 @@ class CachedDataSource(
         val idx = pendingBlockIndex
         if (idx < 0) return
         val expected = store.expectedSize(idx, total).toInt()
-        if (expected > 0 && pendingFilled >= expected) {
+        if (expected > 0 && pendingFilled >= expected && pendingBlocks.all { it }) {
             store.writeBlock(id, idx, pending, expected)
         }
         pendingBlockIndex = -1L
         pendingFilled = 0
     }
 
-    /** 上游流断掉/被跳过之后要续读 → 按当前位置新开 Range。 */
+    /**
+     * 上游流断掉 / 本地读完之后要续读 → **必须新开一个 DataSource 并按新位置 Range 请求**。
+     *
+     * 用户口径（2026-11-27）**这里原来有个会读错位置的 bug**：
+     *
+     * 原来：`val ds = this.upstream ?: upstreamFactory.createDataSource()` ——
+     * 上游流已经存在时就直接拿它用，但仍在这个旧流上调用 open()。
+     * 旧流的位置是「上一次 open 的起点」，不是当前位置，
+     * 于是从上游读到的字节和 readPosition 对不上 → 数据错位 → 解析失败。
+     *
+     * 现在：先关掉旧流，再新建一个，用当前位置 Range 请求。
+     */
     private fun openUpstreamAt(position: Long, length: Int): HttpDataSource {
-        val ds = this.upstream ?: upstreamFactory.createDataSource().also { this.upstream = it }
+        runCatching { upstream?.close() }
+        val ds = upstreamFactory.createDataSource().also { this.upstream = it }
         val spec = DataSpec.Builder()
             .setUri(uri ?: "")
             .setPosition(position)

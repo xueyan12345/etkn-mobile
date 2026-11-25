@@ -57,14 +57,35 @@ object LocalProxy {
             this.store = store
             this.client = http
             val socket = runCatching {
-                ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
-            }.onFailure { Log.w(TAG, "proxy start failed", it) }.getOrNull() ?: return 0
+                ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+            }.onFailure {
+                Log.e(TAG, "proxy start FAILED: ${it.javaClass.simpleName} ${it.message}")
+            }.getOrNull() ?: return 0
             server = socket
             port = socket.localPort
             thread(name = "etkn-proxy", isDaemon = true) {
                 while (!socket.isClosed) {
                     val conn = runCatching { socket.accept() }.getOrNull() ?: break
-                    pool.execute { runCatching { handle(conn) }.onFailure { Log.w(TAG, "proxy handle", it) } }
+                    pool.execute {
+                        /**
+                         * 用户口径（2026-11-27）**客户端断开是正常现象，不该刷屏报错**。
+                         *
+                         * 日志实证：13 次异常全是 ConnectionReset / Broken pipe ——
+                         * 那是播放器 seek 时主动断开旧连接（正常行为），
+                         * 我们还在往这个 socket 写就会抛。
+                         *
+                         * 现在单独识别这两类异常，只记 debug 级一行，不打堆栈。
+                         */
+                        try {
+                            handle(conn)
+                        } catch (e: java.net.SocketException) {
+                            Log.d(TAG, "proxy client gone: ${e.message}")
+                        } catch (e: java.io.IOException) {
+                            Log.d(TAG, "proxy io: ${e.message}")
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "proxy handle", t)
+                        }
+                    }
                 }
             }
             Log.i(TAG, "proxy listening 127.0.0.1:$port")
@@ -126,8 +147,21 @@ object LocalProxy {
 
             val total = lengths[itemId] ?: -1L
             val bs = store ?: run { writeHead(output, 500, 0, null); return }
+            Log.i(TAG, "proxy req item=$itemId range=${rangeHeader ?: "none"} total=${if (total > 0) "${total / 1048576}MB" else "?"}")
 
-            // 解析 Range: bytes=start-end
+            /**
+             * 用户口径（2026-11-27）**Range 语义必须严格正确，否则播放器读到错位数据**。
+             *
+             * 修的 bug：
+             *  · total 未知（-1）时 end 也是 -1 → Content-Length 和 Content-Range 全算错
+             *    → mpv 解析头部后按错误长度读 → 数据错位 → 播放失败
+             *  · 「end 省略」的 Range（`bytes=1000-`，最常见）原来被当成 end=-1 处理
+             *
+             * 现在：
+             *  · total 已知 → end 默认 total-1，并夹紧
+             *  · total 未知 → 不编造长度，用 chunked 方式（不写 Content-Length）
+             *  · 显式支持 `bytes=start-` 这种开放区间
+             */
             var start = 0L
             var end = if (total > 0) total - 1 else -1L
             rangeHeader?.let { raw ->
@@ -137,15 +171,19 @@ object LocalProxy {
                 parts.getOrNull(1)?.toLongOrNull()?.let { end = it }
             }
             val hasRange = rangeHeader != null
-            if (total > 0 && (end < 0 || end >= total)) end = total - 1
-            val contentLength = if (end >= 0) (end - start + 1) else -1L
+            if (total > 0) {
+                if (end < 0 || end >= total) end = total - 1
+                if (start > end) start = end
+            }
+            val contentLength = if (end >= start) (end - start + 1) else -1L
 
             // 头部
             val header = buildString {
                 append("HTTP/1.1 ")
                 append(if (hasRange) "206 Partial Content" else "200 OK")
                 append("\r\n")
-                append("Content-Type: video/mp4\r\n")
+                // 不写死 video/mp4：片源可能是 mkv/strm，让播放器自己嗅探
+                append("Content-Type: application/octet-stream\r\n")
                 append("Accept-Ranges: bytes\r\n")
                 if (contentLength > 0) {
                     append("Content-Length: ").append(contentLength).append("\r\n")
@@ -187,12 +225,14 @@ object LocalProxy {
                 // ① 本地连续可读
                 val have = bs.contiguousBytesFrom(itemId, pos, total)
                 if (have > 0) {
+                    Log.i(TAG, "proxy local-hit item=$itemId from=${pos / 1048576}MB have=${have / 1048576}MB")
                     val want = if (left > 0) minOf(have, left) else have
                     val chunk = ByteArray(256 * 1024)
                     var remaining = want
                     while (remaining > 0) {
                         val n = minOf(remaining, chunk.size.toLong()).toInt()
-                        val got = bs.read(itemId, pos, n, chunk, total)
+                        // chunk 是我们自己的数组，从 0 开始写，所以 bufferOffset=0
+                        val got = bs.read(itemId, pos, n, chunk, 0, total)
                         if (got <= 0) break
                         output.write(chunk, 0, got)
                         pos += got
@@ -239,7 +279,20 @@ object LocalProxy {
         }
     }
 
-    /** 把缓冲里「刚好构成完整块」的部分落盘。 */
+    /**
+     * 用户口径（2026-11-27）**缓存攒块：允许从块中间开始，攒满再落盘**。
+     *
+     * 修的 bug（日志实证：代理跑了很久、local-hit 一直是 0）：
+     * 原来写的是「必须 inBlock == 0 且够一整块」才写盘。
+     * 但播放器 seek 时请求的起点是任意字节（比如 1.2GB + 3MB），
+     * 第一次 read 拿到的数据落在块中间 → inBlock != 0 → 直接 return 丢弃。
+     * 结果：只要不是从文件第 0 字节顺序读，一块都存不下来。
+     *
+     * 现在：
+     *  · 数据落在块中间的哪一段，就记到这一块的缓冲区里（按偏移放对位置）
+     *  · 攒满一整块才落盘（保证「有文件 = 内容完整」）
+     *  · 攒不满就留在内存，下次继续（不写半块）
+     */
     private fun cacheFromBuffer(bs: BlockStore, itemId: String, position: Long, buf: ByteArray, length: Int, total: Long) {
         if (total <= 0) return
         var pos = position
@@ -250,16 +303,52 @@ object LocalProxy {
             val inBlock = (pos - bs.blockStart(idx)).toInt()
             val expected = bs.expectedSize(idx, total).toInt()
             if (expected <= 0) return
-            // 只有整块都覆盖到才写（避免半块被当成完整）
-            if (inBlock == 0 && left >= expected) {
-                bs.writeBlock(itemId, idx, buf.copyOfRange(off, off + expected), expected)
-                pos += expected
-                off += expected
-                left -= expected
-            } else {
-                return
+
+            // 换块 → 先把上一块该落的落盘
+            if (idx != pendingBlockIndex) {
+                flushPending(bs, itemId, total)
+                pendingBlockIndex = idx
+                pending = ByteArray(expected)
+                pendingFilled = 0
+                pendingBlocks = BooleanArray(expected)
             }
+
+            // 这一块能装多少
+            val room = expected - inBlock
+            val n = minOf(left, room)
+            if (n <= 0) return
+            // 按真实偏移放进缓冲区（不要求从头连续，允许中间有洞）
+            System.arraycopy(buf, off, pending, inBlock, n)
+            for (k in inBlock until inBlock + n) pendingBlocks[k] = true
+            pendingFilled += n
+            // 整块都覆盖了 → 落盘
+            if (pendingFilled >= expected && pendingBlocks.all { it }) {
+                bs.writeBlock(itemId, idx, pending, expected)
+                pendingBlockIndex = -1L
+                pendingFilled = 0
+            }
+            pos += n
+            off += n
+            left -= n
         }
+    }
+
+    /** 攒块状态（内存）。切集/换块时重置。 */
+    private var pendingBlockIndex = -1L
+    private var pending = ByteArray(0)
+    private var pendingFilled = 0
+    private var pendingBlocks = BooleanArray(0)
+
+    /** 把当前攒了一半的块落盘（只有整块齐了才写）。 */
+    private fun flushPending(bs: BlockStore, itemId: String, total: Long) {
+        val idx = pendingBlockIndex
+        if (idx < 0) return
+        val expected = bs.expectedSize(idx, total).toInt()
+        if (expected > 0 && pendingFilled >= expected && pendingBlocks.all { it }) {
+            bs.writeBlock(itemId, idx, pending, expected)
+        }
+        pendingBlockIndex = -1L
+        pendingFilled = 0
     }
 
     private fun writeHead(out: BufferedOutputStream, code: Int, length: Long, extra: String?) {

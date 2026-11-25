@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import xyz.etkn.mobile.data.model.Item
@@ -357,12 +358,32 @@ internal fun EpisodeCard(
      * 外层 Column 不再裁剪 —— 文字因此可以完整显示，
      * 而图片仍然是圆角的（视觉不变）。
      */
+    /**
+     * 用户口径（2026-11-27）**选中绿框只圈图片，不圈文字；选中的集号加粗**。
+     *
+     * 需求原文：
+     *  「那个明显选中的那个绿色圈把文字压上了，我想到个解决办法，
+     *    这个绿色圈只环绕到图像得四周，不要包上文字，
+     *    并且把绿色这个选中的全加粗，这样更明显」
+     *
+     * 原来把 border 加在**整个 Column**（图片 + 下面两行集号文字）外面，
+     * CardShape 的圆角正好压在文字两角上，看起来像被框住/压住。
+     *
+     * 现在：
+     *  · border 只加在图片那个 Box 上（文字完全在框外）
+     *  · 选中的集号文字加粗（FontWeight.Bold），靠颜色+字重一起区分
+     */
     Column(
-        modifier
-            .then(if (current) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, CardShape) else Modifier)
-            .clickable(onClick = onOpen),
+        modifier.clickable(onClick = onOpen),
     ) {
-        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(Corner.card)) {
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(Corner.card)
+                .then(
+                    if (current) {
+                        Modifier.border(2.dp, MaterialTheme.colorScheme.primary, Corner.card)
+                    } else Modifier
+                ),
+        ) {
             Artwork(
                 urls.primary(episode, 320.dp.px()),
                 Modifier.fillMaxSize(),
@@ -392,6 +413,8 @@ internal fun EpisodeCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            // 用户口径（2026-11-27）：选中的集号加粗，配合颜色一起更明显
+            fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
             modifier = Modifier.padding(top = 6.dp),
         )
     }

@@ -191,7 +191,9 @@ class HomeViewModel(
                  * 补齐过程是「算好整体替换」，不会中间清空 → 不会闪。
                  */
                 val heroShort = data.hero.size < HERO_SIZE
-                if (heroShort || manual || fromCache) loadHero(data, quiet = !manual)
+                if (heroShort || manual || fromCache) {
+                    loadHero(data, quiet = !manual, manualHero = manual)
+                }
             } catch (error: Exception) {
                 if (_state.value !is Load.Ready) _state.value = Load.Failed(error.userMessage())
             } finally {
@@ -256,7 +258,7 @@ class HomeViewModel(
      * 超过 12 小时才重抽。这样「一天开十次」看到的都是同一批，
      * 「两天没开」一进来就是新的一批。
      */
-    private fun loadHero(data: HomeData, quiet: Boolean = false) {
+    private fun loadHero(data: HomeData, quiet: Boolean = false, manualHero: Boolean = false) {
         heroJob?.cancel()
         heroJob = viewModelScope.launch {
             val accountKey = sessionKey()
@@ -269,7 +271,23 @@ class HomeViewModel(
              * 用户体感是「刷新了还是那几张」。
              * 现在 manual 一律跳过快照、重新抽签并刷新时间戳。
              */
-            if (!quiet && shown != null && System.currentTimeMillis() - shown.at < HERO_TTL_MS) {
+            /**
+             * 用户口径（2026-11-27）**切账号/后台刷新都不要重抽，只有下拉刷新才换一批**。
+             *
+             * 修的 bug（用户实测 h 账号）：
+             * 「切换过来之后马上能看到继续播放里的随机一个，但马上又刷新了一次，
+             *   把这个换掉了，换成新的，而且数量也从 6 个突然变多」
+             *
+             * 根因：这里原来写的是 `if (!quiet && ...)`。
+             * 而 load() 里调 loadHero 传的是 quiet = !manual ——
+             * 切账号后的网络刷新不是 manual，所以 quiet=true → 这个快照分支被跳过
+             * → 直接走下面「重新抽签」→ 全新一批 + 数量可能不同
+             * → 用户看到的就是「先显示对的，然后被刷掉」。
+             *
+             * 现在：只要不是「用户手动下拉刷新」，就一律优先沿用快照。
+             * quiet 的语义回归本源（只是「别显示转圈」），不再影响是否复用快照。
+             */
+            if (!manualHero && shown != null && System.currentTimeMillis() - shown.at < HERO_TTL_MS) {
                 /**
                  * 未过期：沿用上次那 8 个 id。
                  * 但要先剔除「已看完 / 已删除」的 —— 用户明确要求轮播只推没看完的。
@@ -288,9 +306,25 @@ class HomeViewModel(
                 val resumeIds = data.resume.map { it.id }.toSet()
                 val firstId: String? = kept.firstOrNull()?.id
                 val firstIsResume = firstId != null && firstId in resumeIds
-                if (kept.size >= HERO_SIZE && firstIsResume) {
-                    publishHero(kept.take(HERO_SIZE))
-                    return@launch
+                /**
+                 * 用户口径（2026-11-27）**快照够数就沿用，只修第 1 位**。
+                 *
+                 * 之前在「快照数量够、但第 1 位不是继续播放」时整批重抽 ——
+                 * 这会让用户看到「后面 9 个全换成新的」，体感就是「刷新了一次」。
+                 *
+                 * 现在：数量的部分原样保留，只把第 1 位换成继续播放里随机一个
+                 * （且不与后面重复）。这样切账号进来画面稳定，不会整片跳变。
+                 */
+                if (kept.size >= HERO_SIZE - 1) {
+                    val rest = kept.filter { it.id != firstId }.take(HERO_SIZE - 1)
+                    // 用快照时间戳当 seed：同一快照期内第一位固定，不会每次算都变
+                    val withResume = pickResumeFirst(data, rest, shown.at)
+                    if (withResume.size >= HERO_SIZE - 1) {
+                        publishHero(withResume.take(HERO_SIZE))
+                        // 快照内容变了（第1位换了）→ 刷新时间戳，避免下次又算一遍
+                        HeroSnapshot.write(context, accountKey, withResume.map { it.id })
+                        return@launch
+                    }
                 }
                 // 掉的太多（看完了/删了）→ 重抽并刷新时间戳
             }

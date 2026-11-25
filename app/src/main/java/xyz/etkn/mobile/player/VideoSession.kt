@@ -383,9 +383,20 @@ class VideoSession(
                  *  · 本次播放没有手动切换过内核 —— 用户点过按钮就尊重他的选择
                  *  · 每次起播只决策一次（recordedAutoPick 防重入）
                  */
-                val videoFormat = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
-                    ?.let { g -> (0 until g.length).firstOrNull { g.getTrackFormat(it).sampleMimeType != null }
-                        ?.let { g.getTrackFormat(it) } }
+                /**
+                 * 用户口径（2026-11-27）**取视频格式时不要按 mime 过滤**。
+                 *
+                 * 修的 bug：原来写的是
+                 *   firstOrNull { g.getTrackFormat(it).sampleMimeType != null }
+                 * 也就是「只认 mime 非空的轨道」。而 msmpeg4v2 这类老编码，
+                 * Exo 的提取器有时给不出 mime（日志实证：第一次 codec=msmpeg4v2，
+                 * 第二次同一集变成 codec= 空）→ videoFormat=null → 判据全失效。
+                 *
+                 * 现在：只要这个轨道组有内容，就拿第 0 个格式，
+                 * 不管 mime 有没有值。空 mime 本身就是一个「解不了」的信号。
+                 */
+                val videoFormat = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO && it.length > 0 }
+                    ?.let { g -> runCatching { g.getTrackFormat(0) }.getOrNull() }
                 val codec = videoFormat?.codecs.orEmpty().lowercase()
                 val mime = videoFormat?.sampleMimeType.orEmpty().lowercase()
                 val dv5 = codec.startsWith("dvhe.05") || codec.startsWith("dvh1.05")
@@ -438,9 +449,27 @@ class VideoSession(
                     android.util.Log.i(TAG, "无视频轨道/编码未知（hasVideo=$hasVideoTrack codec=$codec）→ 需要 mpv")
                 }
                 if (autoSwitchAllowed && !userPickedEngineThisPlayback && !autoPickDone) {
+                    /**
+                     * 用户口径（2026-11-27）**Exo 能不能解这个编码，由设备能力决定，不是猜的**。
+                     *
+                     * 日志实证（这部 msmpeg4v2 的片子）：
+                     * ```
+                     * 15:55:54.292 自动选核 → ExoPlayer（codec=msmpeg4v2 hasVideo=true）
+                     *              → 黑屏
+                     * 15:55:58.992 手动切换内核 → mpv  → 出画
+                     * ```
+                     * 判据只看了「有没有视频轨道」，没看「这个编码 Exo 能不能解」，
+                     * 所以 msmpeg4v2（视频轨道是有的）被判成 Exo，结果黑屏。
+                     *
+                     * 现在用 MediaCodecList 真实查询：设备解不了这个 mime → 直接 mpv。
+                     * 这比任何白名单都准确（不同机器支持的编码不一样）。
+                     */
+                    val exoCanDecode = canDecode(mime)
                     val want = when {
-                        // ⓪ 视频轨道缺失 / 编码未知 → mpv（Exo 解不了老编码）
+                        // ⓪ 视频轨道缺失 / 编码未知 → mpv（Exo 解不了）
                         !hasVideoTrack || (videoFormat != null && codec.isEmpty()) -> Engine.Mpv
+                        // ⓪' 设备没有这个编码的解码器 → mpv（内置 FFmpeg 能解）
+                        !exoCanDecode -> Engine.Mpv
                         dv5 -> Engine.Exo          // ① DV profile5 → Exo（mpv 偏色）
                         hdr -> Engine.Mpv          // ② HDR10/HLG → mpv（Exo 发暗）
                         dv -> Engine.Exo           // DV 非 profile5 → Exo
@@ -1593,6 +1622,26 @@ class VideoSession(
         val matches = streams.filter { it.transportStreamId == pid }
         if (matches.size <= 1) return matches.firstOrNull()
         return matches.firstOrNull { sameCodec(it.codec, format.sampleMimeType) }
+    }
+
+    /**
+     * 用户口径（2026-11-27）**设备到底能不能解这个视频编码**（真实查询，不猜）。
+     *
+     * 为什么不能靠编码白名单：
+     *  · 不同机器支持的编码不一样（这台能解 msmpeg4v2，那台可能不能）
+     *  · 系统还分硬解/软解/FFmpeg 扩展，硬编码名单必然漏
+     *
+     * 用 Android 官方的 MediaCodecList 查：有任何一个解码器支持这个 mime 就算能解。
+     * 查不到 → 交给 mpv（它自带完整的 FFmpeg 解码器集合）。
+     */
+    private fun canDecode(mimeType: String): Boolean {
+        if (mimeType.isBlank()) return false
+        return runCatching {
+            val list = android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS)
+            list.codecInfos.any { info ->
+                !info.isEncoder && info.supportedTypes.any { it.equals(mimeType, ignoreCase = true) }
+            }
+        }.getOrDefault(true)   // 查询本身失败时假定能解（不因此误切内核）
     }
 
     private fun sameCodec(codec: String, mime: String?): Boolean = when (codec.lowercase(Locale.ROOT)) {

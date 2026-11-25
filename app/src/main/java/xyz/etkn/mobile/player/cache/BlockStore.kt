@@ -117,8 +117,28 @@ class BlockStore(
         return (reachable - offset).coerceAtLeast(0L)
     }
 
-    /** 按偏移读一段（跨块）。返回实际读到的字节数；0 表示这段没有。 */
-    fun read(itemId: String, offset: Long, length: Int, buffer: ByteArray, totalBytes: Long): Int {
+    /**
+     * 按偏移读一段（跨块）。返回实际读到的字节数；0 表示这段没有。
+     *
+     * ⚠️ 用户口径（2026-11-27）**必须支持 bufferOffset**。
+     *
+     * 修的严重 bug（日志实证 ErrorCode.IO_UNSPECIFIED + 「Top bit not zero」）：
+     * 上一版这里没有 bufferOffset，数据一律从 buffer[0] 开始写。
+     * 而 DataSource.read(buffer, offset, length) 契约要求从 buffer[offset] 开始写。
+     * Exo 的 Extractor 常常传出 offset != 0（内部环形缓冲复用），
+     * 于是数据被写到了错误位置 → 读出来的字节流错位 →
+     * 解析 MKV/MP4 时报「Top bit not zero」→ 播放失败 → 自动换核到 mpv。
+     *
+     * 现在显式接收 bufferOffset，数据写到正确位置。
+     */
+    fun read(
+        itemId: String,
+        offset: Long,
+        length: Int,
+        buffer: ByteArray,
+        bufferOffset: Int = 0,
+        totalBytes: Long,
+    ): Int {
         var done = 0
         var pos = offset
         while (done < length) {
@@ -133,7 +153,8 @@ class BlockStore(
             val got = runCatching {
                 RandomAccessFile(f, "r").use { raf ->
                     raf.seek(inBlock.toLong())
-                    raf.read(buffer, done, want)
+                    // 写到 buffer 的正确位置（bufferOffset + 已读量）
+                    raf.read(buffer, bufferOffset + done, want)
                 }
             }.getOrDefault(-1)
             if (got <= 0) break
