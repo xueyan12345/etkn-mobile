@@ -133,7 +133,7 @@ object VideoCache {
 
     fun isComplete(itemId: String, totalBytes: Long): Boolean {
         if (totalBytes <= 0) return false
-        return runCatching { cache?.isCached(itemId, 0L, totalBytes) }.getOrDefault(false)
+        return runCatching { cache?.isCached(itemId, 0L, totalBytes) ?: false }.getOrDefault(false)
     }
 
     fun remove(itemId: String) {
