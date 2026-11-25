@@ -163,32 +163,54 @@ object Diagnostics {
          *  · 每 20 行 flush，崩溃/被杀也不丢
          */
         runCatching { file.parentFile?.mkdirs() }
-        // ① 先把当前已有的缓冲快照写进去（保证开关一打开立刻有内容可看）
-        runCatching {
-            val dump = ProcessBuilder(listOf("logcat", "-d", "-v", "threadtime,year", "-t", "2000") + filter)
-                .redirectErrorStream(true).start()
-            val text = dump.inputStream.bufferedReader().readText()
-            dump.waitFor()
-            file.writeText(text)
-            Log.i(TAG, "log session seeded ${text.length} chars")
-        }.onFailure { Log.w(TAG, "log seed failed", it) }
+        /**
+         * 用户口径（2026-11-27）**不要再灌旧日志**。
+         *
+         * 修的问题（用户原话）：「我把日志开关打开，瞬间就有个 25K 的日志，
+         * 那能对么，我还啥也没干呢」。
+         *
+         * 根因：这里用 `logcat -d -t 2000` 抓了「最近 2000 行」，
+         * 那是缓冲里**之前的**记录（上一次播放、甚至别的操作），
+         * 和本次开启毫无关系 —— 25K 全是历史噪音。
+         *
+         * 现在：只建空文件，内容完全来自「开启之后」的新日志。
+         * 这样导出的日志 = 本次实际发生的事，不多一行。
+         */
+        runCatching { file.writeText("") }
 
-        // ② 再开常驻进程持续跟随
+        /**
+         * 清空系统日志缓冲：这样后面跟随的日志不含任何历史记录。
+         * 用户要的是「我开启之后发生的」，不是缓冲里之前留下的。
+         */
+        runCatching {
+            ProcessBuilder(listOf("logcat", "-c")).redirectErrorStream(true).start().waitFor()
+        }.onFailure { Log.w(TAG, "logcat -c failed", it) }
+
+        // ② 开常驻进程持续跟随（只跟新日志）
         val process = runCatching {
             /**
-             * 从「现在」开始跟随。
-             * ⚠️ 不能用 `-t 0`：实测会打印 `WARNING: -t 0 invalid, setting to 1`
-             * （-t 是「最后 N 行」语义，0 非法）。
-             * 用 `-T` + 当前时间字符串（"MM-DD HH:MM:SS.mmm"）才是「从此刻开始」。
+             * 用户口径（2026-11-27）**不用 -T 传时间，避免格式不匹配导致静默退出**。
+             *
+             * 这是「清空后再也不产生日志」的根因（用户原话：
+             * 「开关保持不管，把日志清空，我在干啥都没有新的日志生成」）。
+             *
+             * 根因链：
+             *  · 之前用 `logcat -T "<时间>"` 指定「从此刻开始」
+             *  · `-T` 要求的时间格式必须与 `-v threadtime` 输出**完全一致**
+             *    （日期是 `MM-DD`，两位大写；写成 `dd`/`HH` 小写就对不上）
+             *  · 解析不出时间 → logcat 认为没有更晚的日志 → 进程立即退出
+             *  · 于是文件建好了，但一个字都写不进来
+             *
+             * 现在改成最稳的方式：先 `logcat -c` 清空系统缓冲，
+             * 再不带 -T 跟随 —— 从清空那一刻起写的每行都是本次真实记录。
+             * 代价：会清掉系统日志缓冲（只影响调试，不影响功能）。
              */
-            val from = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-T", from) + filter)
+            ProcessBuilder(listOf("logcat", "-v", "threadtime,year") + filter)
                 .redirectErrorStream(true).start()
         }.onFailure {
             Log.w(TAG, "log recorder (pid filter) unavailable", it)
         }.getOrNull() ?: runCatching {
-            val from = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-T", from) + FALLBACK_FILTER)
+            ProcessBuilder(listOf("logcat", "-v", "threadtime,year") + FALLBACK_FILTER)
                 .redirectErrorStream(true).start()
         }.onFailure {
             Log.w(TAG, "log recorder unavailable", it)
