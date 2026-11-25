@@ -201,7 +201,30 @@ object PlayerFactory {
          * 时间上限仍是 cacheMemorySeconds + 1 分钟余量
          * → 两者谁先到谁停，且都等于用户在设置里填的值。
          */
-        val cacheMb = settings?.cacheMemoryMb?.coerceIn(50, 4096) ?: 400
+        /**
+         * 用户口径（2026-11-27）**内存缓冲 ≠ 磁盘缓存，两者必须分开**。
+         *
+         * 这是前面十几版一直没找到的真正错因（用户质疑「Hills 也设 400MB 为啥不崩」才想明白）：
+         *
+         * `setTargetBufferBytes` 设的是**播放器内存里的缓冲区大小**，
+         * 不是「磁盘上缓存多少」。
+         *
+         * 我之前把设置里的「最大缓存大小 400MB」直接填进去，等于
+         * 让 ExoPlayer 在内存里攒 400MB 数据 —— 而 Java 堆上限只有 256MB，
+         * 所以播放器一就绪就 OOM：
+         * ```
+         * 04:43:35.144  Dalvik used=234827   ← 0.14 秒内涨 37MB
+         * 04:43:35.339  Throwing OutOfMemoryError
+         * ```
+         *
+         * 正确分工（Hills 这类播放器就是这么做的）：
+         *  · 内存缓冲：只留够播放的几秒（32MB），不随设置变化
+         *  · 磁盘缓存：由 VideoCache(SimpleCache) 负责，400MB 存硬盘
+         *  · 往后预缓存：后台 CacheWriter 写盘，完全不占内存堆
+         *
+         * 所以这里**固定 32MB**，不再跟着 cacheMemoryMb 走。
+         */
+        val MEMORY_BUFFER_BYTES = 32 * 1024 * 1024
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 /* min */ 8_000,
@@ -210,17 +233,16 @@ object PlayerFactory {
                 /* afterRebuffer */ 1_500,
             )
             /**
-             * 关键：把字节目标显式设成用户阈值。
-             * 不设的话默认按轨道估算（几十 MB），会先撞上这个天花板。
+             * 固定 32MB 内存缓冲：够播放器提前解码几秒，又不会把 256MB 的 Java 堆挤爆。
+             * 「缓存 400MB」这件事交给磁盘层（VideoCache + CacheWriter），不在这里。
              */
-            .setTargetBufferBytes(cacheMb * 1024 * 1024)
-            // 时间优先：不要因为「字节够了」就提前停（字节目标已经按阈值给了）
-            .setPrioritizeTimeOverSizeThresholds(true)
+            .setTargetBufferBytes(MEMORY_BUFFER_BYTES)
+            .setPrioritizeTimeOverSizeThresholds(false)
             .build()
         android.util.Log.i(
             "ETKN-Play",
-            "loadControl min=8s max=${bufferedMaxMs / 1000}s targetBytes=${cacheMb}MB " +
-                "(缓存阈值 ${settings?.cacheMemoryMb ?: -1}MB / ${settings?.cacheMemorySeconds ?: -1}s)",
+            "loadControl min=8s max=${bufferedMaxMs / 1000}s memBuffer=${MEMORY_BUFFER_BYTES / 1048576}MB " +
+                "(磁盘缓存阈值 ${settings?.cacheMemoryMb ?: -1}MB / ${settings?.cacheMemorySeconds ?: -1}s)",
         )
         return ExoPlayer.Builder(context, renderers)
             .setTrackSelector(selector)
@@ -313,6 +335,11 @@ object PlayerFactory {
          * 目标是本机回环时直接走原始 HttpDataSource 透传。
          */
         val cachedOrPlain: DataSource.Factory = if (cacheMaxBytes > 0) {
+            /**
+             * 把上游工厂登记给 VideoCache：磁盘预缓存（preloadAhead）要用它
+             * 自己起一条写入流，不依赖播放器。
+             */
+            VideoCache.rememberUpstream(plainHttp)
             VideoCache.dataSource(
                 context = context,
                 upstream = plainHttp,

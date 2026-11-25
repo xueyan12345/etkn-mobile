@@ -121,6 +121,172 @@ object VideoCache {
     fun cacheForProxy(context: android.content.Context, maxBytes: Long): SimpleCache? =
         get(context, maxBytes)
 
+    // ---------------------------------------------------------------- 磁盘预缓存
+
+    @Volatile private var preloadJob: kotlinx.coroutines.Job? = null
+    @Volatile private var preloadItemId: String = ""
+    @Volatile private var preloadTargetBytes: Long = 0L
+    @Volatile private var preloadUrl: String = ""
+    @Volatile private var preloadUpstream: DataSource.Factory? = null
+    @Volatile private var preloadPosBytes: Long = 0L
+    @Volatile private var preloadSpec: androidx.media3.datasource.DataSpec? = null
+
+    /** 记录上游工厂，供预缓存用。 */
+    fun rememberUpstream(factory: DataSource.Factory) {
+        preloadUpstream = factory
+    }
+
+    /**
+     * 用户口径（2026-11-27）**磁盘预缓存：主动把「播放位置往后」写到设定量，全程只占固定内存**。
+     *
+     * 为什么必须单独做这件事：
+     * ExoPlayer 的内存缓冲已固定 32MB（够播几秒），不会把 400MB 塞进内存堆。
+     * 但用户要的是「磁盘上往后有 400MB 可秒开」——这必须靠主动写盘。
+     *
+     * 内存安全的关键（对比我之前那版 OOM 的实现）：
+     *  · `CacheWriter` 内部只用 128KB 的临时缓冲，写完就丢
+     *  · 每轮只下一个分片（8MB），下完立刻释放数据源
+     *  · 目标值放 volatile 字段，**tick 只改字段，绝不重启任务**
+     *  · 从窗口起点量已缓存量，不从 0 量（从 0 量遇到洞会恒为 0 → 死循环 → OOM）
+     *
+     * @param itemId 当前集
+     * @param url 上游地址
+     * @param positionMs 当前播放位置
+     * @param durationMs 总时长（0 表示未知）
+     * @param totalBytes 总字节数
+     * @param limitBytes 字节阈值（设置里的「最大缓存大小」）
+     * @param limitMs 时长阈值（设置里的「最大缓存时长」）
+     */
+    fun preloadAhead(
+        itemId: String,
+        url: String,
+        positionMs: Long,
+        durationMs: Long,
+        totalBytes: Long,
+        limitBytes: Long,
+        limitMs: Long,
+    ) {
+        val store = cache ?: return
+        if (totalBytes <= 0 || limitBytes <= 0 || url.isBlank()) return
+        val upstream = preloadUpstream ?: return
+
+        // 播放位置对应的字节
+        val posBytes = if (durationMs > 0) {
+            (totalBytes.toDouble() * positionMs.toDouble() / durationMs.toDouble()).toLong()
+        } else 0L
+        val bytesByTime = if (durationMs > 0 && limitMs > 0) {
+            (totalBytes.toDouble() * limitMs.toDouble() / durationMs.toDouble()).toLong()
+        } else Long.MAX_VALUE
+        val target = (posBytes + minOf(limitBytes, bytesByTime)).coerceAtMost(totalBytes)
+
+        // 参数更新（不重启任务）
+        preloadUrl = url
+        preloadTargetBytes = target
+        preloadPosBytes = posBytes
+
+        if (preloadItemId != itemId) {
+            // 换集才重启
+            preloadJob?.cancel()
+            preloadItemId = itemId
+            preloadJob = scope.launch { preloadLoop(itemId, store, upstream) }
+            Log.i(TAG, "preload start item=$itemId target=${target / 1048576}MB")
+        }
+    }
+
+    private val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
+    )
+
+    private suspend fun preloadLoop(
+        itemId: String,
+        store: SimpleCache,
+        upstream: DataSource.Factory,
+    ) {
+        var lastLog = 0L
+        var stuck = 0
+        var lastFrom = -1L
+        while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+            val target = preloadTargetBytes
+            val posB = preloadPosBytes
+            val url = preloadUrl
+            if (target <= 0 || url.isBlank()) {
+                kotlinx.coroutines.delay(500)
+                continue
+            }
+            // 只统计「从播放位置往后」已缓存了多少（不从 0 量，避免遇到洞恒为 0）
+            val span = (target - posB).coerceAtLeast(1L)
+            val ahead = runCatching { store.getCachedBytes(itemId, posB, span) }.getOrDefault(0L)
+            val cached = posB + ahead
+
+            if (cached >= target - 2L * 1024 * 1024) {
+                // 达到阈值 → 休眠（这就是「暂时不疯狂下载」）
+                if (android.os.SystemClock.elapsedRealtime() - lastLog > 15_000L) {
+                    lastLog = android.os.SystemClock.elapsedRealtime()
+                    Log.i(TAG, "preload hold item=$itemId cached=${ahead / 1048576}MB target=${(target - posB) / 1048576}MB")
+                }
+                kotlinx.coroutines.delay(2_000)
+                continue
+            }
+            // 无进展保护：连续多次起点不变就休眠，绝不死循环
+            if (cached == lastFrom) {
+                stuck++
+                if (stuck >= 3) {
+                    Log.w(TAG, "preload stuck item=$itemId at=${ahead / 1048576}MB，休眠")
+                    kotlinx.coroutines.delay(5_000)
+                    stuck = 0
+                    lastFrom = -1L
+                    continue
+                }
+            } else {
+                stuck = 0
+            }
+            lastFrom = cached
+
+            /**
+             * 每轮只下 8MB：CacheWriter 内部 128KB 缓冲，
+             * 下完立刻 close 数据源 → 内存回到基线，不会累积。
+             */
+            val CHUNK = 8L * 1024 * 1024
+            val want = minOf(target - cached, CHUNK).coerceAtLeast(1L)
+            val ds = runCatching {
+                CacheDataSource.Factory()
+                    .setCache(store)
+                    .setUpstreamDataSourceFactory(upstream)
+                    .setCacheKeyFactory(keyFactory)
+                    .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                    .createDataSource() as CacheDataSource
+            }.getOrNull() ?: break
+
+            val spec = androidx.media3.datasource.DataSpec.Builder()
+                .setUri(android.net.Uri.parse(url))
+                .setKey(itemId)
+                .setPosition(cached)
+                .setLength(want)
+                .build()
+            try {
+                androidx.media3.datasource.cache.CacheWriter(ds, spec, null, null).cache()
+            } catch (e: java.io.InterruptedIOException) {
+                runCatching { ds.close() }
+                break
+            } catch (t: Throwable) {
+                Log.w(TAG, "preload chunk failed at=${cached / 1048576}MB: ${t.message}")
+                runCatching { ds.close() }
+                kotlinx.coroutines.delay(1_500)
+                continue
+            }
+            runCatching { ds.close() }
+        }
+        Log.i(TAG, "preload exit item=$itemId")
+    }
+
+    fun stopPreload() {
+        preloadJob?.cancel()
+        preloadJob = null
+        preloadItemId = ""
+        preloadTargetBytes = 0L
+        preloadUrl = ""
+    }
+
     // ---------------------------------------------------------------- 查询
 
     fun usedBytes(): Long = cache?.cacheSpace ?: 0L

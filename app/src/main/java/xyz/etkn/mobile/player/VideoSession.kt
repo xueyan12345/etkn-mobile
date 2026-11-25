@@ -1449,6 +1449,25 @@ class VideoSession(
         val effDurMs = if (durationMs > 0) durationMs else serverDurationMs
 
         /**
+         * 用户口径（2026-11-27）**磁盘预缓存：把「播放位置往后」写到设定量**。
+         *
+         * 内存缓冲已在 PlayerFactory 固定 32MB（不跟设置走，避免 OOM）；
+         * 这里负责的是磁盘：主动下载到 400MB，写入 SimpleCache，内存占用恒定。
+         */
+        val cacheUrlNow = currentUrl
+        if (cacheUrlNow != null && currentLength > 0 && effDurMs > 0) {
+            xyz.etkn.mobile.player.cache.VideoCache.preloadAhead(
+                itemId = currentItem.id,
+                url = cacheUrlNow,
+                positionMs = positionMs,
+                durationMs = effDurMs,
+                totalBytes = currentLength,
+                limitBytes = settings.cacheMemoryMb.coerceIn(50, 4096).toLong() * 1024L * 1024L,
+                limitMs = settings.cacheMemorySeconds.coerceIn(30, 7200).toLong() * 1000L,
+            )
+        }
+
+        /**
          * 用户口径（2026-11-27）**主动缓存窗口：从当前播放位置往后写到阈值**。
          *
          * 这是这轮重构的核心 —— 之前一直靠调 Exo 的 LoadControl，
