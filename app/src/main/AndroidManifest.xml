@@ -65,13 +65,36 @@
             android:excludeFromRecents="true"
             android:theme="@style/Theme.Etkn.Player">
             <!--
-                用户口径（2026-11-23）OPPO Pad Mini 旋转专项 —— 官方正规开关。
-                Android 16(API 36)：宽 ≥600dp 大屏默认忽略 requestedOrientation
-                （手机正常、平板怎么点都不转，SenPlayer 同样如此）。
-                这个 property 置 true = 允许本 Activity 覆盖系统方向策略。
+                用户口径（2026-11-26）**OPPO Pad Mini 系统横屏的正解**。
+
+                Android 16 官方行为变更（原文）：
+                  「For apps targeting Android 16 (API level 36), orientation,
+                    resizability, and aspect ratio restrictions no longer apply
+                    on displays with smallest width >= 600dp.」
+                且明确列出被忽略的 API：screenOrientation、resizableActivity、
+                setRequestedOrientation()、getRequestedOrientation()。
+
+                官方给出的退出方式（原文）：
+                  「Every app that isn't fully ready can temporarily override this
+                    behavior by opting out, which results in the previous behavior
+                    of being placed in compatibility mode.」
+                  属性名 = android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY
+
+                ⚠️ 之前这里写的是 PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE，
+                **这个属性名不存在**（官方文档里没有），所以系统一直没理我们的方向请求，
+                日志里才会一直是 round=1/2/3 want=L real=P ok=false。
+
+                加上这个正确的属性后：
+                 · 系统重新尊重 setRequestedOrientation
+                 · 可以直接系统级横屏（不需要画布旋转）
+                 · 画面可以走 SurfaceView 直通 → 杜比视界元数据不丢 → 不偏色
+                 · 旋转和偏色两个问题一起解决
+
+                注：官方说明这个 opt-out 是临时的，targetSdk 37 时会失效；
+                但当前 targetSdk=36，可用。
             -->
             <property
-                android:name="android.window.PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE"
+                android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
                 android:value="true" />
         </activity>
 

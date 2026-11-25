@@ -161,17 +161,22 @@ class MpvPlayer(
          * 代价：4K 软解可能掉帧。这是「颜色正确 vs 流畅」的取舍，
          * 对偏色到无法观看的片源，颜色正确优先。
          */
-        set("hwdec", when {
-            isDolbyVisionSource -> "no"
-            decoder == DecoderPreference.Software -> "no"
-            decoder == DecoderPreference.Hardware -> "mediacodec,mediacodec-copy"
-            else -> "mediacodec,mediacodec-copy,no"
+        /**
+         * 用户口径（2026-11-26）**恢复正常硬件解码**。
+         *
+         * 上一版为了修杜比偏色强制软解，那是因为「画布旋转必须走纹理视图，
+         * 纹理层丢元数据」。现在改成系统级横屏（见 AndroidManifest 的
+         * PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY），不再需要画布旋转，
+         * 画面可以走 SurfaceView 直通硬解，元数据不丢，颜色就是对的。
+         *
+         * 所以软解那个临时方案撤掉，恢复硬件解码（4K 不掉帧）。
+         */
+        set("hwdec", when (decoder) {
+            DecoderPreference.Auto -> "mediacodec,mediacodec-copy,no"
+            DecoderPreference.Hardware -> "mediacodec,mediacodec-copy"
+            DecoderPreference.Software -> "no"
         })
         set("hwdec-codecs", "h264,hevc,mpeg2video,vc1,vp8,vp9,av1")
-        if (isDolbyVisionSource) {
-            // 软解 4K 需要足够线程；auto-safe 让 mpv 按核数分配
-            set("vd-lavc-threads", "0")
-        }
         set("vd-lavc-dr", "yes")
         set("vd-lavc-film-grain", "gpu")
         set("keep-open", "yes")

@@ -391,16 +391,19 @@ class VideoSession(
                      * 现在 mpv 对 DV 源走**软件解码**（FFmpeg 能解析杜比 RPU，
                      * libplacebo 按 IPTPQc2 正确还原），所以必须切过去。
                      */
-                    if (dv5 && engine == Engine.Exo && forcedEngine == null && autoSwitchAllowed) {
-                        android.util.Log.i(TAG, "DV profile5 → 切 mpv（软解拿 RPU，修偏色）")
-                        pendingDvSource = true
-                        forcedEngine = Engine.Mpv
-                        val cur = source
-                        val pos = player?.currentPosition ?: 0L
-                        if (cur != null) {
-                            main.post { if (!released && source === cur) playSource(cur, pos) }
-                        }
-                    }
+                    /**
+                     * 用户口径（2026-11-26）**DV profile5 不再切内核**。
+                     *
+                     * 偏色的根因不是「内核选错」，而是「画布旋转逼着画面走纹理视图，
+                     * 纹理层丢掉杜比元数据」。
+                     *
+                     * 现在系统能真横屏（见 AndroidManifest 的
+                     * PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY），
+                     * 渲染走 SurfaceView 直通，元数据不丢 → Exo 硬解就是正确的。
+                     *
+                     * 保留日志便于验证。
+                     */
+                    if (dv5) android.util.Log.i(TAG, "DV profile5：保持当前内核（系统横屏 + Surface 直通）")
                 }
                 if (dv != _isDolbyVision.value) {
                     android.util.Log.i(TAG, "dolby-vision detected=$dv → ${if (dv) "SurfaceView（放弃画布旋转，优先出画）" else "TextureView"}")

@@ -29,10 +29,26 @@ object CanvasRotationSupport {
      *  · OPD2515 = OPPO Pad Mini 的型号代码（用户日志实测确认）
      *  · 部分 ROM 的 MODEL 会写成市场名，所以两个都比
      */
-    private val CANVAS_ROTATION_MODELS = setOf(
-        "OPD2515",        // OPPO Pad Mini（用户设备，日志确认）
-        "OPPO Pad Mini",  // 市场名兜底
-    )
+    /**
+     * 用户口径（2026-11-26）**画布旋转已停用**。
+     *
+     * 为什么：找到了 Android 16 的官方退出方式 ——
+     * 清单里加 `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY=true`
+     * （之前写错成了 PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE，那个属性不存在）。
+     * 加上正确属性后，系统重新尊重 setRequestedOrientation，
+     * **可以直接系统级横屏**，不再需要「把界面画布自己转 90°」这套兜底。
+     *
+     * 停用画布旋转带来的好处（一次解决三个问题）：
+     *  · 画面可以走 SurfaceView 直通（不需要 TextureView 参与 View 旋转）
+     *  · 杜比视界的动态元数据不再经过纹理层 → 不被丢弃 → **不偏色**
+     *  · 不需要 manual video-rotate → **方向自然正确**
+     *  · 硬解直通 → 4K 不掉帧（不用软件解码）
+     *
+     * 保留这个对象和 `enabled` 开关是为了：
+     *  · 万一某台机器官方属性仍不生效，可以在这里临时改回 true 兜底
+     *  · 相关代码（PlayerScreen 的门控）不用删
+     */
+    private val CANVAS_ROTATION_MODELS = emptySet<String>()
 
     /**
      * 这台设备是否允许使用「画布 90° 旋转」兜底。
