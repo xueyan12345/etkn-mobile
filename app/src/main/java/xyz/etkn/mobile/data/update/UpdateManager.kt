@@ -236,8 +236,25 @@ class UpdateManager(
      *
      * 失败也不再轮换，直接报错让人重试（重试仍然走同一个加速源）。
      */
-    private suspend fun transfer(url: String, target: Target, asset: ReleaseAsset, source: UpdateSource): String =
-        transferOnce(source.wrap(url), target, asset, source, client)
+    /**
+     * 用户口径（2026-11-27）**按候选源逐个尝试，加速源失败自动退直连**。
+     *
+     * 上一版只调 transferOnce(source.wrap(url)) —— 只用加速源，
+     * 加速源一失败就整体失败（用户实测「加速源下载失败」下不了）。
+     *
+     * 现在按 candidates 顺序试：加速源 → GitHub 直连。
+     * 每次都重新开一个 Target（部分文件要清掉重下，避免半截污染）。
+     */
+    private suspend fun transfer(url: String, target: Target, asset: ReleaseAsset, source: UpdateSource): String {
+        var last: Throwable? = null
+        for (candidate in source.candidates(url)) {
+            val result = runCatching { transferOnce(candidate, target, asset, source, client) }
+            result.getOrNull()?.let { return it }
+            last = result.exceptionOrNull()
+            android.util.Log.w("ETKN-Update", "download failed via ${candidate.take(48)}: ${last?.message}")
+        }
+        throw (last ?: IOException("下载失败"))
+    }
 
     private suspend fun transferOnce(
         url: String, target: Target, asset: ReleaseAsset, source: UpdateSource, http: OkHttpClient,

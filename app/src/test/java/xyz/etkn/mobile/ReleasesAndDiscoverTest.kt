@@ -60,7 +60,11 @@ class ReleasesAndDiscoverTest {
         // 用户口径（2026-11-26）：对齐原作者做法，只留 gh-proxy.com 一个加速源。
         // 原文见 Releases.kt 的 UpdateSource 注释。
         assertEquals("https://gh-proxy.com/${asset.url}", UpdateSource.Proxy.wrap(asset.url))
-        assertEquals(listOf("https://gh-proxy.com/${asset.url}"), UpdateSource.Proxy.candidates(asset.url))
+        // 主源 + GitHub 直连兜底（2026-11-27：单一源失败会整体失败）
+        assertEquals(
+            listOf("https://gh-proxy.com/${asset.url}", asset.url),
+            UpdateSource.Proxy.candidates(asset.url),
+        )
         assertEquals("b".repeat(64), asset.sha256)
     }
 

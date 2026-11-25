@@ -45,17 +45,30 @@ object ReleaseRepo {
  * 而出现「有时候快有时候慢」。
  */
 enum class UpdateSource(val label: String) {
-    /** 唯一通道：gh-proxy.com 加速源（和原作者一致）。 */
+    /** 加速源（gh-proxy.com，实测最快）。 */
     Proxy("加速源");
 
     /**
-     * 把 GitHub 原始地址套到加速源上。
-     * gh-proxy.com 的规则是「域名 + 完整原始 URL」，不需要另外编码。
+     * 用户口径（2026-11-27）**单一源失败就整体失败，必须留一个兜底**。
+     *
+     * 上一版只留 gh-proxy.com 一个源，结果用户那边「加速源下载失败」就彻底下不了。
+     * 实测（我这边）：gh-proxy.com 273KB/s 可用，但它是第三方服务，会抽风。
+     *
+     * 现在：加速源为主，失败自动退 GitHub 直连。
+     * 只加这一个兜底，不再恢复之前那 4 个镜像轮换 ——
+     * 那会造成「有时候快有时候慢」（用户明确反对）。
      */
     fun wrap(githubUrl: String): String = "https://gh-proxy.com/$githubUrl"
 
-    /** 只有一个源，候选列表就一项。 */
-    fun candidates(githubUrl: String): List<String> = listOf(wrap(githubUrl))
+    /**
+     * 候选地址（按优先级）：
+     *  ① gh-proxy.com 加速源（通常最快）
+     *  ② GitHub 直连（加速源抽风时兜底，能解析 github.com 就可用）
+     */
+    fun candidates(githubUrl: String): List<String> = listOf(
+        "https://gh-proxy.com/$githubUrl",
+        githubUrl,
+    )
 }
 
 @Immutable
