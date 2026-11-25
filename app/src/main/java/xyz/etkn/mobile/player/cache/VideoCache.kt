@@ -183,3 +183,13 @@ object VideoCache {
         }
     }
 }
+
+/**
+ * OkHttpClient → Media3 的 HttpDataSource.Factory。
+ *
+ * 放这里是因为缓存和上游数据源要配套使用；
+ * 之前它写在已删除的 CachedDataSource.kt 里。
+ */
+fun httpFactory(client: okhttp3.OkHttpClient, userAgent: String): androidx.media3.datasource.HttpDataSource.Factory =
+    androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(client)
+        .setUserAgent(userAgent)
