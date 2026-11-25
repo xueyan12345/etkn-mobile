@@ -177,7 +177,28 @@ class MpvPlayer(
             DecoderPreference.Software -> "no"
         })
         set("hwdec-codecs", "h264,hevc,mpeg2video,vc1,vp8,vp9,av1")
-        set("vd-lavc-dr", "yes")
+        /**
+         * 用户口径（2026-11-27）**4K 硬解时不要在解码器里再排一队帧**。
+         *
+         * 修的闪退（日志实证）：
+         * ```
+         * AidlBufferPool: 11 total buffers (97320960 = 92MB) - 10~11 used
+         * recycle/alloc 从 162 涨到 1905
+         * Dalvik used=216MB / 256MB  → OOM
+         * ```
+         * vd-lavc-dr=yes 让解码器直接渲染（少一次拷贝），但它会额外持有一批
+         * 4K（3840x1600 ≈ 12MB/帧）的 buffer 不放，11 个就是 92MB native，
+         * 再叠加 Java 堆就爆了。
+         *
+         * 关掉之后帧立刻交出去，占用降下来；代价是多一次拷贝
+         * （4K 在这台 SM8845P 上可忽略）。
+         */
+        set("vd-lavc-dr", "no")
+        /**
+         * 4K 时限制解码线程数：默认会按 CPU 核数开很多，每个线程都要自己的帧缓冲。
+         * 2 个线程足够 4K 解码，内存占用明显下降。
+         */
+        set("vd-lavc-threads", if (lowRam) "2" else "4")
         set("vd-lavc-film-grain", "gpu")
         set("keep-open", "yes")
         set("input-default-bindings", "no")

@@ -197,6 +197,9 @@ class VideoSession(
      */
     private var autoPickDone = false
 
+    /** DV 识别等待计数：轨道信息可能分两次回调才完整（见 onTracksChanged 里的说明）。 */
+    private var dvSettleTicks = 0
+
     /**
      * 用户口径（2026-11-26）：下次创建的 mpv 是否是杜比视界源。
      * mpv 必须在 load 之前知道这件事，才能按 IPTPQc2 解析颜色。
@@ -479,30 +482,61 @@ class VideoSession(
                      * 这比任何白名单都准确（不同机器支持的编码不一样）。
                      */
                     val exoCanDecode = canDecode(mime)
-                    val want = when {
-                        // ⓪ 视频轨道缺失 / 编码未知 → mpv（Exo 解不了）
-                        !hasVideoTrack || (videoFormat != null && codec.isEmpty()) -> Engine.Mpv
-                        // ⓪' 设备没有这个编码的解码器 → mpv（内置 FFmpeg 能解）
-                        !exoCanDecode -> Engine.Mpv
-                        dv5 -> Engine.Exo          // ① DV profile5 → Exo（mpv 偏色）
-                        hdr -> Engine.Mpv          // ② HDR10/HLG → mpv（Exo 发暗）
-                        dv -> Engine.Exo           // DV 非 profile5 → Exo
-                        else -> Engine.Exo         // ③ SDR → Exo
-                    }
-                    autoPickDone = true
-                    android.util.Log.i(
-                        TAG,
-                        "自动选核 → ${want.label}（dv5=$dv5 hdr=$hdr dv=$dv codec=$codec hasVideo=$hasVideoTrack）",
-                    )
                     /**
-                     * 记住结论：下次进这一集直接用对的内核起播，不再起播两次。
-                     * （这是「走马上任起播十几秒」的根治办法）
+                     * 用户口径（2026-11-27）**轨道信息可能还没解析完，不要在第一次回调就定案**。
+                     *
+                     * 日志实证（同一部片，两次选核结果不同）：
+                     * ```
+                     * 04:03:18.260 自动选核 → mpv（hdr=true dv=false codec=hvc1.2.4.l153.90）
+                     * 04:04:23.720 自动选核 → ExoPlayer（dv5=true codec=dvhe.05.08）
+                     * ```
+                     * 这是同一个文件（杜比视界 profile 5 的兼容层，同时带 HEVC 标识）。
+                     * 第一次回调 Exo 只给出「普通 HEVC + HDR」，判成 hdr=true → 选 mpv；
+                     * 第二次才拿到真正的 `dvhe.05` → 选 Exo。
+                     *
+                     * 后果很严重：mpv 硬解 4K HDR 时缓冲区吃满 92MB native + 216MB Java 堆
+                     * → OOM 闪退（AidlBufferPool 11×97MB 从不释放）。
+                     *
+                     * 现在：如果这次识别出 HDR 但**还没看到 DV 标识**，
+                     * 而且 codec 看起来像 HEVC/DV 兼容层（hvc1/hev1/dvhe/dvh1），
+                     * 就先不定案，等下一次回调（那时 DV 元数据已经到了）。
+                     * 最多等 2 次回调，之后不管怎样都定案，避免卡住不开播。
                      */
-                    item?.id?.let { EngineMemory.remember(context, it, want) }
-                    if (engine != want) {
-                        forcedEngine = want
-                        val cur = source
-                        val pos = player?.currentPosition ?: 0L
+                    val looksLikeDvCompatible = codec.startsWith("hvc1") || codec.startsWith("hev1") ||
+                        codec.startsWith("dvhe") || codec.startsWith("dvh1")
+                    val shouldWaitForDvInfo = hdr && !dv && looksLikeDvCompatible && dvSettleTicks < 2
+                    if (shouldWaitForDvInfo) {
+                        dvSettleTicks++
+                        android.util.Log.i(
+                            TAG,
+                            "自动选核暂缓（第 ${dvSettleTicks} 次）：hdr=true 但未见 DV 标识，" +
+                                "codec=$codec，等轨道信息稳定",
+                        )
+                    } else {
+                        val want = when {
+                            // ⓪ 视频轨道缺失 / 编码未知 → mpv（Exo 解不了）
+                            !hasVideoTrack || (videoFormat != null && codec.isEmpty()) -> Engine.Mpv
+                            // ⓪' 设备没有这个编码的解码器 → mpv（内置 FFmpeg 能解）
+                            !exoCanDecode -> Engine.Mpv
+                            dv5 -> Engine.Exo          // ① DV profile5 → Exo（mpv 偏色）
+                            hdr -> Engine.Mpv          // ② HDR10/HLG → mpv（Exo 发暗）
+                            dv -> Engine.Exo           // DV 非 profile5 → Exo
+                            else -> Engine.Exo         // ③ SDR → Exo
+                        }
+                        autoPickDone = true
+                        android.util.Log.i(
+                            TAG,
+                            "自动选核 → ${want.label}（dv5=$dv5 hdr=$hdr dv=$dv codec=$codec hasVideo=$hasVideoTrack）",
+                        )
+                        /**
+                         * 记住结论：下次进这一集直接用对的内核起播，不再起播两次。
+                         * （这是「走马上任起播十几秒」的根治办法）
+                         */
+                        item?.id?.let { EngineMemory.remember(context, it, want) }
+                        if (engine != want) {
+                            forcedEngine = want
+                            val cur = source
+                            val pos = player?.currentPosition ?: 0L
                         /**
                          * 用户口径（2026-11-27）**自动选核也要真的切过去**。
                          *
@@ -519,11 +553,12 @@ class VideoSession(
                          * onTracksChanged 本身就在主线程（Exo 的内部播放线程投递到
                          * 应用线程），不需要再 post 一次。
                          */
-                        if (cur != null && !released) {
-                            runCatching { playSource(cur, pos) }
-                                .onFailure { android.util.Log.e(TAG, "自动选核重建失败", it) }
-                        } else {
-                            android.util.Log.w(TAG, "自动选核跳过重建：source=${cur != null} released=$released")
+                            if (cur != null && !released) {
+                                runCatching { playSource(cur, pos) }
+                                    .onFailure { android.util.Log.e(TAG, "自动选核重建失败", it) }
+                            } else {
+                                android.util.Log.w(TAG, "自动选核跳过重建：source=${cur != null} released=$released")
+                            }
                         }
                     }
                 }
@@ -1025,6 +1060,7 @@ class VideoSession(
              *    所以手动选择的作用域就是「当前这一集」。
              */
             autoPickDone = false
+            dvSettleTicks = 0
             userPickedEngineThisPlayback = false
         }
         // New media in the player (new source or the other core): its tracks start from the server's defaults again.
