@@ -307,7 +307,8 @@ class HomeViewModel(
                 val fallback = fallbackHero(data)
                 if (fallback.isNotEmpty()) {
                     val randomNine = fallback.shuffled(Random(seed)).take(HERO_RANDOM_SIZE)
-                    publishHero(pickResumeFirst(data, randomNine, seed))
+                    val picked = pickResumeFirst(data, randomNine, seed)
+                    publishHero(picked)
                     HeroSnapshot.write(context, accountKey, picked.map { it.id })
                 }
             }

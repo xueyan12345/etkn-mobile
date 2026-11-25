@@ -350,20 +350,6 @@ class VideoSession(
              *  · codec 字符串以 dvhe / dvh1 开头（DV profile 5/8 都在此列）
              */
             runCatching {
-                val dv = tracks.groups.any { group ->
-                    if (group.type != C.TRACK_TYPE_VIDEO) return@any false
-                    (0 until group.length).any { i ->
-                        val f = group.getTrackFormat(i)
-                        val mime = f.sampleMimeType.orEmpty()
-                        val codec = f.codecs.orEmpty()
-                        mime.equals("video/dolby-vision", ignoreCase = true) ||
-                            codec.startsWith("dvhe", ignoreCase = true) ||
-                            codec.startsWith("dvh1", ignoreCase = true)
-                    }
-                }
-                /**
-                 * 用户口径（2026-11-26）：单独识别 DV profile 5（dvhe.05 / dvh1.05）。
-                 */
                 /**
                  * 用户口径（2026-11-26）**按片源类型自动选内核（这是「自动」模式的完整规则）**。
                  *
