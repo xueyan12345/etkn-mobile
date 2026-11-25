@@ -75,31 +75,15 @@ class UpdateManager(
     private val userAgent = "ETKN-Mobile/${BuildConfig.VERSION_NAME} (Android)"
 
     /**
-     * 用户口径（2026-11-23）：GitHub 下载走用户自己的公网代理
-     * http://xy:***@891730.xyz:23423。
+     * 用户口径（2026-11-26）**自建公网代理已删除**。
      *
-     * 为什么不用第三方加速镜像：实测 gh-proxy.com 403、gh-proxy.net 只返 195 字节错误页、
-     * ghfast.top 时好时坏。而走这个代理直连 GitHub Release 实测 206 / 3.13 MB/s，稳定。
+     * 原来这里配了 http://891730.xyz:23423（带 Basic 认证）走代理直连 GitHub。
+     * 删掉的原因（用户原话「app内更新还是不是很顺畅，有时候快，有时候慢」）：
+     *  · 走代理等于让下载流量绕一圈，速度取决于代理节点当时的状况，波动很大
+     *  · 原作者用的是 gh-proxy.com 前缀式加速源，不碰代理，行为更稳定
      *
-     * 代理不通时自动回退直连（client），保证任何网络环境下都能下。
+     * 现在只剩 [client] 一个通道，配合 UpdateSource.wrap() 的加速源地址。
      */
-    private val proxyClient: OkHttpClient by lazy {
-        runCatching {
-            val proxy = java.net.Proxy(
-                java.net.Proxy.Type.HTTP,
-                java.net.InetSocketAddress("891730.xyz", 23423),
-            )
-            val auth = okhttp3.Authenticator { _, response ->
-                val raw = okhttp3.Credentials.basic("xy", "xueyan123")
-                if (response.request.header("Proxy-Authorization") != null) null
-                else response.request.newBuilder().header("Proxy-Authorization", raw).build()
-            }
-            client.newBuilder().proxy(proxy).proxyAuthenticator(auth).build()
-        }.getOrDefault(client)
-    }
-
-    /** 当前该用哪个 client：优先代理，失败由调用方回退 [client]。 */
-    private fun clientFor(useProxy: Boolean): OkHttpClient = if (useProxy) proxyClient else client
 
     /** Startup check, once per process. */
     fun autoCheck() {
@@ -151,7 +135,7 @@ class UpdateManager(
     private suspend fun fetchText(url: String, accept: String = "*/*"): String {
         val request = Request.Builder().url(url).header("User-Agent", userAgent).header("Accept", accept).build()
         // 先走用户公网代理；代理不通（超时/拒绝）就退回直连。
-        return runCatching { withCall(request, proxyClient) { it.requireOk().body.string() } }
+        return runCatching { withCall(request, client) { it.requireOk().body.string() } }
             .getOrElse { withCall(request) { it.requireOk().body.string() } }
     }
 
@@ -239,41 +223,21 @@ class UpdateManager(
 
     /** Streams to [target] while hashing; publishes progress and speed about four times a second. */
     /**
-     * 用户口径（2026-11-23）修「代理加速下载失效」：
+     * 用户口径（2026-11-26）**下载只走一个加速源**。
      *
-     * 之前的回退链是「代理 → GitHub 直连」。问题在于**手机端解析不了 github.com**
-     * （用户实测：换台设备就好了），所以代理一失败，回退直连也必然失败 → 整体失败。
+     * 之前有 4 条通道轮着试（自建代理 → ghproxy.net → ghfast.top → GitHub 直连），
+     * 这正是「有时候快有时候慢」的根源：
+     *  · 每条通道速度不同，落到哪条看当时哪条先通
+     *  · 失败的通道要先超时才会切下一条，用户体感就是「卡一下才动」
+     *  · 手机网络经常解析不了 github.com，直连那条注定白等
      *
-     * 现在改成四条依次尝试，每条都是独立可用的通道：
-     *   ① 公网代理直连 GitHub 原始地址（最快，实测 3+ MB/s）
-     *   ② ghproxy.net 镜像（第三方，不依赖代理）
-     *   ③ ghfast.top 镜像
-     *   ④ GitHub 直连（最后兜底，能解析域名时可用）
+     * 现在对齐原作者的做法：只用 gh-proxy.com 这一个加速源（见 UpdateSource.wrap）。
+     * 行为可预测 —— 快就是快，慢就是慢，不再有「换个通道忽然变快」的错觉。
      *
-     * 哪条先成功就用哪条，不再出现「代理挂了整体就废」。
+     * 失败也不再轮换，直接报错让人重试（重试仍然走同一个加速源）。
      */
-    private suspend fun transfer(url: String, target: Target, asset: ReleaseAsset, source: UpdateSource): String {
-        val attempts: List<Pair<String, () -> suspend () -> String>> = listOf(
-            // 代理 + 原始地址
-            "proxy" to { { transferOnce(url, target, asset, source, proxyClient) } },
-            // 第三方镜像（不走代理，绕开代理故障）
-            "ghproxy" to { { transferOnce(mirror("https://ghproxy.net/", url), target, asset, source, client) } },
-            "ghfast" to { { transferOnce(mirror("https://ghfast.top/", url), target, asset, source, client) } },
-            // 直连
-            "direct" to { { transferOnce(url, target, asset, source, client) } },
-        )
-        var last: Throwable? = null
-        for ((name, run) in attempts) {
-            val result = runCatching { run()() }
-            result.getOrNull()?.let { return it }
-            last = result.exceptionOrNull()
-            android.util.Log.w("ETKN-Update", "download via $name failed: ${last?.message}")
-        }
-        throw (last ?: IOException("下载失败"))
-    }
-
-    /** 把 GitHub 原始地址套到镜像前缀上（ghproxy 系会把路径原样转发）。 */
-    private fun mirror(prefix: String, url: String): String = prefix + url
+    private suspend fun transfer(url: String, target: Target, asset: ReleaseAsset, source: UpdateSource): String =
+        transferOnce(source.wrap(url), target, asset, source, client)
 
     private suspend fun transferOnce(
         url: String, target: Target, asset: ReleaseAsset, source: UpdateSource, http: OkHttpClient,

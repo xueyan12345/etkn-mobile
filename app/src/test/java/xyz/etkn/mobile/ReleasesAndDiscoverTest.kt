@@ -57,10 +57,10 @@ class ReleasesAndDiscoverTest {
         assertEquals("v0.2.0", release.tag)
         val asset = release.assetFor(listOf("arm64-v8a"))!!
         assertEquals("https://github.com/xueyan12345/etkn-mobile/releases/download/v0.2.0/ETKN-Mobile-0.2.0-arm64-v8a.apk", asset.url)
-        // 用户口径（2026-11-23）：不再用第三方加速镜像 —— 下载改走用户自己的公网代理
-        // （OkHttp 层配置，见 UpdateManager.proxyClient）。所以 wrap/candidates 都返回原始地址。
-        assertEquals(asset.url, UpdateSource.Proxy.wrap(asset.url))
-        assertEquals(listOf(asset.url), UpdateSource.Proxy.candidates(asset.url))
+        // 用户口径（2026-11-26）：对齐原作者做法，只留 gh-proxy.com 一个加速源。
+        // 原文见 Releases.kt 的 UpdateSource 注释。
+        assertEquals("https://gh-proxy.com/${asset.url}", UpdateSource.Proxy.wrap(asset.url))
+        assertEquals(listOf("https://gh-proxy.com/${asset.url}"), UpdateSource.Proxy.candidates(asset.url))
         assertEquals("b".repeat(64), asset.sha256)
     }
 

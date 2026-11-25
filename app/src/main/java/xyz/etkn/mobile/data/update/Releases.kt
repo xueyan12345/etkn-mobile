@@ -16,32 +16,46 @@ object ReleaseRepo {
 }
 
 /**
- * Download mirrors, in default preference order.
+ * Download source — 用户口径（2026-11-26）**只留一个加速源，其它全部删掉**。
  *
- * 用户口径（2026-11-23）：加速源必须真的能下，不能悄悄退回直连。
- * 实测（2026-11-23）：
- *   gh-proxy.com      → HTTP 403（失效，已弃用）
- *   ghfast.top        → HTTP 206 正常，可断点续传（目前最稳，放第一位）
- *   gh-proxy.net      → HTTP 200
- * 所以「加速源」= 按顺序尝试多个镜像，谁通用谁；全都不通才退回 GitHub 直连。
+ * 需求原文：「你把那个代理删了吧，然后你看看原来那个项目，也就是咱们这个项目
+ * 原来的作者用的加速源是啥……你能不能也套用他那个，然后去掉那些方式，
+ * 就留一个加速源的更新，别的什么代理啥的，还有什么源原来的官方的那个都不要」
+ *
+ * 原作者（上游仓库 Alumos/etkn-mobile）的实现，原文：
+ * ```
+ * enum class UpdateSource(val label: String) {
+ *     Proxy("加速源"),
+ *     GitHub("GitHub 直连");
+ *     fun wrap(githubUrl: String): String = when (this) {
+ *         Proxy -> "https://gh-proxy.com/$githubUrl"
+ *         GitHub -> githubUrl
+ *     }
+ * }
+ * ```
+ * 也就是说他用的是 **gh-proxy.com** 做前缀拼接（把完整 GitHub 地址贴在域名后面）。
+ *
+ * 现在完全照抄这一套，只保留加速源这一条通道：
+ *  · 删掉自建公网代理（891730.xyz:23423）—— 那是「有时快有时慢」的来源之一，
+ *    走代理等于让流量绕一圈，且代理节点本身波动大
+ *  · 删掉 ghproxy.net / ghfast.top 这些轮换镜像
+ *  · 删掉「GitHub 直连」兜底 —— 手机网络经常解析不了 github.com，留着只会多等一轮超时
+ *
+ * 只有一个源的好处：行为可预测。快就是快，慢就是慢，不会因为轮换到某个坏镜像
+ * 而出现「有时候快有时候慢」。
  */
 enum class UpdateSource(val label: String) {
-    Proxy("加速源"),
-    GitHub("GitHub 直连");
+    /** 唯一通道：gh-proxy.com 加速源（和原作者一致）。 */
+    Proxy("加速源");
 
-    /** 加速源候选镜像（按成功率排序）。末尾那个才是 GitHub 原始地址。 */
     /**
-     * 用户口径（2026-11-23）：不再折腾第三方加速镜像，直接走自己的公网代理。
-     * 实测（2026-11-23）：走 http://xy:***@891730.xyz:23423 直连 GitHub Release，
-     * APK 返回 206、3.13 MB/s，SHA256SUMS 200 —— 比 ghproxy/ghfast 稳定得多。
-     *
-     * 这里不再改写 URL；代理由 OkHttp 的 Proxy 配置负责（见 UpdateManager）。
-     * 保留列表形式是为了传 GitHub 原始地址 + 直连兜底。
+     * 把 GitHub 原始地址套到加速源上。
+     * gh-proxy.com 的规则是「域名 + 完整原始 URL」，不需要另外编码。
      */
-    fun candidates(githubUrl: String): List<String> = listOf(githubUrl)
+    fun wrap(githubUrl: String): String = "https://gh-proxy.com/$githubUrl"
 
-    /** 首选地址（保持旧调用方可用）。 */
-    fun wrap(githubUrl: String): String = candidates(githubUrl).first()
+    /** 只有一个源，候选列表就一项。 */
+    fun candidates(githubUrl: String): List<String> = listOf(wrap(githubUrl))
 }
 
 @Immutable

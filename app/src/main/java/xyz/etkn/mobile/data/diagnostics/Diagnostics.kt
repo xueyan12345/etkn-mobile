@@ -35,27 +35,54 @@ object Diagnostics {
     private const val KEEP_DAYS = 7L
 
     /**
-     * Tags written at info level; everything else only at error level.
+     * 用户口径（2026-11-26）**日志按 PID 抓，不再维护 tag 白名单**。
      *
-     * 用户口径（2026-11-23）：**这里漏了 ETKN-Rotate，导致平板旋转的所有诊断日志
-     * 一条都没进日志文件**（logcat 过滤只保留白名单 tag 的 info）。
-     * 我连着两版加日志都看不到，就是因为这个。
+     * 这个坑犯了两次：
+     *  · 2026-11-23 漏了 ETKN-Rotate → 平板旋转的日志一条没进文件
+     *  · 2026-11-26 漏了 ETKN-Cache → 缓存相关 5 条日志一条没进文件，
+     *    排查「本地缓存不生效」时完全没有证据，只能靠猜
      *
-     * 不再逐个列举：凡是 ETKN 打头的 tag 都要 info，新加模块不会再漏。
+     * 用户原话：「你以后加什么功能啥的，都要把这个功能相关日志放在这个往日志里写的
+     * 功能里边，要不以后有啥问题，我导出日志你也看不见」
+     *
+     * 所以彻底改掉白名单机制：用 `--pid=<本进程>` 抓**本进程产生的所有日志**。
+     * 好处：
+     *  · 以后任何新模块、新 tag、任何级别（info/warn/error）都自动进文件，不可能再漏
+     *  · 不再需要「加日志时记得同步改白名单」这种靠人记的动作
+     *  · 本进程的崩溃堆栈、库报错也一并在里面，排查更完整
+     * 代价：文件写入量比只抓 ETKN*:I 略大（但原来是 *:E 抓全系统错误，总量并不小），
+     * 轮转仍是 256KB × 8，够用。
      */
-    private val TAGS = listOf("ETKN", "ETKN-Play", "ETKN-Disc", "ETKN-Player", "ETKN-Mpv", "ETKN-Rotate")
-    private val FILTER = TAGS.map { "$it:I" } + "*:E"
+    private val FILTER = listOf("--pid=${Process.myPid()}")
+
+    /**
+     * 兜底用的 tag 白名单：仅当 PID 过滤不可用时才用（例如某些定制 ROM 的 logcat
+     * 不支持 --pid）。正常情况下走上面的 FILTER。
+     *
+     * 新增 ETKN 标签时可以往这里补，但**不补也不会漏**（主路径按 PID 抓）。
+     */
+    private val FALLBACK_FILTER = listOf(
+        "ETKN", "ETKN-Cache", "ETKN-Detail", "ETKN-Disc", "ETKN-Mpv",
+        "ETKN-Play", "ETKN-Player", "ETKN-Rotate",
+    ).map { "$it:I" } + "*:E"
 
     fun start(context: Context) {
         val dir = directory(context)
         File(context.filesDir, "diagnostics").deleteRecursively() // 0.5.3's unfiltered mirror
         cleanup(dir)
-        runCatching {
-            val since = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            ProcessBuilder(
-                listOf("logcat", "-v", "threadtime,year", "-T", since, "-f", File(dir, LOG).path, "-r", "256", "-n", FILES.toString()) + FILTER,
-            ).redirectErrorStream(true).start()
-        }.onFailure { Log.w(TAG, "log recorder unavailable", it) }
+        val since = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+        val base = listOf("logcat", "-v", "threadtime,year", "-T", since, "-f", File(dir, LOG).path, "-r", "256", "-n", FILES.toString())
+        /**
+         * 先按 PID 抓（能收全本进程所有日志）；起不来再退回 tag 白名单。
+         * 两者的区别只在「漏不漏日志」，不影响功能。
+         */
+        val started = runCatching { ProcessBuilder(base + FILTER).redirectErrorStream(true).start() }
+            .onFailure { Log.w(TAG, "log recorder (pid filter) unavailable", it) }
+            .getOrNull()
+        if (started == null) {
+            runCatching { ProcessBuilder(base + FALLBACK_FILTER).redirectErrorStream(true).start() }
+                .onFailure { Log.w(TAG, "log recorder unavailable", it) }
+        }
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching {
@@ -102,6 +129,22 @@ object Diagnostics {
             lines.filter { (it.substring(11, minOf(13, it.length)).toIntOrNull() ?: -1) in fromHour until toHour }
                 .distinct() // a dead process's last lines may be in both app.log and crash.log
                 .sortedBy { it.take(23) }
+                /**
+                 * 用户口径（2026-11-26）**按 PID 全量抓之后，导出时要滤掉系统噪音**。
+                 *
+                 * 抓取改成 `--pid` 之后，本进程的日志全进来了（包括各库的 info/warn），
+                 * 但同时也会混入大量与本应用无关的系统刷屏，例如：
+                 *   · OplusDisplayModeManager / OplusBracketLog / OplusSfNotifier 等 OPPO 厂商日志
+                 *   · AudioTrackExtImpl / ashmem / SchedAssist 这类平台噪音
+                 *   · ExoPlayer / mpv 内部的逐帧 debug（warn 以下的都不进）
+                 *
+                 * 保留原则（宁可多留，不可漏掉排查线索）：
+                 *  ① 所有 `I/W/E ETKN…` 标签 —— 我们自己的诊断主线，必留
+                 *  ② 所有 `E`/`F` 级别的行 —— 任何报错都可能是线索，必留
+                 *  ③ 播放器内核相关（mpv / ExoPlayer / MediaCodec / Codec2 / c2.）的 W 及以上
+                 *  其余丢弃。
+                 */
+                .filter { line -> keepLine(line) }
                 .forEach(::appendLine)
         }
         val output = context.contentResolver.openOutputStream(target, "wt") ?: error("无法写入所选位置")
@@ -168,6 +211,42 @@ object Diagnostics {
     fun redact(text: String): String = text
         .replace(URL_QUERY, "$1?…")
         .replace(SECRET, "$1=…")
+
+    /**
+     * 用户口径（2026-11-26）：导出时决定哪些行值得留。
+     *
+     * 行格式：`2026-11-26 10:22:54.505 32647 32647 I Tag     : message`
+     *
+     * 为什么不是「只留 error」：改成按 PID 抓之后，本进程会带进大量
+     * **平台/厂商层面的 E 级噪音**（实测 OPPO 机器上每几秒就刷一条）：
+     * ```
+     * E OplusDisplayModeManager: has been initialized.
+     * E OplusBracketLog: ... updateHostViewRootIfNeeded, not support ...
+     * E AudioTrackExtImpl: get fade type, but return null
+     * E SchedAssist: open sharedFd failed with error=Permission denied
+     * E ashmem: Pinning is deprecated since Android Q.
+     * E OplusPredictiveBackController: NoSuchMethodException
+     * E OplusSfNotifier / OplusHdrVideoUIDiming: get parcel data error
+     * ```
+     * 这些把真正的线索淹没了。所以反过来做：**先丢已知噪音，其余全留**。
+     * 丢错了顶多多几行，漏了才是事故 —— 宁可多留。
+     */
+    private fun keepLine(line: String): Boolean = !NOISE.containsMatchIn(line)
+
+    /**
+     * 已知噪音标签（平台/厂商/系统组件），全部丢弃。
+     * 只列**确认无用**的，不影响我们判断的；有疑问的一律不列。
+     */
+    private val NOISE = Regex(
+        """\s[VDIWEF]\s+(""" +
+            "Oplus[A-Za-z]*|" +          // OPPO 厂商日志（刷屏主力）
+            "SchedAssist|ashmem|" +
+            "ActivityThread|OpenGLRenderer|EGL_emulation|" +
+            "AudioTrackExtImpl|AudioFlinger|AudioPolicyManager|" +
+            "Choreographer|ViewRootImpl|HWUI|libc|Zygote|" +
+            "ziparchive|StrictMode|Binder|ProfileInstaller" +
+            ")\s*:",
+    )
 
     private fun cleanup(dir: File) {
         val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(KEEP_DAYS)

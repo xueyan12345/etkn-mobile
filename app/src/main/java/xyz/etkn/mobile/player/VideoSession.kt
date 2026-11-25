@@ -923,6 +923,47 @@ class VideoSession(
                 android.net.Uri.parse(url)
             }
         }
+        /**
+         * 用户口径（2026-11-26）**这一行是「退出再进有没有命中缓存」的唯一判据**。
+         *
+         * 用户报的现象：看完退出、再点同一集，明显还在走网络（网速跑起来）才出画面，
+         * 应该立刻读本地缓存秒播。
+         *
+         * 这里把三件事一次打全，便于一眼判断卡在哪一环：
+         *  · 缓存目录里到底有没有这一集的文件（有没有写过）
+         *  · 文件多大（写了多少）
+         *  · 最终播放 URI 是 file:// 还是 http(s)://（有没有真的用上）
+         */
+        /**
+         * 用户口径（2026-11-26）**同时打出缓存目录总览**。
+         *
+         * 因为缓存写在 `cacheDir`（系统可随时清理），如果整个目录是空的，
+         * 说明不是「查不到这一集」而是「根本没写进去 / 被系统清了」——两者的修法完全不同。
+         */
+        run {
+            val dir = PlaybackCache.partFileById(context, current.id).parentFile
+            val all = dir?.listFiles()
+            android.util.Log.i(
+                TAG,
+                "cache-dir path=${dir?.absolutePath ?: "none"} " +
+                    "exists=${dir?.exists() ?: false} " +
+                    "files=${all?.size ?: 0} " +
+                    "bytes=${all?.sumOf { it.length() } ?: 0} " +
+                    "hasThisEpisode=${all?.any { it.name.startsWith(current.id.replace(Regex("[^A-Za-z0-9_-]"), "_")) } ?: false}",
+            )
+        }
+
+        android.util.Log.i(
+            TAG,
+            "cache-probe item=${current.id} " +
+                "file=${PlaybackCache.partFileById(context, current.id).parentFile?.path}/" +
+                "${current.id.replace(Regex("[^A-Za-z0-9_-]"), "_")} " +
+                "hit=${cachedLocal != null} " +
+                "size=${cachedLocal?.length() ?: 0} " +
+                "scheme=${playUri.scheme} " +
+                "localPath=${cachedLocal?.absolutePath ?: "none"}",
+        )
+
         android.util.Log.i(TAG, "playUri=${playUri} (local=${cachedLocal?.absolutePath ?: "none"})")
         val media = MediaItem.Builder()
             .setUri(playUri)

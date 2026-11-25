@@ -136,8 +136,8 @@ private fun UpdatePanel(state: UpdateState) {
             )
         }
         val running = state.download is DownloadState.Running || state.download is DownloadState.Verifying
-        // 用户口径（2026-11-23）：下载源选项框去掉，固定就用加速源（内部多镜像回落：
-        // ghfast.top → gh-proxy.net → 直连），用户不需要自己选。
+        // 用户口径（2026-11-26）：下载源选项框去掉，固定就用**唯一加速源 gh-proxy.com**
+        // （对齐原作者的实现）。不再有多镜像轮换、不再有自建代理、不再有 GitHub 直连兜底。
         LaunchedEffect(Unit) {
             if (state.source != UpdateSource.Proxy) {
                 graph.updates.setSource(UpdateSource.Proxy)
