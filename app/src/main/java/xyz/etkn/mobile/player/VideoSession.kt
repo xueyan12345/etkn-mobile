@@ -1228,6 +1228,12 @@ class VideoSession(
             trimmedThisItem = true
             PlaybackCache.trimNow(graph.app, settings)
         }
+        // 两个阈值都是 0 = 不做缓存
+        val cacheWindowOn = settings.cacheMemoryMb > 0 || settings.cacheMemorySeconds > 0
+        if (!cacheWindowOn) return
+        val cur = currentUrl ?: return
+        val currentItem = item ?: return
+
         /**
          * 用户口径（2026-11-27）**持续播放时也要持续淘汰**，不能只在进播放器时查一次。
          *
@@ -1235,8 +1241,8 @@ class VideoSession(
          *  「持续播放，你那边持续缓存，当达到阈值之后，
          *    就自动把最开始的那个数据一点点往下挤」
          *
-         * 所以每次 tick 都按「最大磁盘缓存」检查一次。
-         * trim 内部是先算总量、没超就直接返回，开销很小（只 stat 目录）。
+         * 每次 tick 都按「最大磁盘缓存」检查一次。
+         * trim 内部先算总量、没超就直接返回，开销很小（只 stat 目录）。
          * 传入当前 itemId 作为保护，绝不删正在播的这一集。
          */
         runCatching {
@@ -1244,11 +1250,6 @@ class VideoSession(
             xyz.etkn.mobile.player.cache.BlockStore.get(graph.app)
                 .trim(capBytes, setOf(currentItem.id))
         }
-        // 两个阈值都是 0 = 不做缓存
-        val cacheWindowOn = settings.cacheMemoryMb > 0 || settings.cacheMemorySeconds > 0
-        if (!cacheWindowOn) return
-        val cur = currentUrl ?: return
-        val currentItem = item ?: return
 
         /**
          * 用户口径（2026-11-24）**缓冲窗口是滑动窗口，必须紧跟播放位置**。
