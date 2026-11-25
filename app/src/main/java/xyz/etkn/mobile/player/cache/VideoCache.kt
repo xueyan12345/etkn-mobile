@@ -36,20 +36,36 @@ object VideoCache {
 
     fun get(context: android.content.Context, maxBytes: Long): SimpleCache? {
         if (maxBytes <= 0L) return null
-        cache?.let { existing -> if (this.maxBytes == maxBytes) return existing }
+        /**
+         * 用户口径（2026-11-27）**同一个缓存实例只能有一个，绝不重复打开同一目录**。
+         *
+         * 修的 bug（日志实证 keys 2 → 0）：
+         * ```
+         * 19:57:13 SimpleCache ready cap=10240MB keys=2   ← 已经缓存了 2 集
+         * 19:57:27 SimpleCache ready cap=10240MB keys=0   ← 又被打开一次，索引空了
+         * ```
+         * 两次 cap 完全相同，说明不是「上限变了要重建」，
+         * 而是同一个目录被打开了两个实例 —— 后打开的读到的索引是空的，
+         * 于是之后按 itemId 查缓存永远查不到（aheadB 有值也是假象）。
+         *
+         * 现在：**只要已经有一个实例在用，就直接返回它，不管上限参数是多少**。
+         * 上限变了也不重建（重建会丢索引、打断正在进行的下载），
+         * 交给 LRU 淘汰器在下次写入时按新上限收敛 —— 效果等价，风险为零。
+         */
+        cache?.let { return it }
         synchronized(this) {
-            cache?.let { existing ->
-                if (this.maxBytes == maxBytes) return existing
-                runCatching { existing.release() }
-                cache = null
-            }
+            cache?.let { return it }
             val dir = File(context.cacheDir, "videocache")
             val created = runCatching {
                 SimpleCache(dir, LeastRecentlyUsedCacheEvictor(maxBytes))
             }.onFailure { Log.e(TAG, "SimpleCache open failed", it) }.getOrNull() ?: return null
             cache = created
             this.maxBytes = maxBytes
-            Log.i(TAG, "SimpleCache ready cap=${maxBytes / 1048576}MB keys=${runCatching { created.keys.size }.getOrDefault(0)}")
+            Log.i(
+                TAG,
+                "SimpleCache opened dir=${dir.absolutePath} cap=${maxBytes / 1048576}MB " +
+                    "keys=${runCatching { created.keys.size }.getOrDefault(0)}",
+            )
             return created
         }
     }
@@ -145,6 +161,7 @@ object VideoCache {
             runCatching { cache?.release() }
             cache = null
             runCatching { File(context.cacheDir, "videocache").deleteRecursively() }
+            Log.i(TAG, "cache cleared")
         }
     }
 

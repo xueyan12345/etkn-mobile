@@ -179,6 +179,29 @@ object PlayerFactory {
             (it.cacheMemorySeconds.coerceIn(30, 7200).toLong() * 1000L + 60_000L)
                 .coerceAtLeast(2 * 60_000L)
         } ?: (60 * 60_000L)
+        /**
+         * 用户口径（2026-11-27）**必须显式设 targetBufferBytes，否则字节上限会抢在时间上限之前把加载停掉**。
+         *
+         * 这是「缓存条一丢丢、达不到设置量」的最终根因（日志 + 官方源码双重确认）。
+         *
+         * 官方 DefaultLoadControl.shouldContinueLoading 的停止条件是「或」关系：
+         * ```
+         * bufferedDurationUs >= maxBufferUs   ||   targetBufferSizeReached
+         * ```
+         *  · 前者看时间（我们设成 1260 秒，够大）
+         *  · 后者看字节，而 DEFAULT_TARGET_BUFFER_BYTES = C.LENGTH_UNSET(-1) 时
+         *    由 calculateTargetBufferBytes() 按轨道估算，**通常只有几十 MB**
+         *  · 任一满足就 stopLoading —— 所以 400MB 的设置永远轮不到生效
+         *
+         * 日志实证：aheadB 峰值只有 136MB 就不再增长，
+         * 之后随着播放一路下降到 0（没有再往后补），正是这个字节天花板。
+         *
+         * 现在按用户设置的两个阈值直接给字节上限：
+         *  targetBufferBytes = 缓存阈值（MB）转字节
+         * 时间上限仍是 cacheMemorySeconds + 1 分钟余量
+         * → 两者谁先到谁停，且都等于用户在设置里填的值。
+         */
+        val cacheMb = settings?.cacheMemoryMb?.coerceIn(50, 4096) ?: 400
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 /* min */ 8_000,
@@ -186,12 +209,17 @@ object PlayerFactory {
                 /* forPlayback */ 200,
                 /* afterRebuffer */ 1_500,
             )
-            // 按字节判断是否够播会让大码率片源起播更慢，改成只看时间
+            /**
+             * 关键：把字节目标显式设成用户阈值。
+             * 不设的话默认按轨道估算（几十 MB），会先撞上这个天花板。
+             */
+            .setTargetBufferBytes(cacheMb * 1024 * 1024)
+            // 时间优先：不要因为「字节够了」就提前停（字节目标已经按阈值给了）
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         android.util.Log.i(
             "ETKN-Play",
-            "loadControl min=8s max=${bufferedMaxMs / 1000}s " +
+            "loadControl min=8s max=${bufferedMaxMs / 1000}s targetBytes=${cacheMb}MB " +
                 "(缓存阈值 ${settings?.cacheMemoryMb ?: -1}MB / ${settings?.cacheMemorySeconds ?: -1}s)",
         )
         return ExoPlayer.Builder(context, renderers)
