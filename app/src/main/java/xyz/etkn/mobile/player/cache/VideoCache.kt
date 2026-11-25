@@ -218,6 +218,7 @@ object VideoCache {
         store: SimpleCache,
     ) {
         var lastLog = 0L
+        var lastKeyLog = 0L
         while (scope.isActive) {
             val url = urlOf
             val total = totalBytesOf
@@ -229,6 +230,28 @@ object VideoCache {
 
             // 已经缓存到哪（官方 API，CacheWriter 自己也用它）
             val cached = runCatching { store.getCachedBytes(itemId, 0L, total) }.getOrDefault(0L)
+            /**
+             * 用户口径（2026-11-27）**必须能看见缓存里的真实 key 和占用**。
+             *
+             * 日志实证 preceding 版本：cache-writer 报 cached=175MB，
+             * 但同一时刻 calc 里 aheadB=0、disk=0 —— 说明
+             * 「写入用的 key」和「查询用的 key」不是同一个。
+             *
+             * CacheDataSource 内部的 CacheWriter 用的 key 来自 buildCacheKey(dataSpec)，
+             * 如果它没拿到 dataSpec.key（因为 DataSpec 被重建过），
+             * 就会退回用完整 URL（含 token）—— 于是查不到。
+             */
+            if (android.os.SystemClock.elapsedRealtime() - lastKeyLog > 15_000L) {
+                lastKeyLog = android.os.SystemClock.elapsedRealtime()
+                val allKeys = runCatching { store.keys.toList() }.getOrNull().orEmpty()
+                val space = runCatching { store.cacheSpace }.getOrDefault(0L)
+                Log.i(
+                    TAG,
+                    "cache-keys space=${space / 1048576}MB n=${allKeys.size} " +
+                        "wanted=$itemId has=${allKeys.contains(itemId)} " +
+                        "sample=${allKeys.take(2).map { it.take(28) }}",
+                )
+            }
             if (cached >= target - 1L * 1024 * 1024) {
                 // 达到目标 → 休眠（这就是「暂时不疯狂下载」）
                 if (android.os.SystemClock.elapsedRealtime() - lastLog > 10_000L) {
@@ -243,8 +266,26 @@ object VideoCache {
              * 一次性把「已缓存 → 目标」这段写完。
              * 用官方 CacheWriter，它会自动跳过已缓存的洞，只补缺的部分。
              */
+            /**
+             * 用户口径（2026-11-27）**分片下载，失败自动续传**。
+             *
+             * 修的 bug（日志实证）：
+             * ```
+             * 21:33:30 cached=175MB
+             * 21:33:34 stream was reset: INTERNAL_ERROR  ← 一次要 661MB，中途断连整轮作废
+             * ```
+             *
+             * 一次性让 CacheWriter 写 661MB，中间任何一次网络抖动
+             * （服务器 RST / CDN 断连）都会让整轮失败。
+             *
+             * 现在每轮只下 64MB：
+             *  · 成功 → 立刻进入下一轮（继续往后）
+             *  · 失败 → 已下的部分已经在缓存里，下一轮从新位置继续
+             *  · 永远不需要从头再来
+             */
             val from = cached
-            val want = (target - from).coerceAtLeast(1L)
+            val CHUNK = 64L * 1024 * 1024
+            val want = minOf(target - from, CHUNK).coerceAtLeast(1L)
             val ds = runCatching {
                 CacheDataSource.Factory()
                     .setCache(store)
@@ -286,9 +327,10 @@ object VideoCache {
                 runCatching { ds.close() }
                 break
             } catch (t: Throwable) {
-                Log.w(TAG, "cache-writer failed item=$itemId", t)
+                Log.w(TAG, "cache-writer chunk failed item=$itemId at=${from / 1048576}MB: ${t.message}")
                 runCatching { ds.close() }
-                delay(1_000)
+                // 分片失败：等一下再从新的已缓存位置继续（已下的不会丢）
+                delay(1_500)
                 continue
             }
             runCatching { ds.close() }
