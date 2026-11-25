@@ -929,14 +929,21 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
          */
         val engineToggleLabel: String = remember(player, enginePref) {
             val running = when (player) {
-                is MpvPlayer -> "mpv"
+                is MpvPlayer -> "MPV"
                 null -> null
                 else -> "Exo"
             }
             when (enginePref) {
                 xyz.etkn.mobile.data.settings.PlayerEngine.Exo -> "Exo"
-                xyz.etkn.mobile.data.settings.PlayerEngine.Mpv -> "mpv"
-                xyz.etkn.mobile.data.settings.PlayerEngine.Auto -> running ?: "自动"
+                xyz.etkn.mobile.data.settings.PlayerEngine.Mpv -> "MPV"
+                /**
+                 * 用户口径（2026-11-26）**只显示 Exo / MPV 两个值**。
+                 *
+                 * 自动模式下不显示「自动」二字，而是显示**实际在跑的那个**：
+                 * 还没起播时引擎未定，先默认显示 Exo（Auto 的起播默认就是 Exo）。
+                 * 这样按钮上永远是当前真实内核，不会出现第三种状态让人困惑。
+                 */
+                xyz.etkn.mobile.data.settings.PlayerEngine.Auto -> running ?: "Exo"
             }
         }
 

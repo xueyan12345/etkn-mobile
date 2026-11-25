@@ -201,47 +201,6 @@ internal fun Controls(
             BatteryGlyph(status.battery)
         }
 
-        /**
-         * 用户口径（2026-11-26）**右上角功能图标那排的上方，加一颗「切换内核」按钮**。
-         *
-         * 需求原文：「右上角现在不是3个按钮吗，你给我在上边再加一个按钮，
-         * 就是可以切换播放内核的那个按钮」
-         *
-         * 位置：贴右上角，在「版本/画幅/画中画/旋转」那一排的正上方。
-         * 版式：胶囊形小按钮，显示当前内核名字（Exo / mpv / 自动），点一下切换。
-         * 用胶囊而不是纯图标，是因为「内核」这个名字必须让人看得见 ——
-         * 只看图标分不清现在用的是哪个。
-         */
-        if (engineLabel.isNotEmpty()) {
-            Row(
-                Modifier.align(Alignment.TopEnd).then(insetMod)
-                    .padding(end = 16.dp, top = 74.dp),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(Color.Black.copy(alpha = 0.42f))
-                        .clickable { onToggleEngine() }
-                        .padding(horizontal = 14.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Icon(
-                        Icons.Rounded.Settings,
-                        "切换播放内核",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Text(
-                        engineLabel,
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                    )
-                }
-            }
-        }
-
         // ===== 顶栏：返回 + 剧名 + 右侧功能图标 =====
         // 用户口径（2026-11-23）：功能图标整体下移，明显低于「时间」那一行（照参考图）。
         Row(
@@ -279,6 +238,30 @@ internal fun Controls(
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            /**
+             * 用户口径（2026-11-26）**内核切换按钮放在那排按钮的最左边，样式完全一致**。
+             *
+             * 需求原文：
+             *  · 「你把它加在那3个按钮的左边，变成4个按钮」
+             *  · 「那个设置的小图标，那个小齿轮不要，直接就显示EXO/MPV」
+             *  · 「我看你好像在下边还加了一个小黑色阴影的框，不要那个框，
+             *     就跟原来那3个按钮保持一致就行，相当于多加了一个按钮」
+             *
+             * 所以：不带底板、不带图标、不带圆角填充，
+             * 只有一个同样 60dp 触控区的纯文字按钮（Exo / MPV），
+             * 和右边那些图标按钮同一行、同一尺寸、同一视觉重量。
+             */
+            if (engineLabel.isNotEmpty()) {
+                IconButton(onClick = onToggleEngine, modifier = Modifier.size(60.dp)) {
+                    Text(
+                        engineLabel,
+                        color = Color.White,
+                        // 和 30dp 图标视觉配平：三个字母（Exo/MPV）用 17sp
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
                     )
                 }
             }
