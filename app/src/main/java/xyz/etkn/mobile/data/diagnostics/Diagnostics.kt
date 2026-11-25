@@ -238,14 +238,14 @@ object Diagnostics {
      * 只列**确认无用**的，不影响我们判断的；有疑问的一律不列。
      */
     private val NOISE = Regex(
-        """\s[VDIWEF]\s+(""" +
+        "\\s[VDIWEF]\\s+(" +
             "Oplus[A-Za-z]*|" +          // OPPO 厂商日志（刷屏主力）
             "SchedAssist|ashmem|" +
             "ActivityThread|OpenGLRenderer|EGL_emulation|" +
             "AudioTrackExtImpl|AudioFlinger|AudioPolicyManager|" +
             "Choreographer|ViewRootImpl|HWUI|libc|Zygote|" +
             "ziparchive|StrictMode|Binder|ProfileInstaller" +
-            """)\s*:""",
+            ")\\s*:",
     )
 
     private fun cleanup(dir: File) {
