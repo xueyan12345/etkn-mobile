@@ -438,8 +438,13 @@ class VideoSession(
                     autoPickDone = true
                     android.util.Log.i(
                         TAG,
-                        "自动选核 → ${want.label}（dv5=$dv5 hdr=$hdr dv=$dv codec=$codec）",
+                        "自动选核 → ${want.label}（dv5=$dv5 hdr=$hdr dv=$dv codec=$codec hasVideo=$hasVideoTrack）",
                     )
+                    /**
+                     * 记住结论：下次进这一集直接用对的内核起播，不再起播两次。
+                     * （这是「走马上任起播十几秒」的根治办法）
+                     */
+                    item?.id?.let { EngineMemory.remember(context, it, want) }
                     if (engine != want) {
                         forcedEngine = want
                         val cur = source
@@ -582,8 +587,22 @@ class VideoSession(
         return when (settings.engine) {
             PlayerEngine.Exo -> Engine.Exo
             PlayerEngine.Mpv -> Engine.Mpv
-            // Auto：一律先用 ExoPlayer，失败再自动退 mpv
-            PlayerEngine.Auto -> Engine.Exo
+            /**
+             * 用户口径（2026-11-26）**自动模式先查「这部片上次用的内核」**。
+             *
+             * 修的问题：「走马上任起播要十几二十秒」。
+             *
+             * 根因：起播时还没解封装，不知道片源是 HDR，
+             * 所以只能先按默认给 Exo → 起播 → 识别到 HDR → 切 mpv → 再起播一次。
+             * HDR 片源每次都要起播两次，两次加起来就是这个十几秒。
+             *
+             * 现在：上次已经识别出「这部片该用 mpv」，这次直接用 mpv 起播，
+             * 一次到位，不用再切。第一次仍然会切（无法避免），之后都很快。
+             */
+            PlayerEngine.Auto -> {
+                val remembered = item?.id?.let { EngineMemory.lookup(context, it) }
+                remembered ?: Engine.Exo
+            }
         }
     }
 
@@ -767,9 +786,25 @@ class VideoSession(
         val current = item ?: return
         if (source !== chosen) {
             discTried = false
-            forcedEngine = null
             failedFormats.clear()
             lastTracks = Tracks.EMPTY
+            /**
+             * 用户口径（2026-11-26）**这里不能无条件清 forcedEngine**。
+             *
+             * 修的问题：「点切换内核没反应」（老片黑屏时尤其明显）。
+             *
+             * 根因：toggleEngine() 先设 forcedEngine=目标内核，再调 playSource()；
+             * 而 playSource 进来第一件事就是把 forcedEngine 清成 null
+             * → 目标内核设置当场被抹掉 → ensurePlayer 又按 engineFor 选回原来那个
+             * → 用户看到的就是「点了没反应」。
+             *
+             * 现在：只有在「不是用户手动切换」的情况下才清
+             * （用户手动切换时 userPickedEngineThisPlayback=true，保留 forcedEngine）。
+             */
+            if (!userPickedEngineThisPlayback) {
+                // 非手动切换（自动决策 / 换集）→ 清掉上一轮的锁定
+                forcedEngine = null
+            }
             /**
              * 用户口径（2026-11-26）**换片源 = 重新按片源类型自动判定内核**。
              *

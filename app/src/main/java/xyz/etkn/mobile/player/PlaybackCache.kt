@@ -206,7 +206,18 @@ object PlaybackCache {
         val full = fileForId(context, itemId)
         if (full.isFile && full.length() > 0) return if (durationMs > 0) durationMs else 0L
         if (durationMs <= 0 || totalBytes <= 0) return 0L
-        // 用真实记录的窗口右边界（字节），而不是「文件里有多少字节」
+        /**
+         * 用户口径（2026-11-26）**缓冲终点 = 已连续下载到的字节位置**。
+         *
+         * 语义（用户原话）：「进度条要持续比播放点长，达到阈值后就保持那个长度」。
+         *
+         *  · end = 已连续下到哪（只增不减）
+         *  · 缓冲条画到 end 对应的时间点
+         *  · 播放往前走、下载跟着补 → 长度恒等于阈值，不会缩也不会暴涨
+         *
+         * 之前用「窗口右边界」但窗口会平移，所以缓冲条会先缩后跳。
+         * 现在窗口的 end 只增不减（见 pullWindow），这里直接换算即可。
+         */
         val end = windowEndBytes(itemId)
         if (end <= 0) return 0L
         val frac = (end.toDouble() / totalBytes.toDouble()).coerceIn(0.0, 1.0)
@@ -225,7 +236,22 @@ object PlaybackCache {
         return 0L
     }
 
-    /** 一集缓存窗口的字节区间（滑动窗口）。 */
+    /**
+     * 一集缓存窗口的字节区间。
+     *
+     * 用户口径（2026-11-26）**这是「连续已缓冲区间」，不是「会平移丢数据的窗口」**。
+     *
+     * 之前的问题（用户原话：「看着缓冲越来越少，马上要撵上了，
+     * 然后突然一下子又长了」）：
+     *  · 窗口跟着播放位置平移，但已下载的数据在后面无法移动
+     *  · 播放越往前走，「已下到的 end − 当前位置」越小 → 缓冲条越来越短
+     *  · 一旦窗口整体滑过 end，下一轮从新 windowStart 重下
+     *    → 缓冲条从很短一下跳到很长
+     *
+     * 现在：end 只增不减（连续往前推进），start 允许跟着播放位置前移
+     * （因为前面的数据已经播过了，不需要保留）。
+     * 这样缓冲条 = end 到 total 的比例，单调前进，不会回缩也不会跳。
+     */
     private data class Window(val start: Long, val end: Long)
 
     /** itemId → 当前窗口。下载时更新，切集时清理。 */
@@ -406,57 +432,77 @@ object PlaybackCache {
          * 记在内存里（[windows]），重启后丢失 → 从磁盘 .part 长度兜底，
          * 但兜底只用于「别重复下载已经有的部分」，不影响缓冲条显示（缓冲条只认 windows）。
          */
+        /**
+         * 用户口径（2026-11-26）**缓冲条的正确行为（按用户原话重写）**。
+         *
+         * 用户原话：
+         *  「正常来讲，进度条要持续的比播放的那个点要长，
+         *    然后当达到咱们设置的那两个阈值之后，它应该就持续的保持那么长，
+         *    不会有太大的变动」
+         *  「持续播放，缓冲条肯定会变少，变少的同时那边下载它肯定就变长了」
+         *  「肯定不会出现进度条撵上缓冲，然后突然之间又特别长」
+         *
+         * 也就是：
+         *  · 缓冲终点 = 播放位置 + 阈值（时长/大小取小者）
+         *  · 播放往前走 → 缓冲终点跟着往前走（长度不变）
+         *  · 已经下过的部分【保留不动】，只是终点往前推 → 需要补的永远是「新增那一小段」
+         *  · 缓冲条长度恒定 ≈ 阈值，不会缩、不会暴涨
+         *
+         * 之前错在哪：把「已下载区间」当成会平移的东西，
+         * 播放推进时把它整体往后挪 → 缓冲条变短；挪不动了又从新位置重下 → 暴涨。
+         *
+         * 正确做法：已下载区间 [haveStart, haveEnd] 只增不减，
+         * 目标区间 [playBytes, playBytes + thresh] 跟着播放前进，
+         * 每轮只补「目标区间 减去 已下载区间」那一段。
+         */
         val already = windows[itemId]
-        // 需要下载的区间：与已有窗口求差；没有记录时整段都算缺
-        val hasCover = already != null && already.start <= windowStart && already.end >= windowEnd
+        // 已连续下载到的右边界（只增不减）
+        val haveEnd = already?.end ?: 0L
+        val haveStart = already?.start ?: windowStart
 
         /**
-         * 从「已覆盖到的位置」开始往后补，直到窗口右边界。
-         *
-         * 注意：滑动窗口下 .part 文件可能是稀疏的（跳区下载），
-         * 所以「已覆盖到哪」只能靠内存里的 [windows] 记录，不能靠文件长度。
+         * 目标缓冲终点：播放位置 + 阈值。
+         * 注意 windowStart/windowEnd 上面已经按「位置-回看余量 + 阈值」算好，
+         * 这里直接用 windowEnd 作为目标终点即可。
          */
-        var cur = when {
-            hasCover -> windowEnd
-            already != null -> already.end.coerceIn(windowStart, windowEnd)
-            else -> windowStart
+        val targetEnd = windowEnd
+
+        // 已经够了（已下到的右边界 ≥ 目标终点）→ 本轮什么都不用做
+        if (haveEnd >= targetEnd) {
+            android.util.Log.i(
+                "ETKN-Cache",
+                "window item=$itemId pos=${positionMs / 1000}s total=${total / 1048576}MB " +
+                    "have=${haveEnd / 1048576}MB target=${targetEnd / 1048576}MB skip=covered",
+            )
+            return@withLock true
         }
+
         /**
-         * 用户口径（2026-11-26）**缓冲条要丝滑：分片缩小 + 每片完成立刻更新窗口**。
-         *
-         * 修的问题：「有时候不动，然后突然特别长」。
-         *
-         * 根因：原来分片 12MB，且 windows 只在【整个 while 循环结束后】写一次。
-         * 走马上任一集 3495MB / 约 30 分钟 ≈ 116MB/分钟
-         * → 12MB ≈ 6 秒视频，一次跳 6 秒，看起来就是「猛地一长段」；
-         * 而在下这 12MB 的过程中缓冲条完全静止。
-         *
-         * 现在：
-         *  · 分片 12MB → 1MB（约 0.5 秒视频），步进细得多
-         *  · 每下完一片就把「已到达的右边界」写进 windows
-         *  · 写之前做 250ms 节流，避免过于频繁触发重组（省电、不抖）
+         * 从 "已下到的右边界" 开始往后补，直到目标终点。
+         * 绝不回退重下（haveEnd 之后才是缺的）。
          */
+        var cur = if (haveEnd > 0) haveEnd else windowStart
         val chunk = 1L * 1024 * 1024
         var lastPublish = 0L
-        while (cur < windowEnd) {
-            val until = minOf(windowEnd, cur + chunk)
+        while (cur < targetEnd) {
+            val until = minOf(targetEnd, cur + chunk)
             val ok = downloadInto(client, url, part, from = cur, until = until)
             if (!ok) break          // 这一段没下到 → 停止，已下部分仍然有效
             cur = until
-            // 每片完成立刻让缓冲条前进（节流 250ms，最后一次一定写）
+            // 每片完成立刻让缓冲条前进（节流 250ms）
             val nowTick = System.currentTimeMillis()
-            if (nowTick - lastPublish >= 250L || cur >= windowEnd) {
-                windows[itemId] = Window(start = windowStart, end = cur)
+            if (nowTick - lastPublish >= 250L || cur >= targetEnd) {
+                /**
+                 * 起点取 min(haveStart, windowStart)：
+                 * 前面的数据已经播过了不需要保留，但也不能让区间「回缩」，
+                 * 所以起点只允许往前（取更小的那个），保证区间是连续的。
+                 */
+                windows[itemId] = Window(start = minOf(haveStart, windowStart), end = cur)
                 lastPublish = nowTick
             }
         }
-
-        /**
-         * 记录窗口：即使本轮只下了一部分，也要把「实际到达的右边界」记下来，
-         * 这样缓冲条才能跟着走。
-         */
-        val coveredEnd = cur.coerceAtMost(windowEnd)
-        windows[itemId] = Window(start = windowStart, end = coveredEnd)
+        val coveredEnd = cur.coerceAtMost(targetEnd)
+        windows[itemId] = Window(start = minOf(haveStart, windowStart), end = coveredEnd)
         /**
          * 用户口径（2026-11-26）：**加诊断日志**。
          *

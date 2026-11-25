@@ -320,9 +320,20 @@ class HomeViewModel(
                 .distinctBy { it.id }
                 .toList()
             if (candidates.isNotEmpty()) {
-                val picked = candidates.shuffled(Random(seed)).take(HERO_SIZE)
+                /**
+                 * 用户口径（2026-11-26）**主路径也必须插「继续播放位」**。
+                 *
+                 * 修的问题：第 1 个轮播不是「继续观看」里的剧，而且闪一下就没了。
+                 *
+                 * 根因：上一版只给「首屏 showCached」和「兜底分支」加了
+                 * pickResumeFirst，**漏了这条主路径**（网络数据回来走的正是这里）。
+                 * 于是：首屏正确 → 1 秒后主路径覆盖成纯随机 → 用户看到闪一下变错。
+                 *
+                 * 现在三条路径统一：第 1 位=继续播放随机 1 部，后 9 位=全库随机。
+                 */
+                val randomNine = candidates.shuffled(Random(seed)).take(HERO_RANDOM_SIZE)
+                val picked = pickResumeFirst(data, randomNine, seed)
                 publishHero(picked)
-                // 记下这一批 + 时间戳，12 小时内不再换
                 HeroSnapshot.write(context, accountKey, picked.map { it.id })
                 return@launch
             }

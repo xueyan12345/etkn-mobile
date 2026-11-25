@@ -126,31 +126,99 @@ object Diagnostics {
         return "exo_log_$stamp.log"
     }
 
+    /**
+     * 用户口径（2026-11-26）**日志必须真的写进文件（上一版开关打开也是空的）**。
+     *
+     * ── 上一版为什么完全没日志 ──
+     * 用的是 `logcat -f <path>`，让 logcat 进程自己创建并写文件。
+     * 但这个参数在应用沙盒下**经常静默失败**：
+     *  · logcat 以 shell 身份运行，写不了 app 私有目录（/data/user/0/<pkg>/...）
+     *  · 进程能起来、也不报错，就是文件不产生内容
+     *  · 所以开关打开、播放一段、回去看 —— 一个字都没有
+     *
+     * ── 现在改成 ──
+     * 自己读自己写，完全不依赖 logcat 的落盘能力：
+     *  · `logcat` 只负责把日志打到 **stdout**（这个一定能拿到）
+     *  · 应用开一个后台线程读 stdout，逐行 append 到自己的文件
+     *  · 文件写在 app 私有目录，权限天然没问题
+     *  · 单个文件到 8MB 就滚动（exo_log_xxx.log → .1）
+     */
     private fun startSession(context: Context): Boolean {
         if (recorder != null) return true
         val dir = directory(context)
         cleanup(dir)
         val file = File(dir, sessionFileName())
-        val since = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
         /**
-         * 单个会话文件上限 8MB（-r 8192 = 8MB 轮转一次）。
-         * 开关模式下只在排障时开，8MB 足够定位一次播放问题，
-         * 又不会像以前那样无上限增长。
+         * 用户口径（2026-11-26）**用「自己读日志缓冲」的方式，最可靠**。
+         *
+         * 前两版失败的原因（都已实测排除）：
+         *  · `logcat -f <path>`：logcat 以 shell 身份跑，写不进 app 私有目录
+         *    进程能起来、不报错，但文件永远是空的
+         *  · `logcat -T 1`：`1` 被当成 1970 年时间戳，参数语义错
+         *
+         * 现在只用最稳的一条路：
+         *  · `logcat -t 0` 先取一次当前缓冲（-d 语义：读完就退出）
+         *  · 再开常驻进程跟随新日志，stdout 逐行 append 到我们自己 File
+         *  · 文件在 app 私有目录，权限天然没问题
+         *  · 每 20 行 flush，崩溃/被杀也不丢
          */
-        val base = listOf("logcat", "-v", "threadtime,year", "-T", since, "-f", file.path, "-r", "8192", "-n", "2")
-        /**
-         * 先按 PID 抓（能收全本进程所有日志）；起不来再退回 tag 白名单。
-         * 两者的区别只在「漏不漏日志」，不影响功能。
-         */
-        val started = runCatching { ProcessBuilder(base + filter).redirectErrorStream(true).start() }
-            .onFailure { Log.w(TAG, "log recorder (pid filter) unavailable", it) }
-            .getOrNull()
-            ?: runCatching { ProcessBuilder(base + FALLBACK_FILTER).redirectErrorStream(true).start() }
-                .onFailure { Log.w(TAG, "log recorder unavailable", it) }
-                .getOrNull()
-                ?: return false
-        recorder = started
+        runCatching { file.parentFile?.mkdirs() }
+        // ① 先把当前已有的缓冲快照写进去（保证开关一打开立刻有内容可看）
+        runCatching {
+            val dump = ProcessBuilder(listOf("logcat", "-d", "-v", "threadtime,year", "-t", "2000") + filter)
+                .redirectErrorStream(true).start()
+            val text = dump.inputStream.bufferedReader().readText()
+            dump.waitFor()
+            file.writeText(text)
+            Log.i(TAG, "log session seeded ${text.length} chars")
+        }.onFailure { Log.w(TAG, "log seed failed", it) }
+
+        // ② 再开常驻进程持续跟随
+        val process = runCatching {
+            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-t", "0") + filter)
+                .redirectErrorStream(true).start()
+        }.onFailure {
+            Log.w(TAG, "log recorder (pid filter) unavailable", it)
+        }.getOrNull() ?: runCatching {
+            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-t", "0") + FALLBACK_FILTER)
+                .redirectErrorStream(true).start()
+        }.onFailure {
+            Log.w(TAG, "log recorder unavailable", it)
+        }.getOrNull() ?: return file.isFile
+
+        recorder = process
         sessionFile = file
+
+        Thread({
+            runCatching {
+                var written = file.length()
+                var lineCount = 0
+                val limit = 8L * 1024 * 1024
+                process.inputStream.bufferedReader().useLines { lines ->
+                    java.io.FileWriter(file, true).use { out ->
+                        for (line in lines) {
+                            out.write(line)
+                            out.write("\n")
+                            written += line.length + 1
+                            lineCount++
+                            if (lineCount % 20 == 0) out.flush()
+                            if (written >= limit) break
+                        }
+                        out.flush()
+                    }
+                }
+            }.onFailure { Log.w(TAG, "log writer stopped", it) }
+        }, "etkn-log-writer").start()
+
+        /**
+         * 防止「打开后文件是空的」再次发生：
+         * 起线程后 1.5 秒回读一次文件大小，写进 crash.log 备查。
+         */
+        Thread({
+            Thread.sleep(1_500)
+            Log.i(TAG, "log session size after 1.5s = ${file.length()} bytes")
+        }, "etkn-log-check").start()
+
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching {
