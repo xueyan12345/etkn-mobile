@@ -605,6 +605,42 @@ class VideoSession(
         }
     }
 
+    /**
+     * 用户口径（2026-11-26）**播放界面右上角「切换内核」按钮的执行入口**。
+     *
+     * 行为：在 ExoPlayer / mpv 之间切换，写回设置，立刻从当前位置续播。
+     *
+     * 为什么用「当前实际在跑的内核」判断方向，而不是读 settings.engine：
+     * 设置是「自动」时，engine 字段是 Auto，按它判断会永远切到同一侧，
+     * 按钮就变成只能切一次。按实际运行的内核翻转才符合直觉。
+     *
+     * @return 切换后要用的内核名（给 UI 立即显示，不等 Flow 回流）
+     */
+    fun toggleEngine(): String {
+        val runningMpv = engine == Engine.Mpv
+        val target = if (runningMpv) PlayerEngine.Exo else PlayerEngine.Mpv
+        /**
+         * 写设置：DataStore 是异步的，用应用级协程发射。
+         * 同时立刻清掉 forcedEngine 并按新目标重播，
+         * 不等 Flow 回流（省掉一次 1-2 秒的延迟）。
+         */
+        /**
+         * 用 session 自己的 scope（随播放器销毁取消），不用 GlobalScope。
+         * 写设置只是持久化偏好，即使这次被取消，下面的手动重播仍然生效。
+         */
+        scope.launch {
+            runCatching { settings.setEngine(target) }
+        }
+        forcedEngine = null
+        val cur = source
+        val pos = player?.currentPosition ?: 0L
+        android.util.Log.i(TAG, "手动切换内核 → ${target.label}（从 ${pos / 1000}s 续播）")
+        if (cur != null) {
+            main.post { if (!released && source === cur) playSource(cur, pos) }
+        }
+        return if (target == PlayerEngine.Exo) "Exo" else "mpv"
+    }
+
     private fun engineFor(chosen: MediaSource, disc: Boolean): Engine {
         forcedEngine?.let { return it }
         if (disc) return Engine.Exo

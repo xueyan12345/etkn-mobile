@@ -946,6 +946,33 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                     // 用户口径（2026-11-23）平板画布旋转时，控件不再扣一遍安全区
                     // （旋转后竖屏的 inset 会变成左右大留白，把按钮挤到中间）
                     applyWindowInsets = !rotated,
+                    /**
+                     * 用户口径（2026-11-26）**右上角切换播放内核按钮**。
+                     *
+                     * 标签显示当前实际在用的内核：
+                     *  · 设置是「自动」→ 显示当前真正跑着的那个（Exo / mpv）
+                     *  · 设置明确选了 → 显示那个
+                     * 点击 = 在 Exo 和 mpv 之间切换，写回设置，
+                     * 已有的 LaunchedEffect(enginePref) 会立刻 reloadEngineFromSettings()
+                     * → 从当前位置续播，不用退出播放器。
+                     */
+                    engineLabel = run {
+                        val running = when (player) {
+                            is MpvPlayer -> "mpv"
+                            null -> null
+                            else -> "Exo"
+                        }
+                        when (enginePref) {
+                            PlayerEngine.Exo -> "Exo"
+                            PlayerEngine.Mpv -> "mpv"
+                            // 自动：显示实际跑的那个，让人知道现在用的是谁
+                            PlayerEngine.Auto -> running ?: "自动"
+                        }
+                    },
+                    onToggleEngine = {
+                        session.toggleEngine()
+                        touch()
+                    },
                     onToggleDanmaku = {
                         // 弹幕开关：直接翻转 enabled（样式其它项保持不变）
                         session.setDanmakuStyle(session.danmakuStyle.value.copy(enabled = !ui.danmakuOn))

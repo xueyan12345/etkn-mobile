@@ -139,6 +139,18 @@ internal fun Controls(
      * 所以旋转态传 false，让控件贴着画布边缘走；普通全屏仍为 true。
      */
     applyWindowInsets: Boolean = true,
+    /**
+     * 用户口径（2026-11-26）**播放界面右上角新增「切换播放内核」按钮**。
+     *
+     * 需求原文：「在播放器的播放界面，右上角现在不是3个按钮吗，
+     * 你给我在上边再加一个按钮，就是可以切换播放内核的那个按钮」
+     *
+     * 做法：点一下就在 ExoPlayer / mpv 之间切换，当场生效（从当前位置续播），
+     * 和设置页那个「播放内核」是同一个设置项，两边永远一致。
+     * 按钮上的文字显示**当前实际在用的内核**，方便判断。
+     */
+    engineLabel: String = "",
+    onToggleEngine: () -> Unit = {},
 ) {
     // 统一入口：需要扣安全区时才加这个 Modifier，避免四处各写一遍漏改
     val insetMod = if (applyWindowInsets) Modifier.windowInsetsPadding(WindowInsets.safeDrawing) else Modifier
@@ -187,6 +199,47 @@ internal fun Controls(
             Text("${status.battery}%", color = Color.White, fontSize = 12.sp)
             // 电池图标：随电量变长度（像素风）
             BatteryGlyph(status.battery)
+        }
+
+        /**
+         * 用户口径（2026-11-26）**右上角功能图标那排的上方，加一颗「切换内核」按钮**。
+         *
+         * 需求原文：「右上角现在不是3个按钮吗，你给我在上边再加一个按钮，
+         * 就是可以切换播放内核的那个按钮」
+         *
+         * 位置：贴右上角，在「版本/画幅/画中画/旋转」那一排的正上方。
+         * 版式：胶囊形小按钮，显示当前内核名字（Exo / mpv / 自动），点一下切换。
+         * 用胶囊而不是纯图标，是因为「内核」这个名字必须让人看得见 ——
+         * 只看图标分不清现在用的是哪个。
+         */
+        if (engineLabel.isNotEmpty()) {
+            Row(
+                Modifier.align(Alignment.TopEnd).then(insetMod)
+                    .padding(end = 16.dp, top = 74.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.42f))
+                        .clickable { onToggleEngine() }
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        Icons.Rounded.Settings,
+                        "切换播放内核",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        engineLabel,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
         }
 
         // ===== 顶栏：返回 + 剧名 + 右侧功能图标 =====
