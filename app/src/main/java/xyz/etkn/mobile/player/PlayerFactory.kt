@@ -167,7 +167,7 @@ object PlayerFactory {
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 /* min */ 8_000,
-                /* max */ bufferedMaxMs,
+                /* max */ bufferedMaxMs.toInt(),
                 /* forPlayback */ 200,
                 /* afterRebuffer */ 1_500,
             )
