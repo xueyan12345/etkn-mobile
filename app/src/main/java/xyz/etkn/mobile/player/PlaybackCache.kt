@@ -469,9 +469,36 @@ object PlaybackCache {
             else -> false
         }
         if (reachedEnd) {
-            // 真拉满整集才转正；只是窗口顶到片尾时保留 .part
-            if (total != Long.MAX_VALUE && part.isFile && part.length() >= total) {
-                runCatching { part.renameTo(target) }
+            /**
+             * 用户口径（2026-11-26）**覆盖到片尾就转正，不再要求字节精确相等**。
+             *
+             * 修的问题（日志实证 item-25750）：
+             * ```
+             * 12:09:56  cache-dir hasThisEpisode=true   ← 文件在
+             *           cache-probe hit=false size=0     ← 但认不出来
+             * 12:09:57  window total=3495MB covered=3495MB  ← 整集已覆盖
+             * ```
+             * 缓存确实写满了整集，但文件一直叫 item-25750.part，
+             * 而 localFileById 只认 item-25750 → 每次重进都当「没缓存」走网络。
+             *
+             * 根因：原来要求 `part.length() >= total` 精确成立才改名。
+             * HTTP Range 分段写入时，part 的文件长度常常比 total 差几个字节
+             * （末尾分片对齐、服务端 Content-Length 与容器时长换算误差），
+             * 这个条件几乎永远不成立 → .part 永远不转正 → 缓存白写。
+             *
+             * 现在：只要「窗口右边界顶到片尾」（reachedEnd 已成立）就转正。
+             * 再叠加一层保险：文件长度至少要有 total 的 99%，
+             * 避免刚下一小段就误判成整集。
+             */
+            val bigEnough = total == Long.MAX_VALUE ||
+                !part.isFile ||
+                part.length() >= (total * 99 / 100)
+            if (total != Long.MAX_VALUE && part.isFile && bigEnough && part.length() > 0) {
+                val renamed = runCatching { part.renameTo(target) }.getOrDefault(false)
+                android.util.Log.i(
+                    "ETKN-Cache",
+                    "整集完成 → 转正 item=$itemId size=${part.length()} total=$total renamed=$renamed",
+                )
                 runCatching { trim(context, settings, protect = target) }
             } else {
                 runCatching { trim(context, settings, protect = part) }

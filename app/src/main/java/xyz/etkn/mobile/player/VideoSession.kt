@@ -169,6 +169,26 @@ class VideoSession(
     private var forcedEngine: Engine? = null
 
     /**
+     * 用户口径（2026-11-26）**「本次播放用户手动选过内核」标记**。
+     *
+     * 修的问题：「手动切 Exo 后 2 秒被 HDR 自动逻辑拉回 mpv」
+     * 日志实证（走马上任）：12:16:53 手动→Exo，12:16:55 自动→mpv，
+     * 12:16:57 手动→Exo……用户看到的就是「点了没反应」。
+     *
+     * 一旦用户点过按钮，本次播放内所有自动切换全部停止，
+     * 直到换集（playSource 新 item）或退出播放器才重置。
+     */
+    private var userPickedEngineThisPlayback = false
+
+    /**
+     * 用户口径（2026-11-26）**每次起播只自动决策一次内核**。
+     *
+     * 防止 onTracksChanged 被多次回调时反复切核（切一次就够，
+     * 反复切会让画面一直重新起播）。
+     */
+    private var autoPickDone = false
+
+    /**
      * 用户口径（2026-11-26）：下次创建的 mpv 是否是杜比视界源。
      * mpv 必须在 load 之前知道这件事，才能按 IPTPQc2 解析颜色。
      */
@@ -344,173 +364,72 @@ class VideoSession(
                 /**
                  * 用户口径（2026-11-26）：单独识别 DV profile 5（dvhe.05 / dvh1.05）。
                  */
-                val dv5 = tracks.groups.any { group ->
-                    if (group.type != C.TRACK_TYPE_VIDEO) return@any false
-                    (0 until group.length).any { i ->
-                        val codec = group.getTrackFormat(i).codecs.orEmpty().lowercase()
-                        codec.startsWith("dvhe.05") || codec.startsWith("dvh1.05")
-                    }
+                /**
+                 * 用户口径（2026-11-26）**按片源类型自动选内核（这是「自动」模式的完整规则）**。
+                 *
+                 * 需求原文：
+                 *  · 「谷雨好像只有Exo不偏色，MPV偏色」
+                 *  · 「《走马上任》，这两个内核，有一个暗，有一个不暗，
+                 *     我觉得这个应该也自动模式就能自动判定」
+                 *  · 「我设置里选的是自动啊，它不应该自动给我判定这个剧用哪个好用吗」
+                 *
+                 * 三条规则（按优先级，只判断一次就定下来）：
+                 *  ① 杜比视界 profile 5（dvhe.05 / dvh1.05）→ **Exo**
+                 *     mpv 对这类片源色彩转换不正确（实测：Exo 颜色对、mpv 偏绿）
+                 *  ② HDR10 / HLG / PQ（非 DV）→ **mpv**
+                 *     走 Exo 时平板纹理视图丢 HDR 元数据 → 亮度被当 SDR → 发暗
+                 *     mpv 自带 tone-map → 亮度正常
+                 *  ③ 其余（SDR）→ **Exo**（性能最好，且没有色彩问题）
+                 *
+                 * 生效条件（严格遵守）：
+                 *  · 设置必须是「自动」——手动选了 Exo 或 mpv 就完全不动
+                 *  · 本次播放没有手动切换过内核 —— 用户点过按钮就尊重他的选择
+                 *  · 每次起播只决策一次（recordedAutoPick 防重入）
+                 */
+                val videoFormat = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
+                    ?.let { g -> (0 until g.length).firstOrNull { g.getTrackFormat(it).sampleMimeType != null }
+                        ?.let { g.getTrackFormat(it) } }
+                val codec = videoFormat?.codecs.orEmpty().lowercase()
+                val mime = videoFormat?.sampleMimeType.orEmpty().lowercase()
+                val dv5 = codec.startsWith("dvhe.05") || codec.startsWith("dvh1.05")
+                val dv = dv5 || mime == "video/dolby-vision" ||
+                    codec.startsWith("dvhe") || codec.startsWith("dvh1")
+                val hdr = run {
+                    val cs = videoFormat?.colorInfo?.colorSpace
+                    val tr = videoFormat?.colorInfo?.colorTransfer
+                    cs == C.COLOR_SPACE_BT2020 ||
+                        tr == C.COLOR_TRANSFER_ST2084 ||
+                        tr == C.COLOR_TRANSFER_HLG
                 }
                 if (dv5 != _isDvProfile5.value) {
-                    android.util.Log.i(TAG, "DV profile5 detected=$dv5（IPTPQc2，需 Surface 直通否则偏绿）")
+                    android.util.Log.i(TAG, "DV profile5=$dv5（Exo 颜色正确 / mpv 偏绿）")
                     _isDvProfile5.value = dv5
-                    /**
-                     * 用户口径（2026-11-26）**DV profile 5 自动切 mpv**。
-                     *
-                     * 原因：profile 5 的颜色只能靠 DV RPU 驱动（IPTPQc2），
-                     * Exo 在平板上走 TextureView 时元数据丢失 → 被当 BT709 解释 → 偏绿。
-                     * mpv 的画面是 SurfaceView 直通，元数据不经过 GPU 纹理层，
-                     * 能正确按 IPTPQc2 解释（或自行 tone-map 到 SDR）。
-                     *
-                     * 实测依据：mpv 在这台平板上能正常出画（ready 1569ms）。
-                     */
-                    /**
-                     * 用户口径（2026-11-26）**DV profile 5 不再切 mpv**。
-                     *
-                     * 实测结论（用户逐内核验证）：
-                     *  · Exo：横屏正常，但偏色
-                     *  · mpv：画面方向错乱，也偏色
-                     *
-                     * 也就是说偏色不是「哪个内核对」的问题，是**色彩链路**的问题：
-                     * profile 5 的 SPS 里没有色彩信息（color=NA/NA/NA），
-                     * 颜色只能靠 DV 元数据（IPTPQc2），
-                     * 而平板走纹理视图时这一层元数据丢失 → 两个内核都偏色。
-                     *
-                     * 所以这里不再切内核（切了也偏色，反而把横屏搞坏）。
-                     * 偏色的正确解法是「让解码器输出 SDR」，
-                     * 见下面 maybeDisableDvForSdr()。
-                     */
-                    /**
-                     * 用户口径（2026-11-26）**DV profile 5 必须切 mpv（软解）**。
-                     *
-                     * 1.4.9 我判断「切核不解决偏色」是错的 ——
-                     * 当时的 log 证明：Exo 走 c2.qti.dv.decoder，硬解拿不到 RPU → 偏色；
-                     * 而 mpv 当时也是硬解（mediacodec-copy），同样丢元数据 → 也偏色。
-                     * 两者都偏色不代表「内核无所谓」，而是「两者都在硬解」。
-                     *
-                     * 现在 mpv 对 DV 源走**软件解码**（FFmpeg 能解析杜比 RPU，
-                     * libplacebo 按 IPTPQc2 正确还原），所以必须切过去。
-                     */
-                    /**
-                     * 用户口径（2026-11-26）**DV profile5 不再切内核**。
-                     *
-                     * 偏色的根因不是「内核选错」，而是「画布旋转逼着画面走纹理视图，
-                     * 纹理层丢掉杜比元数据」。
-                     *
-                     * 现在系统能真横屏（见 AndroidManifest 的
-                     * PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY），
-                     * 渲染走 SurfaceView 直通，元数据不丢 → Exo 硬解就是正确的。
-                     *
-                     * 保留日志便于验证。
-                     */
-                    if (dv5) android.util.Log.i(TAG, "DV profile5：保持当前内核（系统横屏 + Surface 直通）")
                 }
                 if (dv != _isDolbyVision.value) {
-                    android.util.Log.i(TAG, "dolby-vision detected=$dv → ${if (dv) "SurfaceView（放弃画布旋转，优先出画）" else "TextureView"}")
+                    android.util.Log.i(TAG, "dolby-vision=$dv → ${if (dv) "SurfaceView（优先出画）" else "TextureView"}")
                     _isDolbyVision.value = dv
                 }
-                /**
-                 * 用户口径（2026-11-26）：识别 HDR（HDR10 / HLG / PQ）。
-                 * 判据：colorSpace 是 BT2020 或 transfer 是 ST2084(PQ)/HLG。
-                 * HDR 片源需要 tone-map，平板走 TextureView 会丢 HDR 元数据导致发暗。
-                 */
-                val hdr = tracks.groups.any { group ->
-                    if (group.type != C.TRACK_TYPE_VIDEO) return@any false
-                    (0 until group.length).any { i ->
-                        val f = group.getTrackFormat(i)
-                        val cs = f.colorInfo?.colorSpace
-                        val tr = f.colorInfo?.colorTransfer
-                        cs == C.COLOR_SPACE_BT2020 ||
-                            tr == C.COLOR_TRANSFER_ST2084 ||
-                            tr == C.COLOR_TRANSFER_HLG
-                    }
-                }
-                /**
-                 * 用户口径（2026-11-26）**黑屏兜底：编码不被 Exo 支持时自动换 mpv**。
-                 *
-                 * 日志实证（热六教师的合格实礼）：
-                 *   streams=Video:msmpeg4v2: Audio:mp3:
-                 * msmpeg4v2（Microsoft MPEG-4 v2）是 2000 年代的老编码，
-                 * ExoPlayer 的 MediaCodec 路径完全不支持。
-                 * 表现：**不报错、不崩溃、进度条照走、音频正常，只是画面全黑**
-                 * （所以 onPlayerError 那条自动换核逻辑根本不会触发）。
-                 *
-                 * 这里在拿到轨道信息时主动判断：
-                 * 视频轨道一个都解不了（isTrackSupported 全 false）→ 当场换 mpv。
-                 * mpv 内置 FFmpeg，这类老编码能解。
-                 */
-                /**
-                 * 用户口径（2026-11-26）**黑屏兜底：编码不被 Exo 支持时自动换 mpv**。
-                 *
-                 * 日志实证（热成像仪的合格证礼）：
-                 *   streams=Video:msmpeg4v2:
-                 *   video/mp42 本机无可用解码器（画面会黑）
-                 * msmpeg4v2 / MPEG-4 Part 2 是 2000 年代的老编码，
-                 * ExoPlayer 的 MediaCodec 路径完全不支持。
-                 * 表现：不报错、不崩溃、进度照走、音频正常，只是画面全黑
-                 * （所以 onPlayerError 那条换核逻辑根本不会触发）。
-                 *
-                 * 实测依据（另一份日志）：
-                 *   21:54:04 HDR 片源 → 切 mpv
-                 *   21:54:05 ready on mpv after 1569 ms   ← mpv 能正常出画
-                 * 所以这台平板上的 mpv 是可用的。
-                 *
-                 * 切换到 mpv 后 mpv 自己把画面铺满屏幕（SurfaceView 独立图层，
-                 * 不依赖外层画布旋转），所以要把画布旋转让出来（见 PlayerScreen
-                 * 的 mpvActive 判断）。
-                 */
-                runCatching {
-                    val videoGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
-                    if (videoGroups.isNotEmpty() && engine == Engine.Exo && forcedEngine == null && autoSwitchAllowed) {
-                        val anyPlayable = videoGroups.any { g ->
-                            (0 until g.length).any { i -> g.isTrackSupported(i) }
-                        }
-                        if (!anyPlayable) {
-                            val mime = (0 until videoGroups.first().length)
-                                .map { videoGroups.first().getTrackFormat(it).sampleMimeType.orEmpty() }
-                                .firstOrNull { it.isNotEmpty() }.orEmpty()
-                            android.util.Log.w(TAG, "视频编码 $mime 本机无解码器 → 自动换 mpv")
-                            showNotice("该片编码本机解码器不支持，已切换到兼容内核")
-                            forcedEngine = Engine.Mpv
-                            val cur = source
-                            val pos = player?.currentPosition ?: 0L
-                            if (cur != null) {
-                                main.post { if (!released && source === cur) playSource(cur, pos) }
-                            }
-                        }
-                    }
-                }
                 if (hdr != _isHdr.value) {
-                    android.util.Log.i(TAG, "hdr detected=$hdr（BT2020/PQ/HLG）→ ${if (hdr) "需要 tone-map" else "无需转换"}")
+                    android.util.Log.i(TAG, "hdr=$hdr（BT2020/PQ/HLG）")
                     _isHdr.value = hdr
-                    /**
-                     * 用户口径（2026-11-26）**HDR 片源自动切 mpv**。
-                     *
-                     * 引擎是在「起播前」选的，那时还不知道片源是不是 HDR
-                     * （轨道信息要等解封装之后才有）。
-                     * 所以这里在**识别到 HDR 之后**再切一次内核：
-                     *  · Exo（走 TextureView）→ HDR 元数据丢失 → 画面发暗
-                     *  · mpv 自带 tone-map → 正常亮度
-                     *
-                     * 只切一次（switchToHdrEngine 有防重入），
-                     * 且只在「当前是 Exo + 系统没用主动选 mpv」时切，
-                     * 避免覆盖用户自己的引擎设置。
-                     */
-                    /**
-                     * 用户口径（2026-11-26）**HDR 片源切 mpv 做 tone-map**。
-                     *
-                     * 走马上任是 HDR10（日志实证 color=BT2020/Limited range/ST2084 PQ）。
-                     * 平板上走 Exo + 纹理视图时 HDR 元数据丢失，PQ 编码值被当 SDR 显示 → 画面发黑。
-                     *
-                     * 之前 v1.4.5 切 mpv 失败是因为 mpv 的 SurfaceView 不参与外层画布旋转，
-                     * 画面虽然出来了但方向不对。**现在 mpv 自己能旋转（video-rotate）**，
-                     * 所以这条路径可以重新启用。
-                     *
-                     * 仍然只在「自动」模式下切；手动选了 Exo 就不切。
-                     */
-                    if (hdr && !dv && autoSwitchAllowed && engine == Engine.Exo && forcedEngine == null) {
-                        android.util.Log.i(TAG, "HDR → 切 mpv 做 tone-map（画面旋转由 mpv 自己处理）")
-                        forcedEngine = Engine.Mpv
+                }
+                /**
+                 * 只有「设置=自动」且「本次没手动切过」才允许自动决策。
+                 */
+                if (autoSwitchAllowed && !userPickedEngineThisPlayback && !autoPickDone) {
+                    val want = when {
+                        dv5 -> Engine.Exo          // ① DV profile5 → Exo（mpv 偏色）
+                        hdr -> Engine.Mpv          // ② HDR10/HLG → mpv（Exo 发暗）
+                        dv -> Engine.Exo           // DV 非 profile5 → Exo
+                        else -> Engine.Exo         // ③ SDR → Exo
+                    }
+                    autoPickDone = true
+                    android.util.Log.i(
+                        TAG,
+                        "自动选核 → ${want.label}（dv5=$dv5 hdr=$hdr dv=$dv codec=$codec）",
+                    )
+                    if (engine != want) {
+                        forcedEngine = want
                         val cur = source
                         val pos = player?.currentPosition ?: 0L
                         if (cur != null) {
@@ -620,22 +539,25 @@ class VideoSession(
         val runningMpv = engine == Engine.Mpv
         val target = if (runningMpv) PlayerEngine.Exo else PlayerEngine.Mpv
         /**
-         * 写设置：DataStore 是异步的，用应用级协程发射。
-         * 同时立刻清掉 forcedEngine 并按新目标重播，
-         * 不等 Flow 回流（省掉一次 1-2 秒的延迟）。
+         * 用户口径（2026-11-26）**按钮只影响当前这一集，绝不改全局设置**。
+         *
+         * 修的问题：用户按按钮切内核时，原实现会
+         *   graph.settings.setEngine(target)
+         * 直接写进 DataStore —— 于是「设置里的自动」被改成「mpv」，
+         * 之后所有剧都按 mpv 走，用户再进去发现不是自动判定的了。
+         *
+         * 现在：
+         *  · 不碰 settings（设置里仍是「自动」）
+         *  · 只把本次播放锁定到目标内核
+         *  · 标记 userPickedEngineThisPlayback，本次播放不再自动切
+         *  · 换集/退出后自动失效，下次仍按片源类型自动判定
          */
-        /**
-         * 用 session 自己的 scope（随播放器销毁取消），不用 GlobalScope。
-         * 写设置只是持久化偏好，即使这次被取消，下面的手动重播仍然生效。
-         */
-        scope.launch {
-            // setEngine 在 AppSettings（持久化层）上，不是读出来的 Settings 快照
-            runCatching { graph.settings.setEngine(target) }
-        }
-        forcedEngine = null
+        userPickedEngineThisPlayback = true
+        autoPickDone = true
+        forcedEngine = target.let { if (it == PlayerEngine.Exo) Engine.Exo else Engine.Mpv }
         val cur = source
         val pos = player?.currentPosition ?: 0L
-        android.util.Log.i(TAG, "手动切换内核 → ${target.label}（从 ${pos / 1000}s 续播）")
+        android.util.Log.i(TAG, "手动切换内核 → ${target.label}（仅本次播放，从 ${pos / 1000}s 续播）")
         if (cur != null) {
             main.post { if (!released && source === cur) playSource(cur, pos) }
         }
@@ -836,6 +758,18 @@ class VideoSession(
             forcedEngine = null
             failedFormats.clear()
             lastTracks = Tracks.EMPTY
+            /**
+             * 用户口径（2026-11-26）**换片源 = 重新按片源类型自动判定内核**。
+             *
+             * 这里重置两个标记，语义是「新的一集/新的一部，重新决策」：
+             *  · autoPickDone：允许 onTracksChanged 再决策一次
+             *  · userPickedEngineThisPlayback：
+             *    上一集手动切过 mpv，不代表这一集也要 mpv。
+             *    用户要的是「自动模式下每部剧都自动选最合适的」，
+             *    所以手动选择的作用域就是「当前这一集」。
+             */
+            autoPickDone = false
+            userPickedEngineThisPlayback = false
         }
         // New media in the player (new source or the other core): its tracks start from the server's defaults again.
         pendingDefaults = setOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_TEXT)

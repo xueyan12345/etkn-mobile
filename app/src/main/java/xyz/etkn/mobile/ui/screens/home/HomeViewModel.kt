@@ -160,7 +160,21 @@ class HomeViewModel(
                 _state.value = Load.Ready(data)
                 LauncherEntries.publishResume(graph.app, data.resume, keep = graph.sessions.current?.privateAccount == false)
                 // A shown hero (cached or previous) is swapped in one step, never shrunk to one card.
-                if (data.hero.isEmpty()) loadHero(data) else if (manual || fromCache) loadHero(data, quiet = true)
+                /**
+                 * 用户口径（2026-11-26）**hero 数量不够就补齐，不必等手动刷新**。
+                 *
+                 * 修的问题（h 账号实测）：进首页只看到 3 个轮播，
+                 * 等半天不动，必须手动刷新才补齐到 8（现在 10）个。
+                 *
+                 * 根因：原来只有 `data.hero.isEmpty()` 才触发 loadHero，
+                 * 但首屏用 fallbackHero 兜底时已经填了 3 个（非空），
+                 * 于是网络数据回来后不再补齐。
+                 *
+                 * 现在：只要少于 HERO_SIZE 就补齐。
+                 * 补齐过程是「算好整体替换」，不会中间清空 → 不会闪。
+                 */
+                val heroShort = data.hero.size < HERO_SIZE
+                if (heroShort || manual || fromCache) loadHero(data, quiet = !manual)
             } catch (error: Exception) {
                 if (_state.value !is Load.Ready) _state.value = Load.Failed(error.userMessage())
             } finally {
@@ -240,7 +254,17 @@ class HomeViewModel(
                 val pool = heroPool(data)
                 val byId = pool.associateBy { it.id }
                 val kept = shown.ids.mapNotNull { byId[it] }.filter { !isFinished(it) }
-                if (kept.size >= HERO_SIZE) {
+                /**
+                 * 用户口径（2026-11-26）**快照里的第 1 位也要是「继续播放」**。
+                 *
+                 * 旧快照（改版前存的 8 个纯随机）没有继续播放位，
+                 * 直接沿用会让用户「改完还是老样子」。所以这里检查：
+                 * 第 1 位必须来自当前 resume 列表，否则视为无效快照 → 重抽。
+                 */
+                val resumeIds = data.resume.map { it.id }.toSet()
+                val firstId: String? = kept.firstOrNull()?.id
+                val firstIsResume = firstId != null && firstId in resumeIds
+                if (kept.size >= HERO_SIZE && firstIsResume) {
                     publishHero(kept.take(HERO_SIZE))
                     return@launch
                 }
@@ -282,8 +306,8 @@ class HomeViewModel(
             if (!quiet) {
                 val fallback = fallbackHero(data)
                 if (fallback.isNotEmpty()) {
-                    val picked = fallback.shuffled(Random(seed)).take(HERO_SIZE)
-                    publishHero(picked)
+                    val randomNine = fallback.shuffled(Random(seed)).take(HERO_RANDOM_SIZE)
+                    publishHero(pickResumeFirst(data, randomNine, seed))
                     HeroSnapshot.write(context, accountKey, picked.map { it.id })
                 }
             }
@@ -317,6 +341,26 @@ class HomeViewModel(
         _state.update { current -> if (current is Load.Ready) Load.Ready(current.value.copy(hero = items)) else current }
     }
 
+    /**
+     * 用户口径（2026-11-26）**拼装轮播：第 1 位继续播放，后面全库随机**。
+     *
+     * 「继续播放」里既有分集（Episode）也有电影（Movie），都算 —— 用户明确要求。
+     * 分集本身通常没有独立 backdrop（背景图），它的图片挂在所属剧上，
+     * 所以这里不做 hasBackdrop 过滤，否则会把分集全滤掉、第一位永远是电影。
+     * 图片取不到时由 HeroCarousel 那边按海报兜底。
+     */
+    private fun pickResumeFirst(data: HomeData, random: List<Item>, seed: Long): List<Item> {
+        val resumePool = data.resume.filter { it.id.isNotBlank() }
+        val first = if (resumePool.isNotEmpty()) {
+            // 用同一个 seed 保证 12 小时内稳定（不是每次刷新都换）
+            resumePool[Random(seed + 7).nextInt(resumePool.size)]
+        } else {
+            null
+        }
+        val rest = random.filter { it.id != first?.id }
+        return (listOfNotNull(first) + rest).take(HERO_SIZE)
+    }
+
     private fun fallbackHero(data: HomeData) =
         data.latest.flatMap { it.items }.filter(::hasBackdrop).distinctBy { it.id }.take(HERO_SIZE)
 
@@ -345,7 +389,20 @@ class HomeViewModel(
     private fun hasBackdrop(item: Item) = item.backdropTags.isNotEmpty() || item.parentBackdropTags.isNotEmpty()
 
     companion object {
-        private const val HERO_SIZE = 8
+        /**
+     * 用户口径（2026-11-26）**轮播图改成 10 个**。
+     *
+     * 需求原文：「我想把轮播改成10个，我需要把第一个轮播图位置留下来，
+     * 专门放继续播放里面的剧（无论是电视剧形式还是电影形式都算）
+     * 随机抽出来一个放在第一个轮播图，后面的九个还是跟之前逻辑一样，
+     * 在库里随机抽取，不要分层」
+     *
+     * 所以：第 1 个 = 继续播放随机 1 部，第 2~10 个 = 全库打乱随机 9 部。
+     */
+    private const val HERO_SIZE = 10
+
+    /** 后面「全库随机」那把要凑几个（总 10 - 第 1 个继续播放位）。 */
+    private const val HERO_RANDOM_SIZE = HERO_SIZE - 1
         private const val HERO_POOL_PER_LIBRARY = 30
         /** 轮播图「多久换一批」：满 12 小时（按上次生成时间算，不跟日历走）。 */
         private const val HERO_TTL_MS = 12L * 60L * 60L * 1000L
