@@ -14,8 +14,7 @@ import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import okhttp3.OkHttpClient
 import xyz.etkn.mobile.data.settings.DecoderPreference
 import xyz.etkn.mobile.player.bluray.BlurayMediaSourceFactory
-import xyz.etkn.mobile.player.cache.BlockStore
-import xyz.etkn.mobile.player.cache.CachedDataSource
+import xyz.etkn.mobile.player.cache.VideoCache
 import xyz.etkn.mobile.player.cache.httpFactory
 import java.util.Locale
 
@@ -259,96 +258,89 @@ object PlayerFactory {
         /** 当前播放位置（毫秒），缓存阈值的起点。 */
         cachePositionMs: () -> Long = { 0L },
     ): BlurayMediaSourceFactory {
-        val plain: DataSource.Factory = dataSource(client, userAgent)
         /**
-         * 只有「普通视频」走缓存数据源；file:// 仍然直读，
-         * 由 CachedDataSource 内部判断（它只处理 http/https 上游）。
+         * 用户口径（2026-11-27）**换成 ExoPlayer 官方缓存（SimpleCache + CacheDataSource）**。
+         *
+         * 之前自己写的 BlockStore + CachedDataSource + LocalProxy 已全部停用。
+         * 失败原因（日志实证）：我的实现要求「攒满一整块 1MB 才落盘」，
+         * 而播放器请求是跳跃的、经常没读满就断开（Connection reset / Broken pipe），
+         * 结果一块都存不下来 —— 播了 20 多分钟本地只有 162MB，阈值 400MB 根本没到。
+         *
+         * 官方 SimpleCache 按 span 管理，读到多少写多少，不存在这个问题。
+         * 另外它自带并发安全、洞补齐、LRU 淘汰，都是我们手写容易出错的部分。
+         *
+         * 磁盘上限用设置里的「最大硬盘缓存」（cacheDiskGb）。
+         * 命中判定的 key 用 itemId（见 VideoCache 里的 CacheKeyFactory 说明）。
          */
-        val data: DataSource.Factory = object : DataSource.Factory {
-            private val cached = CachedDataSource.Factory(
-                upstream = httpFactory(client, userAgent),
-                store = BlockStore.get(context),
-                itemId = cacheItemId,
-                totalBytes = cacheTotalBytes,
-                /**
-                 * 用户口径（2026-11-27）**两个阈值谁先到谁停**。
-                 *
-                 * 这是「缓冲条长度对不对」的正解：
-                 *  · 字节阈值（cacheMemoryMb）→ 直接是字节上限
-                 *  · 时长阈值（cacheMemorySeconds）→ 按当前片子的码率换算成字节
-                 *  · 取两者较小值
-                 *
-                 * 举例：片子 1000MB / 45 分钟，设 400MB + 1200 秒
-                 *  · 400MB 对应 40%
-                 *  · 1200 秒对应 1200/2700 ≈ 44%
-                 *  · 取小 → 400MB → 缓冲条占 40%（与用户预期一致）
-                 *
-                 * totalBytes <= 0（还没探到）→ 不限，先让它正常缓冲。
-                 */
-                cacheAnchor = {
-                    // 播放位置换算成字节：位置/时长 × 总字节
-                    val total = cacheTotalBytes()
-                    val dur = cacheDurationMs()
-                    val pos = cachePositionMs()
-                    if (total > 0 && dur > 0 && pos > 0) {
-                        (total.toDouble() * pos.toDouble() / dur.toDouble()).toLong()
-                    } else 0L
-                },
-                cacheLimitBytes = {
-                    val total = cacheTotalBytes()
-                    val cfg = settings
-                    if (total <= 0 || cfg == null) {
-                        -1L
-                    } else {
-                        val bySize = cfg.cacheMemoryMb.coerceIn(32, 8192).toLong() * 1024L * 1024L
-                        val seconds = cfg.cacheMemorySeconds.coerceIn(30, 7200).toLong()
-                        // 时长阈值换算成字节：需要 duration，由 cacheDurationMs 提供
-                        val dur = cacheDurationMs()
-                        val byTime = if (dur > 0) (total.toDouble() * seconds * 1000.0 / dur.toDouble()).toLong() else Long.MAX_VALUE
-                        minOf(bySize, byTime).coerceAtMost(total)
-                    }
-                },
+        val cacheMaxBytes = (settings?.cacheDiskGb ?: 0).coerceIn(0, 200).toLong() * 1024L * 1024L * 1024L
+        val plainHttp = httpFactory(client, userAgent)
+        /**
+         * 用户口径（2026-11-27）**本机代理地址必须透传，不能再套一层缓存**。
+         *
+         * mpv 分支会播 http://127.0.0.1:<port>/item/<id>，那一路已经由代理内部的
+         * CacheDataSource 做过缓存了。如果 Exo 这边再包一层 CacheDataSource，
+         * 就会「缓存里再存缓存」—— key 不同、空间翻倍、还可能互相干扰。
+         *
+         * 所以：CacheDataSource 只在目标是上游地址时启用；
+         * 目标是本机回环时直接走原始 HttpDataSource 透传。
+         */
+        val cachedOrPlain: DataSource.Factory = if (cacheMaxBytes > 0) {
+            VideoCache.dataSource(
+                context = context,
+                upstream = plainHttp,
+                maxBytes = cacheMaxBytes,
             )
+        } else {
+            plainHttp
+        }
+        val data: DataSource.Factory = object : DataSource.Factory {
             private val file = androidx.media3.datasource.FileDataSource.Factory()
 
-            override fun createDataSource(): DataSource =
-                object : DataSource {
-                    private var active: DataSource? = null
-                    private var isFile = false
-                    /** 记住 Exo 传进来的监听器，每次新建数据源时立刻挂上（否则带宽统计丢失）。 */
-                    private val listeners = mutableListOf<androidx.media3.datasource.TransferListener>()
+            override fun createDataSource(): DataSource = object : DataSource {
+                private var active: DataSource? = null
+                private var isFile = false
+                private val listeners = mutableListOf<androidx.media3.datasource.TransferListener>()
 
-                    override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
-                        val wantFile = dataSpec.uri.scheme.equals("file", true)
-                        val cur = active
-                        if (cur == null || wantFile != isFile) {
-                            runCatching { cur?.close() }
-                            active = if (wantFile) file.createDataSource() else cached.createDataSource()
-                            isFile = wantFile
-                            listeners.forEach { runCatching { active?.addTransferListener(it) } }
+                override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
+                    val isFileUri = dataSpec.uri.scheme.equals("file", true)
+                    val isLoopback = dataSpec.uri.host?.let { it == "127.0.0.1" || it == "localhost" } == true
+                    val cur = active
+                    val wantKind = when {
+                        isFileUri -> 1
+                        isLoopback -> 2   // 透传，不套缓存
+                        else -> 3          // 上游 → 带缓存
+                    }
+                    if (cur == null || kind != wantKind) {
+                        runCatching { cur?.close() }
+                        active = when (wantKind) {
+                            1 -> file.createDataSource()
+                            2 -> plainHttp.createDataSource()
+                            else -> cachedOrPlain.createDataSource()
                         }
-                        return active!!.open(dataSpec)
+                        kind = wantKind
+                        isFile = isFileUri
+                        listeners.forEach { runCatching { active?.addTransferListener(it) } }
                     }
-
-                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
-                        active!!.read(buffer, offset, length)
-
-                    override fun getUri(): android.net.Uri? = active?.uri
-                    override fun getResponseHeaders(): Map<String, List<String>> =
-                        active?.responseHeaders ?: emptyMap()
-                    /**
-                     * 用户口径（2026-11-27）：DataSource 接口要求实现这个。
-                     * 转发给当前活跃的数据源，Exo 的带宽统计才能正常工作。
-                     */
-                    override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {
-                        listeners.add(transferListener)
-                        runCatching { active?.addTransferListener(transferListener) }
-                    }
-                    override fun close() {
-                        runCatching { active?.close() }
-                        active = null
-                    }
+                    return active!!.open(dataSpec)
                 }
+
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                    active!!.read(buffer, offset, length)
+
+                override fun getUri(): android.net.Uri? = active?.uri
+                override fun getResponseHeaders(): Map<String, List<String>> =
+                    active?.responseHeaders ?: emptyMap()
+                override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {
+                    listeners.add(transferListener)
+                    runCatching { active?.addTransferListener(transferListener) }
+                }
+                override fun close() {
+                    runCatching { active?.close() }
+                    active = null
+                }
+
+                private var kind = 0
+            }
         }
         val ordinary = DefaultMediaSourceFactory(ResolvedRedirects(data), BlurayMediaSourceFactory.baseLayerExtractors())
         return BlurayMediaSourceFactory(ordinary, client, userAgent, data)

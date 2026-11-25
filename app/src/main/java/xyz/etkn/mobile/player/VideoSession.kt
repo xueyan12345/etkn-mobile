@@ -272,6 +272,9 @@ class VideoSession(
     /** 正在取下一集直链（避免 tick 每 5 秒重复发起）。 */
     private var nextFetching = false
 
+    /** 缓存占用是否已记录（避免每 tick 刷屏）。 */
+    private var cacheUsageLogged = false
+
     /** tickCache 是否已经打过首轮日志（避免刷屏）。 */
     private var tickLogged = false
 
@@ -735,9 +738,10 @@ class VideoSession(
      */
     private fun currentCachedEndBytes(): Long {
         val id = item?.id ?: return 0L
+        if (currentLength <= 0) return 0L
         return runCatching {
-            val store = xyz.etkn.mobile.player.cache.BlockStore.get(graph.app)
-            store.contiguousEndBlock(id, 0L, currentLength) * xyz.etkn.mobile.player.cache.BlockStore.DEFAULT_BLOCK_SIZE
+            // 用官方缓存里真实落盘的连续字节数
+            xyz.etkn.mobile.player.cache.VideoCache.availableBytesFrom(id, 0L, currentLength)
         }.getOrDefault(0L)
     }
 
@@ -1111,48 +1115,46 @@ class VideoSession(
          *
          * 代理起不来（极罕见）→ 退回直连上游，功能不受影响，只是没缓存加速。
          */
-        val proxyStore = xyz.etkn.mobile.player.cache.BlockStore.get(context)
-        val proxyPort = xyz.etkn.mobile.player.cache.LocalProxy.start(proxyStore, graph.http.media)
-        if (proxyPort > 0) {
-            /**
-             * 用户口径（2026-11-27）**代理层也要按阈值停**，否则会一路下到片尾。
-             *
-             * 上限 = 播放位置 + min(字节阈值, 时长阈值换算字节)
-             * 这就是「缓冲条应该有多长」的真实右边界。
-             */
-            val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: startMs.coerceAtLeast(0L)
-            val durMs = player?.duration?.coerceAtLeast(0L) ?: 0L
-            val totalB = currentLength
-            /**
-             * 用户口径（2026-11-27）**必须在能算出真实上限时才登记，算不出就等下一次**。
-             *
-             * 修的 bug（日志实证：`proxy limit item=item-24847 pos=0s span=无限`）：
-             * 起播那一刻 duration 还是 0，于是走 else 分支得到 -1（=不限制），
-             * 结果是「阈值完全不生效」，一路下到 Exo 的 max 才停。
-             *
-             * 现在：算不出来就传 -1 表示「这一轮先别设限」，
-             * 但会在 tickCache 里每 5 秒重算并重新登记（见 cacheLimitBytes 计算处）。
-             */
-            val limitB = computeCacheLimit(posMs, durMs, totalB)
-            xyz.etkn.mobile.player.cache.LocalProxy.register(current.id, url, currentLength, limitB)
-            android.util.Log.i(
-                TAG,
-                "proxy limit item=${current.id} pos=${posMs / 1000}s " +
-                    "span=${if (limitB > 0 && totalB > 0) "${limitB / 1048576}MB/${totalB / 1048576}MB" else "无限"}",
+        /**
+         * 用户口径（2026-11-27）**播放地址直连上游，缓存由官方 CacheDataSource 在数据源层处理**。
+         *
+         * 这里不再需要本机代理、不再手工选 file:// 还是 http://：
+         * 播放器始终请求上游 URL，CacheDataSource 在它下面自动
+         * 命中就读本地、未命中就边下边写。
+         *
+         * 唯一的例外是「旧版遗留的整集文件」——那种情况仍可直读（省一次解封装），
+         * 但新缓存不走这条路。
+         */
+        /**
+         * 用户口径（2026-11-27）**mpv 走本机代理（底层是同一个 SimpleCache）**。
+         *
+         * Exo 直接用 CacheDataSource；mpv 没有数据源概念，只能给 HTTP 地址，
+         * 所以起一个只绑 127.0.0.1 的极薄代理，它内部用官方 CacheDataSource 读。
+         * 两个内核共用同一份缓存文件，谁缓存的另一方都能秒开。
+         */
+        val cacheMaxBytes = settings.cacheDiskGb.coerceIn(0, 200).toLong() * 1024L * 1024L * 1024L
+        val playUri: android.net.Uri = if (cacheMaxBytes > 0) {
+            val port = xyz.etkn.mobile.player.cache.LocalProxy.start(
+                xyz.etkn.mobile.player.cache.VideoCache.dataSource(
+                    context = context,
+                    upstream = xyz.etkn.mobile.player.cache.httpFactory(
+                        graph.http.media, graph.identity.userAgent,
+                    ),
+                    maxBytes = cacheMaxBytes,
+                ),
             )
-        }
-        val proxied = xyz.etkn.mobile.player.cache.LocalProxy.urlFor(current.id)
-
-        val playUri: android.net.Uri = if (proxied != null) {
-            android.net.Uri.parse(proxied)
-        } else if (cachedLocal != null) {
-            // 代理不可用时的兜底：整集文件直读（老路径）
-            val u = android.net.Uri.fromFile(cachedLocal)
-            val bad = !u.scheme.equals("file", true) || u.path.isNullOrEmpty()
-            if (bad) android.net.Uri.parse(url) else u
+            if (port > 0) {
+                xyz.etkn.mobile.player.cache.LocalProxy.register(current.id, url)
+                val proxied = xyz.etkn.mobile.player.cache.LocalProxy.urlFor(current.id)
+                android.util.Log.i(TAG, "proxy uri=${proxied ?: url}")
+                if (proxied != null) android.net.Uri.parse(proxied) else android.net.Uri.parse(url)
+            } else {
+                android.net.Uri.parse(url)
+            }
         } else {
             android.net.Uri.parse(url)
         }
+
         /**
          * 用户口径（2026-11-26）**这一行是「退出再进有没有命中缓存」的唯一判据**。
          *
@@ -1198,6 +1200,15 @@ class VideoSession(
         val media = MediaItem.Builder()
             .setUri(playUri)
             .setMediaId(current.id)
+            /**
+             * 用户口径（2026-11-27）**缓存 key 必须固定为 itemId**。
+             *
+             * 这是「SimpleCache 的 key 带 token 命中不了」这个历史问题的解法：
+             * 默认 key 取完整 URL（含 token/UserId 查询参数），token 一刷新就换 key
+             * → 上次缓存的永远命中不了。
+             * 这里显式指定 customCacheKey = itemId，同一集永远同一个 key。
+             */
+            .setCustomCacheKey(current.id)
             .setSubtitleConfigurations(subtitles)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(_ui.value.title).setSubtitle(_ui.value.subtitle).build())
             // Full-disc ISO: libbluray opens the server's probed main playlist when it sent one.
@@ -1303,10 +1314,20 @@ class VideoSession(
          * trim 内部先算总量、没超就直接返回，开销很小（只 stat 目录）。
          * 传入当前 itemId 作为保护，绝不删正在播的这一集。
          */
-        runCatching {
-            val capBytes = settings.cacheDiskGb.coerceIn(1, 200).toLong() * 1024L * 1024L * 1024L
-            xyz.etkn.mobile.player.cache.BlockStore.get(graph.app)
-                .trim(capBytes, setOf(currentItem.id))
+        /**
+         * 用户口径（2026-11-27）**淘汰交给官方 LRU 淘汰器**。
+         *
+         * 之前手写的 trim 需要每次 tick 扫描目录，官方
+         * LeastRecentlyUsedCacheEvictor 在写入时就按上限自动挤掉最旧的，
+         * 不需要我们再管。这里只记一下占用，方便日志排查。
+         */
+        if (!cacheUsageLogged) {
+            cacheUsageLogged = true
+            android.util.Log.i(
+                "ETKN-Cache",
+                "disk usage=${xyz.etkn.mobile.player.cache.VideoCache.usedBytes() / 1048576}MB " +
+                    "cap=${settings.cacheDiskGb}GB",
+            )
         }
 
         /**
@@ -1369,14 +1390,6 @@ class VideoSession(
          */
         // Exo 给不出时长时用服务端的（日志实证 strm 源 dur 恒为 0）
         val effDurMs = if (durationMs > 0) durationMs else serverDurationMs
-        if (effDurMs > 0 && currentLength > 0) {
-            val liveLimit = computeCacheLimit(positionMs, effDurMs, currentLength)
-            if (liveLimit > 0) {
-                xyz.etkn.mobile.player.cache.LocalProxy.register(
-                    currentItem.id, cur, currentLength, liveLimit,
-                )
-            }
-        }
 
         /**
          * 用户口径（2026-11-27）**duration=0 时也要能触发预加载**。
@@ -1445,6 +1458,14 @@ class VideoSession(
                     settings = settings,
                     currentEpisodeId = currentItem.id,
                     next = nextInfo,
+                    // 预加载也走同一个官方缓存数据源 → 写进同一份 SimpleCache
+                    dataSourceFactory = xyz.etkn.mobile.player.cache.VideoCache.dataSource(
+                        context = graph.app,
+                        upstream = xyz.etkn.mobile.player.cache.httpFactory(
+                            graph.http.media, graph.identity.userAgent,
+                        ),
+                        maxBytes = settings.cacheDiskGb.coerceIn(0, 200).toLong() * 1024L * 1024L * 1024L,
+                    ),
                 )
             } else null
             job?.join()
@@ -1491,19 +1512,25 @@ class VideoSession(
              *  · 换算回毫秒 → 这才是能秒开的真实范围
              *  · 一段都没有（0）就返回当前位置，条不画
              */
+            /**
+             * 用户口径（2026-11-27）**缓冲条 = SimpleCache 里真实落盘的 span 范围**。
+             *
+             * 数据源是官方缓存的 getCachedSpans（真实写进磁盘的区间），
+             * 不是播放器请求水位，也不是我们估算的量。
+             * 所以：条画到哪，那里就一定有数据，拖过去必然秒开。
+             */
             val cachedMs = run {
                 val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
                 val durMs = if (durationMs > 0) durationMs
                     else if (serverDurationMs > 0) serverDurationMs
                     else (player?.duration ?: 0L)
                 val totalB = currentLength
-                if (durMs <= 0 || totalB <= 0 || posMs <= 0) {
+                if (durMs <= 0 || totalB <= 0) {
                     posMs
                 } else {
                     val posBytes = (totalB.toDouble() * posMs.toDouble() / durMs.toDouble()).toLong()
-                    val ahead = xyz.etkn.mobile.player.cache.BlockStore
-                        .get(graph.app)
-                        .cachedBytesAhead(currentItem.id, posBytes, totalB)
+                    val ahead = xyz.etkn.mobile.player.cache.VideoCache
+                        .availableBytesFrom(currentItem.id, posBytes, totalB - posBytes)
                     if (ahead <= 0) {
                         posMs
                     } else {

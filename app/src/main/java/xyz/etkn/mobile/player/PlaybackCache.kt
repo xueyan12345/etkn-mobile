@@ -1,6 +1,5 @@
 package xyz.etkn.mobile.player
 
-import xyz.etkn.mobile.player.cache.BlockStore
 import android.content.Context
 import android.net.Uri
 import androidx.media3.datasource.DataSource
@@ -852,52 +851,59 @@ object PlaybackCache {
         settings: Settings,
         currentEpisodeId: String,
         next: NextEpisode?,
+        dataSourceFactory: DataSource.Factory?,
     ): Job? {
         if (!settings.preloadNext) return null
         val target = next ?: return null
         if (target.itemId.isBlank() || target.url.isBlank()) return null
+        if (dataSourceFactory == null) return null
         if (preloading.contains(target.itemId)) return null
 
         val job = workScope.launch {
             preloading.add(target.itemId)
             try {
-                val store = BlockStore.get(context)
-                // 总长未知 → 现场探一次（HEAD 请求拿 Content-Length）
-                val total = if (target.lengthBytes > 0) target.lengthBytes else probeLength(client, target.url)
                 /**
-                 * 预加载目标字节位置：
-                 *  · 有片头且片头结束时间已知 → 铺到「片头结束 + 1 分钟」
-                 *  · 否则 → 按配额（时间/大小取小者）的一半
-                 * 两种情况都换算成块，再多铺一块兜底（避免刚好差一点点）。
+                 * 用户口径（2026-11-27）**预加载也走官方缓存，不再手写块下载**。
+                 *
+                 * 做法：用同一个 CacheDataSource 打开下一集的头部并读掉一段，
+                 * 读的同时 SimpleCache 就把它写进去了 —— 点下一集时自然秒开。
+                 *
+                 * 读多少：
+                 *  · 有片头数据 → 读到「片头结束 + 1 分钟」
+                 *  · 否则 → 读 min(字节阈值, 时长阈值) 的一半
                  */
-                val durationMs = target.durationMs
-                val bpm = if (durationMs > 0 && total > 0) total.toDouble() / durationMs else 0.0
-                val needMs = when {
-                    target.introEndMs > 0 -> target.introEndMs + 60_000L
-                    else -> maxWindowMs(settings) / 2
-                }
-                val needBytes = if (bpm > 0) {
-                    (needMs * bpm).toLong()
-                } else {
-                    // 时长未知 → 按大小配额的一半
-                    maxWindowBytes(settings) / 2
-                }
-                val endBlock = (needBytes / BlockStore.DEFAULT_BLOCK_SIZE) + 1
+                val needBytes = run {
+                    val total = if (target.lengthBytes > 0) target.lengthBytes else probeLength(client, target.url)
+                    val durationMs = target.durationMs
+                    val bpm = if (durationMs > 0 && total > 0) total.toDouble() / durationMs else 0.0
+                    val needMs = when {
+                        target.introEndMs > 0 -> target.introEndMs + 60_000L
+                        else -> maxWindowMs(settings) / 2
+                    }
+                    if (bpm > 0) (needMs * bpm).toLong() else maxWindowBytes(settings) / 2
+                }.coerceAtLeast(2L * 1024 * 1024)   // 至少铺 2MB，避免刚够就断
 
-                var filled = 0
-                for (i in 0 until endBlock) {
-                    val end = minOf(store.blockStart(i) + BlockStore.DEFAULT_BLOCK_SIZE, total)
-                    if (end <= 0) break
-                    if (store.hasBlock(target.itemId, i, total)) continue
-                    val ok = fetchAndStoreBlock(client, store, target.itemId, target.url, i, total)
-                    if (!ok) break
-                    filled++
+                val ds = dataSourceFactory.createDataSource()
+                var covered = 0L
+                runCatching {
+                    val spec = DataSpec.Builder()
+                        .setUri(android.net.Uri.parse(target.url))
+                        .setKey(target.itemId)     // 与播放时同一个 cache key
+                        .build()
+                    ds.open(spec)
+                    val buf = ByteArray(256 * 1024)
+                    while (covered < needBytes) {
+                        val read = ds.read(buf, 0, buf.size)
+                        if (read <= 0) break
+                        covered += read
+                    }
                 }
-                val covered = store.contiguousBytesFrom(target.itemId, 0, total)
-                val ready = covered >= needBytes.coerceAtLeast(1L)
+                runCatching { ds.close() }
+
+                val ready = covered >= (needBytes * 8 / 10)   // 铺到八成就算可用
                 android.util.Log.i(
                     "ETKN-Cache",
-                    "preload next=${target.itemId} blocks=$filled covered=${covered / 1048576}MB " +
+                    "preload next=${target.itemId} covered=${covered / 1048576}MB " +
                         "need=${needBytes / 1048576}MB ready=$ready",
                 )
                 if (ready) nextComplete = true
@@ -908,32 +914,6 @@ object PlaybackCache {
             }
         }
         return job
-    }
-
-    /** 下载并落盘「下一集」的某一块（先写 .part 不改名，直接按块文件写）。 */
-    private fun fetchAndStoreBlock(
-        client: OkHttpClient,
-        store: BlockStore,
-        itemId: String,
-        url: String,
-        index: Long,
-        total: Long,
-    ): Boolean {
-        val start = store.blockStart(index)
-        val expected = store.expectedSize(index, total).toInt()
-        if (expected <= 0) return false
-        val request = Request.Builder()
-            .url(url)
-            .header("Range", "bytes=$start-${start + expected - 1}")
-            .build()
-        return runCatching {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use false
-                val bytes = response.body?.bytes() ?: return@use false
-                if (bytes.isEmpty()) return@use false
-                store.writeBlock(itemId, index, bytes, bytes.size)
-            }
-        }.getOrDefault(false)
     }
 
     /** 正在预加载的 itemId（防重复）。 */
@@ -1102,7 +1082,7 @@ object PlaybackCache {
             /**
              * 用户口径（2026-11-27）**清掉旧版遗留的整文件缓存，释放磁盘**。
              *
-             * 缓存已经全部改成「按块存」（BlockStore）。旧的 mediafiles/ 目录里
+             * 缓存已经全部改成官方 SimpleCache。旧的 mediafiles/ 目录里
              * 那些 item-xxxxx / item-xxxxx.part 整文件再也用不到了，
              * 却还占着空间（实测有 10 个文件约 10GB）。
              *

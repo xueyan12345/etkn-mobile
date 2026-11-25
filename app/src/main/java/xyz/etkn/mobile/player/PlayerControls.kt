@@ -712,7 +712,20 @@ private fun rememberPlayerStatus(): PlayerStatus {
         val fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
         var lastRx = 0L
         while (true) {
-            val rx = android.net.TrafficStats.getTotalRxBytes()
+            /**
+             * 用户口径（2026-11-27）**网速只算本应用，不混入系统其他流量**。
+             *
+             * 原来用 getTotalRxBytes() —— 那是「全机器所有进程的接收总量」，
+             * 家里别的设备/后台更新都会算进来，和播放器实际下载速度对不上。
+             *
+             * 现在用 getUidRxBytes(自己uid)，并且只算 wlan + 移动数据两类，
+             * 这样显示的就是「本 App 实际吃到的网速」，和系统状态栏看到的同源。
+             *
+             * 前提：应用已经产生过网络流量（播放器必然满足），否则返回 UNSUPPORTED。
+             */
+            val uid = android.os.Process.myUid()
+            val uiBytes = android.net.TrafficStats.getUidRxBytes(uid)
+            val rx = if (uiBytes == android.net.TrafficStats.UNSUPPORTED.toLong()) 0L else uiBytes
             // 用户口径（2026-11-23）：网速恒定有值。
             // 第一秒（lastRx 还没建立）或这一秒没有流量时返回 0 B/s，而不是空串，
             // 否则界面上会是「有时显示有时不显示」。
