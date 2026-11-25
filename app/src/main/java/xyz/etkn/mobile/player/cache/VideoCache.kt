@@ -83,7 +83,16 @@ object VideoCache {
         cache?.let { return it }
         synchronized(this) {
             cache?.let { return it }
-            val dir = File(context.cacheDir, "videocache")
+            /**
+             * 用户口径（2026-11-27）**缓存目录必须放 filesDir，不能放 cacheDir**。
+             *
+             * Android 允许系统在磁盘紧张时随时清空 cacheDir，
+             * OPPO ColorOS 尤其积极 —— 这也能解释「disk=0MB」：
+             * 数据可能刚写进去就被系统回收了。
+             *
+             * filesDir 不会被系统自动清理，只有用户卸载 App 或手动清缓存才消失。
+             */
+            val dir = File(context.filesDir, "videocache")
             val created = runCatching {
                 SimpleCache(dir, LeastRecentlyUsedCacheEvictor(maxBytes))
             }.onFailure { Log.e(TAG, "SimpleCache open failed", it) }.getOrNull() ?: return null
@@ -109,6 +118,19 @@ object VideoCache {
             .setCache(store)
             .setUpstreamDataSourceFactory(upstream)
             .setCacheKeyFactory(keyFactory)
+            /**
+             * 用户口径（2026-11-27）**播放器只读缓存，写入交给 CacheWriter 独占**。
+             *
+             * 修的闪退：SimpleCache 不允许两个写入者写同一 key 的同一区间。
+             * 之前播放器数据源（默认带写入 sink）和我加的 CacheWriter 抢同一段，
+             * 冲突导致崩溃。
+             *
+             * 现在：
+             *  · 播放器：只读（cacheWriteDataSinkFactory = null）
+             *  · CacheWriter：唯一写入者
+             * 播放时能读到我下的数据，我下的也能被播放命中。
+             */
+            .setCacheWriteDataSinkFactory(null)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 
@@ -241,16 +263,18 @@ object VideoCache {
              * 如果它没拿到 dataSpec.key（因为 DataSpec 被重建过），
              * 就会退回用完整 URL（含 token）—— 于是查不到。
              */
+            /**
+             * 用户口径（2026-11-27）**不要在播放期间遍历 key / 查 cacheSpace**。
+             *
+             * 这两个操作会让 SimpleCache 在播放线程正在读的情况下做索引遍历，
+             * 实测会引发异常 → 闪退。
+             *
+             * 现在只打「已缓存多少 / 目标多少」这两个我们自己的数字，
+             * 足够判断缓存有没有在涨。
+             */
             if (android.os.SystemClock.elapsedRealtime() - lastKeyLog > 15_000L) {
                 lastKeyLog = android.os.SystemClock.elapsedRealtime()
-                val allKeys = runCatching { store.keys.toList() }.getOrNull().orEmpty()
-                val space = runCatching { store.cacheSpace }.getOrDefault(0L)
-                Log.i(
-                    TAG,
-                    "cache-keys space=${space / 1048576}MB n=${allKeys.size} " +
-                        "wanted=$itemId has=${allKeys.contains(itemId)} " +
-                        "sample=${allKeys.take(2).map { it.take(28) }}",
-                )
+                Log.i(TAG, "cache-progress item=$itemId cached=${cached / 1048576}MB target=${target / 1048576}MB")
             }
             if (cached >= target - 1L * 1024 * 1024) {
                 // 达到目标 → 休眠（这就是「暂时不疯狂下载」）
@@ -286,11 +310,20 @@ object VideoCache {
             val from = cached
             val CHUNK = 64L * 1024 * 1024
             val want = minOf(target - from, CHUNK).coerceAtLeast(1L)
+            /**
+             * 写入专用数据源：显式给 cacheWriteDataSinkFactory，
+             * 保证它有写缓存的能力（播放器那一路是只读的，靠这一路写）。
+             */
             val ds = runCatching {
                 CacheDataSource.Factory()
                     .setCache(store)
                     .setUpstreamDataSourceFactory(upstream)
                     .setCacheKeyFactory(keyFactory)
+                    .setCacheWriteDataSinkFactory(
+                        androidx.media3.datasource.cache.CacheDataSink.Factory()
+                            .setCache(store)
+                            .setFragmentSize(CacheDataSink.DEFAULT_FRAGMENT_SIZE),
+                    )
                     .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
                     .createDataSource() as CacheDataSource
             }.getOrNull() ?: break
@@ -384,7 +417,7 @@ object VideoCache {
             stopCacheWindow()
             runCatching { cache?.release() }
             cache = null
-            runCatching { File(context.cacheDir, "videocache").deleteRecursively() }
+            runCatching { File(context.filesDir, "videocache").deleteRecursively() }
             Log.i(TAG, "cache cleared")
         }
     }
