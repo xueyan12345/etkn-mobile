@@ -162,7 +162,7 @@ private fun HeroPage(
                 scaleX = scale
                 scaleY = scale
             },
-            item.name,
+            heroTitle(item),
             contentScale = ContentScale.Crop,
         )
         Box(Modifier.fillMaxWidth().height(160.dp).background(tokens.heroTopScrim))
@@ -180,17 +180,46 @@ private fun HeroPage(
                 Artwork(
                     logo,
                     Modifier.fillMaxWidth(if (wide) 0.8f else 0.72f).height(96.dp),
-                    item.name,
+                    heroTitle(item),
                     contentScale = ContentScale.Fit,
                     background = Color.Transparent,
                 )
             } else {
+                /**
+                 * 用户口径（2026-11-27）**轮播标题必须是剧名，不是集号**。
+                 *
+                 * 问题（用户截图）：继续播放位显示的是「S01E0645」，
+                 * 用户原话「这个剧叫啥它不显示啊，正常它应该有一个剧集的名，
+                 * 比如现在显示的这个应该是《乌拉精选》这个剧名你得放上啊」。
+                 *
+                 * 原因：分集 item.name 就是集号（S01E0645），
+                 * 而剧名在 item.seriesName 里。
+                 * 判断写法与 DetailScreen 保持一致（那里已经这么做了）。
+                 */
                 Text(
-                    item.name,
+                    heroTitle(item),
                     style = HeroTitleStyle.copy(shadow = Shadow(Color.Black.copy(alpha = 0.35f), blurRadius = 16f)),
                     color = scheme.onSurface,
                     textAlign = textAlign,
                     maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            /**
+             * 用户口径（2026-11-27）**分集要在剧名下面补一行集号**。
+             *
+             * 主标题改成剧名后，用户就不知道是第几集了，
+             * 所以在标题下方用一行小字显示集号（如 S01E0645）。
+             * 电影 / 剧集本身没有集号 → 不显示这一行。
+             */
+            episodeLabel(item)?.let { label ->
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    label,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = scheme.onSurface.copy(alpha = 0.86f),
+                    textAlign = textAlign,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -245,3 +274,19 @@ private fun HeroMeta(item: Item) {
         }
     }
 }
+
+/**
+ * 用户口径（2026-11-27）**轮播主标题：分集显示剧名，其余显示自己的名字**。
+ *
+ * 分集的 item.name 是集号（如 S01E0645），剧名在 seriesName。
+ * 与 DetailScreen 的判断完全一致，避免两处口径不同。
+ */
+private fun heroTitle(item: Item): String =
+    item.seriesName?.takeIf { (item.isEpisode || item.isSeason) && it.isNotBlank() } ?: item.name
+
+/**
+ * 分集的集号（S01E0645）；非分集返回 null。
+ * 主标题已经换成剧名，这里补回「是第几集」的信息。
+ */
+private fun episodeLabel(item: Item): String? =
+    item.name.takeIf { (item.isEpisode || item.isSeason) && it.isNotBlank() }

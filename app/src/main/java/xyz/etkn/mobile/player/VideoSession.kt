@@ -574,9 +574,31 @@ class VideoSession(
         forcedEngine = target.let { if (it == PlayerEngine.Exo) Engine.Exo else Engine.Mpv }
         val cur = source
         val pos = player?.currentPosition ?: 0L
-        android.util.Log.i(TAG, "手动切换内核 → ${target.label}（仅本次播放，从 ${pos / 1000}s 续播）")
-        if (cur != null) {
-            main.post { if (!released && source === cur) playSource(cur, pos) }
+        android.util.Log.i(
+            TAG,
+            "手动切换内核 → ${target.label}（仅本次播放，从 ${pos / 1000}s 续播）" +
+                " src=${cur != null} released=$released forced=$forcedEngine",
+        )
+        /**
+         * 用户口径（2026-11-27）**切换必须真的生效（日志实证 1.5.0 点了 12 次都没切）**。
+         *
+         * 日志：
+         * ```
+         * 14:20:29.593 点击内核按钮（当前=Exo）
+         * 14:20:29.593 手动切换内核 → mpv（仅本次播放，从 839s 续播）
+         * 14:20:30.013 点击内核按钮（当前=Exo）   ← 还是 Exo，根本没切
+         * ```
+         * 打了日志但 engine 没变成 mpv，且全程没有 `ETKN-Mpv: load`
+         * → 说明 main.post 里那次 playSource 没跑（被条件挡住或 post 被吞）。
+         *
+         * 现在改成：**主线程同步重建内核，不再包 post**。
+         * 这里本来就在主线程（点击回调），不需要再 post 一次。
+         */
+        if (cur != null && !released) {
+            runCatching { playSource(cur, pos) }
+                .onFailure { android.util.Log.e(TAG, "切换内核重建失败", it) }
+        } else {
+            android.util.Log.w(TAG, "切换内核被跳过：source=${cur != null} released=$released")
         }
         return if (target == PlayerEngine.Exo) "Exo" else "mpv"
     }

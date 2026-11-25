@@ -175,12 +175,20 @@ object Diagnostics {
 
         // ② 再开常驻进程持续跟随
         val process = runCatching {
-            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-t", "0") + filter)
+            /**
+             * 从「现在」开始跟随。
+             * ⚠️ 不能用 `-t 0`：实测会打印 `WARNING: -t 0 invalid, setting to 1`
+             * （-t 是「最后 N 行」语义，0 非法）。
+             * 用 `-T` + 当前时间字符串（"MM-DD HH:MM:SS.mmm"）才是「从此刻开始」。
+             */
+            val from = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-T", from) + filter)
                 .redirectErrorStream(true).start()
         }.onFailure {
             Log.w(TAG, "log recorder (pid filter) unavailable", it)
         }.getOrNull() ?: runCatching {
-            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-t", "0") + FALLBACK_FILTER)
+            val from = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+            ProcessBuilder(listOf("logcat", "-v", "threadtime,year", "-T", from) + FALLBACK_FILTER)
                 .redirectErrorStream(true).start()
         }.onFailure {
             Log.w(TAG, "log recorder unavailable", it)
