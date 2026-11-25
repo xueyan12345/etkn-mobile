@@ -1424,18 +1424,23 @@ class VideoSession(
          *  · 播放前进 → 窗口前移（旧数据保留，可回拖）
          *  · 改设置 400→800MB → 目标跟着变，立刻补下
          */
-        val cacheUrl = currentUrl
-        if (cacheUrl != null && currentLength > 0) {
-            xyz.etkn.mobile.player.cache.VideoCache.startCacheWindow(
-                itemId = currentItem.id,
-                url = cacheUrl,
-                positionMs = positionMs,
-                durationMs = effDurMs,
-                totalBytes = currentLength,
-                limitBytes = settings.cacheMemoryMb.coerceIn(50, 4096).toLong() * 1024L * 1024L,
-                limitMs = settings.cacheMemorySeconds.coerceIn(30, 7200).toLong() * 1000L,
-            )
-        }
+        /**
+         * 用户口径（2026-11-27）**这里不再主动下载，缓存完全交给 Exo**。
+         *
+         * 删掉的原因（日志实证 OOM 闪退）：
+         * 我原来在这里起一个 CacheWriter 循环主动下 400MB，结果是
+         *  · 和播放器的 CacheDataSource 抢同一段（SimpleCache 不允许双写）
+         *  · 每 64MB 重建一次数据源，对象堆积把 256MB 的 Java 堆撑满 → OOM
+         *
+         * 而 1.8.4 的日志已经证明：只要在 DefaultLoadControl 里设好
+         * `targetBufferBytes = 用户阈值`，Exo 自己就会稳定往下缓冲：
+         * ```
+         * 22:39:52  aheadB=61MB   disk=64MB
+         * 22:39:55  aheadB=119MB  disk=128MB
+         * 22:39:57  aheadB=179MB  disk=192MB
+         * ```
+         * 所以正确的做法是**配好参数让 Exo 干**，不要自己再起一条下载流。
+         */
 
         /**
          * 用户口径（2026-11-27）**duration=0 时也要能触发预加载**。
