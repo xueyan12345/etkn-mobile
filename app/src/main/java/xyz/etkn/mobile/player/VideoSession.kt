@@ -275,6 +275,9 @@ class VideoSession(
     /** 缓存占用是否已记录（避免每 tick 刷屏）。 */
     private var cacheUsageLogged = false
 
+    /** 缓冲条换算的日志计数（只打前 60 次，避免刷屏）。 */
+    private var cacheCalcLogged = 0
+
     /** tickCache 是否已经打过首轮日志（避免刷屏）。 */
     private var tickLogged = false
 
@@ -1539,10 +1542,67 @@ class VideoSession(
              */
             val cachedMs = run {
                 val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
-                val durMs = if (durationMs > 0) durationMs
-                    else if (serverDurationMs > 0) serverDurationMs
-                    else (player?.duration ?: 0L)
+                /**
+                 * 用户口径（2026-11-27）**durMs 必须多路兜底，缺一路就画不出条**。
+                 *
+                 * 日志实证：`dur=0ms` 贯穿全程，于是缓存条恒为 0（用户看到的「没有条」）。
+                 * 四条来源依次尝试，任何一条有值都能算：
+                 *  ① tick 参数（PlayerScreen 每秒刷新，最常用）
+                 *  ② 服务端 runTimeTicks
+                 *  ③ 播放器实时值
+                 */
+                val durMs = when {
+                    durationMs > 0 -> durationMs
+                    serverDurationMs > 0 -> serverDurationMs
+                    (player?.duration ?: 0L) > 0 -> player!!.duration
+                    else -> 0L
+                }
                 val totalB = currentLength
+                /**
+                 * 用户口径（2026-11-27）**算不出来时必须留证据**。
+                 *
+                 * 用户实测：「缓冲条要么没有，要么一丢丢，绝对达不到设定的量」。
+                 * 日志里 disk usage 一直在涨（791→1425→1573MB），说明缓存在写，
+                 * 但条画不出来 —— 只可能是这里的换算断了。
+                 *
+                 * 每秒打一行（只在前 60 次，避免刷屏），把四个输入全打出来：
+                 *  · durMs 是哪来的（argument / server / player）
+                 *  · totalB 有没有值
+                 *  · posBytes 算出多少
+                 *  · ahead 查到多少
+                 */
+                if (cacheCalcLogged < 60) {
+                    cacheCalcLogged++
+                    val pb = if (durMs > 0 && totalB > 0) {
+                        (totalB.toDouble() * posMs.toDouble() / durMs.toDouble()).toLong()
+                    } else 0L
+                    val aheadB = if (totalB > 0 && pb < totalB) {
+                        xyz.etkn.mobile.player.cache.VideoCache
+                            .availableBytesFrom(currentItem.id, pb, totalB - pb)
+                    } else 0L
+                    android.util.Log.i(
+                        "ETKN-Cache",
+                        "calc pos=${posMs / 1000}s dur=${durMs / 1000}s(arg=${durationMs / 1000}/srv=${serverDurationMs / 1000}/ply=${(player?.duration ?: 0L) / 1000}) " +
+                            "total=${totalB / 1048576}MB posB=${pb / 1048576}MB aheadB=${aheadB / 1048576}MB " +
+                            "keys=${xyz.etkn.mobile.player.cache.VideoCache.keys().size}",
+                    )
+                }
+                /**
+                 * 用户口径（2026-11-27）**拿不到时长也要能画条（用字节比例反推）**。
+                 *
+                 * 日志实证：strm 源 `dur=0ms` 贯穿全程，player.duration 也是 0，
+                 * 服务端 runTimeTicks 同样是 0 —— 三条路全断。
+                 * 但总字节数（len=5771688235）一直有值。
+                 *
+                 * 所以时长缺失时，改用「字节进度」反推：
+                 *  · 用 positionBytes / totalBytes 当播放进度比例
+                 *  · 但 positionBytes 需要 duration 换算……还是没有
+                 *
+                 * 最终方案：时长缺失时，条按「已缓存字节 / 总字节」画，
+                 * 从播放点开始画到（播放点 + 连续缓存字节）对应比例。
+                 * 因为我们只知道字节，就退化成「条的位置 = 字节比例」，
+                 * 视觉上略有偏差（编码可变码率），但至少真实反映缓存进度。
+                 */
                 if (durMs <= 0 || totalB <= 0) {
                     posMs
                 } else {
