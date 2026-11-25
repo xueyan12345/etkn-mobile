@@ -245,7 +245,7 @@ object Diagnostics {
             "AudioTrackExtImpl|AudioFlinger|AudioPolicyManager|" +
             "Choreographer|ViewRootImpl|HWUI|libc|Zygote|" +
             "ziparchive|StrictMode|Binder|ProfileInstaller" +
-            ")\s*:",
+            """)\s*:""",
     )
 
     private fun cleanup(dir: File) {
