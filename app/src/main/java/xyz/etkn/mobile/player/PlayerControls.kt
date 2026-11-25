@@ -28,12 +28,10 @@ import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.ClosedCaption
-import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
@@ -288,25 +286,22 @@ internal fun Controls(
             onPick = { onSheet(Sheet.Speed) },
         )
 
-        // ===== 中央播放控制（保持原样，不缩不放）=====
-        Row(
-            Modifier.align(Alignment.Center),
-            horizontalArrangement = Arrangement.spacedBy(45.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = { onSeekBy(-10_000) }, modifier = Modifier.size(70.dp)) {
-                Icon(Icons.Rounded.Replay10, "后退 10 秒", tint = Color.White, modifier = Modifier.size(45.dp))
-            }
-            IconButton(onClick = onPlayPause, modifier = Modifier.size(95.dp)) {
-                Icon(
-                    if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    if (playing) "暂停" else "播放",
-                    tint = Color.White, modifier = Modifier.size(75.dp),
-                )
-            }
-            IconButton(onClick = { onSeekBy(10_000) }, modifier = Modifier.size(70.dp)) {
-                Icon(Icons.Rounded.Forward10, "快进 10 秒", tint = Color.White, modifier = Modifier.size(45.dp))
-            }
+        /**
+         * 用户口径（2026-11-27）**中央只留播放/暂停，去掉左右 ±10 秒按钮**。
+         *
+         * 原来的 70dp 快退/快进图标占掉了中央一大块，用户要求去掉。
+         * 快进快退能力没丢，还有两个入口：
+         *  · 双击九宫格（左上后退 10 秒 / 右上快进 10 秒，见 PlayerGestures）
+         *  · 底栏进度条拖动
+         * `setSeekBackIncrementMs/setSeekForwardIncrementMs`（PlayerFactory）也没动，
+         * 那是耳机线控和系统媒体控制用的，和界面按钮无关。
+         */
+        IconButton(onClick = onPlayPause, modifier = Modifier.align(Alignment.Center).size(95.dp)) {
+            Icon(
+                if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                if (playing) "暂停" else "播放",
+                tint = Color.White, modifier = Modifier.size(75.dp),
+            )
         }
 
         // ===== 底栏：剧名+集号 / 进度条 / 功能图标 =====

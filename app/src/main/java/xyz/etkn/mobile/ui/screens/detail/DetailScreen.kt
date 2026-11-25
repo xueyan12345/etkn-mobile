@@ -270,37 +270,6 @@ private fun DetailContent(
                     item(key = "versions") { VersionRow(item.mediaSources, data.selectedSource, vm::selectSource) }
                 }
                 item(key = "info", contentType = "info") { Swap(data) { InfoBlock(it.item, centered) } }
-                /**
-                 * 用户口径（2026-11-24）**新增「季」横排卡区（照参考图）**。
-                 *
-                 * 参考图结构：
-                 *  · 区块标题「季」（一个字，左对齐）
-                 *  · 横向一行排列竖版季卡，可左右滑
-                 *  · 单卡：竖版海报，右上角集数角标、右下角评分，海报下方一行季名
-                 *  · 卡片尺寸 = 演职人员卡（104dp 宽、0.78 竖版比例）
-                 *
-                 * 只在剧集层（series）且有多季时显示；
-                 * 单集页（episode）不显示，避免和「剧集」条重复。
-                 */
-                if (item.isSeries && data.seasons.size > 1) {
-                    item(key = "seasons", contentType = "seasons") {
-                        Column(Modifier.padding(top = Etkn.space.section)) {
-                            SectionHeader("季", showChevron = false)
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = Etkn.space.screen),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                items(data.seasons, key = { it.id }) { season ->
-                                    SeasonCard(
-                                        season = season,
-                                        selected = season.id == episodes.seasonId,
-                                        onClick = { seriesId?.let { vm.selectSeason(it, season.id) } },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
                 if (seriesId != null && (item.isSeries || item.isSeason || item.isEpisode)) {
                     item(key = "episodes", contentType = "episodes") {
                         EpisodeShelf(
@@ -323,6 +292,36 @@ private fun DetailContent(
                 }
                 // 用户口径（2026-11-23）：先「章节」后「演职人员」，和参考图顺序一致。
                 ChaptersSection(item, nav)
+                /**
+                 * 用户口径（2026-11-27）**季卡区搬到「演职人员」上方**。
+                 *
+                 * 位置口径（用户原话）：「放在演员的上方、剧集列表的下方」。
+                 * 实际顺序：剧集列表 → 章节 → 季卡 → 演职人员
+                 *（章节区夹在剧集列表和演职人员之间，所以季卡落在章节之后）。
+                 *
+                 * 同时把它从「只有剧集层显示」放宽到「单集页也显示」——
+                 * 因为剧集层现在会自动跳到具体某一集（见 DetailViewModel.load），
+                 * 若不加这条，进到单集页后季卡就没了，用户也就没法换季。
+                 */
+                if ((item.isSeries || item.isSeason || item.isEpisode) && data.seasons.size > 1) {
+                    item(key = "seasons", contentType = "seasons") {
+                        Column(Modifier.padding(top = Etkn.space.section)) {
+                            SectionHeader("季", showChevron = false)
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = Etkn.space.screen),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                items(data.seasons, key = { it.id }) { season ->
+                                    SeasonCard(
+                                        season = season,
+                                        selected = season.id == episodes.seasonId,
+                                        onClick = { seriesId?.let { vm.selectSeason(it, season.id) } },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 if (item.people.isNotEmpty()) {
                     item(key = "people") {
                         Column(Modifier.padding(top = Etkn.space.section)) {
@@ -645,7 +644,21 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                  *
                  * 层级：series / movie / episode 显示右栏；season 不显示（右栏留空，左栏照旧）。
                  */
-                val showTech = item.isSeries || item.isMovie || item.isEpisode
+                /**
+                 * 用户口径（2026-11-27）**家庭视频库（homevideos）的条目也要显示这三行**。
+                 *
+                 * 修的 bug：LTX破解 / 推送下载 等库的 `CollectionType = homevideos`，
+                 * 里面条目的 `Type` 是 **`Video`**，不是 `Movie`。
+                 * 原来这个判据只写了 series / movie / episode 三种，
+                 * 于是 `Video` 类型的片子右栏三条技术信息整块不渲染 —— 用户看到的就是
+                 * 「不知道为啥不显示媒体信息」。
+                 *
+                 * 判定改成「只要有可播放的视频版本就显示」，不再枚举类型：
+                 *  · Series / Season 取 target（下一集）的版本
+                 *  · Movie / Video / Episode / MusicVideo 取自己选中的版本
+                 * 源为空（还没刮削出 mediainfo）时下面 techSrc != null 会兜住，不会显示空行。
+                 */
+                val showTech = item.isPlayable || item.isSeries || item.isSeason
                 val techSrc = techSource(data)
                 if (showTech && techSrc != null) {
                     /**

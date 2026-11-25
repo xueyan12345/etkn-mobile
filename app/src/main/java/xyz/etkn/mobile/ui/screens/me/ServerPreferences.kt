@@ -96,7 +96,6 @@ internal fun ServerPlaybackPreferences() {
 
     PriorityRow("默认音轨", current.audio, current.globalAudio, AudioLanguages) { editing = "audio_lang_priority" }
     PriorityRow("默认字幕", current.subtitles, current.globalSubtitles, SubtitleKinds) { editing = "subtitle_priority" }
-    SwitchRow("最新列表隐藏已观看", current.hideWatchedLatest) { save("hide_watched_latest", JsonPrimitive(it)) }
 
     when (editing) {
         "audio_lang_priority" -> PrioritySheet("默认音轨", current.audio.orEmpty(), AudioLanguages, onDismiss = { editing = null }) { picked ->
@@ -106,6 +105,35 @@ internal fun ServerPlaybackPreferences() {
         "subtitle_priority" -> PrioritySheet("默认字幕", current.subtitles.orEmpty(), SubtitleKinds, onDismiss = { editing = null }) { picked ->
             editing = null
             save("subtitle_priority", picked.toJson())
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-27）**「最新列表隐藏已观看」单独抽出来**，供「媒体库设置」板块使用。
+ *
+ * 为什么必须拆开：它存在**服务端**（`playback_preferences` 的 `hide_watched_latest`），
+ * 而 `ServerPlaybackPreferences()` 里另外两项（默认音轨、默认字幕）是播放相关，
+ * 应该留在「播放」页。整块搬走会把音轨字幕也带走，所以单独提供一个入口。
+ *
+ * 功能链路（确认过是真的生效，不是摆设）：
+ *  · 读：`clientPreferences()` → `PlaybackPreferences.from()` → `hideWatchedLatest`
+ *  · 写：`savePlaybackPreference("hide_watched_latest", JsonPrimitive(bool))`
+ *  · 生效：服务端按此过滤「最新」列表，客户端拉 `Items/Latest` 时由服务端返回已过滤结果
+ */
+@Composable
+internal fun ServerHideWatchedLatest() {
+    val graph = LocalContext.current.graph
+    val scope = rememberCoroutineScope()
+    var prefs by remember { mutableStateOf<PlaybackPreferences?>(null) }
+    LaunchedEffect(Unit) {
+        prefs = runCatching { PlaybackPreferences.from(graph.api.clientPreferences()) }.getOrNull()
+    }
+    val current = prefs ?: return
+    SwitchRow("最新列表隐藏已观看", current.hideWatchedLatest) {
+        scope.launch {
+            runCatching { graph.api.savePlaybackPreference("hide_watched_latest", JsonPrimitive(it)) }
+            prefs = runCatching { PlaybackPreferences.from(graph.api.clientPreferences()) }.getOrNull() ?: prefs
         }
     }
 }

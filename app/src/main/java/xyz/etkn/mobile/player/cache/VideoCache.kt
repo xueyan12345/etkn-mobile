@@ -130,6 +130,40 @@ object VideoCache {
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 
+    /**
+     * 用户口径（2026-11-27）**mpv 代理必须用只读数据源，绝不能再起第二个写入者**。
+     *
+     * 修的 bug（日志实证 v1.9.0）：
+     * ```
+     * 05:50:29  engine=mpv proxy uri=http://127.0.0.1:37335/item/item-52352
+     * 05:50:29  mpv: [curl:error] HTTP error 502      ← 代理打不开
+     * 05:50:29  playback error on mpv ERROR_CODE_IO_UNSPECIFIED
+     * 05:50:34  手动切 ExoPlayer → ready after 6099 ms  ← 直连就正常
+     * ```
+     * 片子是 `Video:mpeg4`（老编码），自动选核走 mpv；代理内部我塞的是
+     * **带写入**的 CacheDataSource，而同一时刻磁盘预缓存（preloadAhead）也在写同一个
+     * cache key → SimpleCache 不允许两个写入者写同一区间 → 502。
+     *
+     * 现在分工死守一条线：
+     *  · 播放（Exo 直连 / mpv 代理）→ **只读**（命中缓存就本地给，没命中走上游但不落盘）
+     *  · 磁盘缓存写入 → **只有** preloadAhead 那一条后台流
+     * 这样谁都不会和别人抢，也不会再有 502。
+     */
+    fun readOnlyDataSource(
+        context: android.content.Context,
+        upstream: DataSource.Factory,
+        maxBytes: Long,
+    ): DataSource.Factory {
+        val store = get(context, maxBytes) ?: return upstream
+        return CacheDataSource.Factory()
+            .setCache(store)
+            .setUpstreamDataSourceFactory(upstream)
+            .setCacheKeyFactory(keyFactory)
+            // 只读：不提供写入 sink，CacheDataSource 就不会往缓存里写
+            .setCacheWriteDataSinkFactory(null)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    }
+
     /** 供 mpv 代理用的同一个缓存实例 + 同样的 key 规则。 */
     fun cacheForProxy(context: android.content.Context, maxBytes: Long): SimpleCache? =
         get(context, maxBytes)

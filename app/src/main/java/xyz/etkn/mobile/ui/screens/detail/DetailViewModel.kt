@@ -64,6 +64,9 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
     }
 
     /** Shows another episode of the same series on this page. */
+    /** 剧集层只自动落到具体集一次，之后用户自己选集不再被拽回。 */
+    private var jumpOnce = false
+
     fun show(episodeId: String) {
         if (episodeId == id) return
         shown.value = episodeId
@@ -104,6 +107,27 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                 }
                 // A newer episode was picked while this one loaded.
                 if (requested != id) return@launch
+                /**
+                 * 用户口径（2026-11-27）**剧集层不再单独停留，直接落到具体某一集**。
+                 *
+                 * 原来是两种形态：
+                 *  · 没播过 → 剧集详情页，按钮「播放 第1季第1集」
+                 *  · 有记录 → 剧集详情页，按钮「继续播放 26:26」+「从头播放」
+                 *
+                 * 用户要求合成一种：点开剧集直接进「那一集」的详情页 ——
+                 * 有播放记录就进正在看的那集，没有就进第1季第1集。
+                 * 这样季卡区也能跟着进到单集页（原来只在剧集页显示，搬过去才不丢）。
+                 *
+                 * 只跳一次（jumpOnce），跳过去之后用户自己点其他集不再被拽回来。
+                 * 电影/Video 走不到这里（seriesId 为 null）。
+                 */
+                val jumpTo = if (data.item.isSeries && !jumpOnce && data.target != null) data.target else null
+                if (jumpTo != null && jumpTo.id != data.item.id) {
+                    jumpOnce = true
+                    Load.Ready(data)
+                    show(jumpTo.id)
+                    return@launch
+                }
                 _state.value = Load.Ready(data)
                 val seasonForEpisodes = when {
                     data.item.isSeason -> data.item.id

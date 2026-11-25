@@ -79,7 +79,19 @@ import androidx.compose.runtime.LaunchedEffect
 import xyz.etkn.mobile.data.settings.HiddenLibrariesPerAccount
 import kotlinx.coroutines.withContext
 
-enum class SettingsPage(val title: String) { Appearance("外观"), Playback("播放"), Danmaku("弹幕"), Update("检查更新") }
+enum class SettingsPage(val title: String) {
+    Appearance("外观"),
+    /**
+     * 用户口径（2026-11-27）**新增「媒体库设置」板块**，位置在外观和播放之间。
+     *
+     * 从「外观」搬过来：首页推荐、隐藏媒体库（都按账号独立）。
+     * 从「播放」搬过来：最新列表隐藏已观看（服务端存）、入库与获取通知（本地存）。
+     */
+    MediaLibrary("媒体库设置"),
+    Playback("播放"),
+    Danmaku("弹幕"),
+    Update("检查更新"),
+}
 
 @Composable
 fun SettingsScreen(page: SettingsPage) {
@@ -118,40 +130,47 @@ fun SettingsScreen(page: SettingsPage) {
                                 (context as? Activity)?.recreate()
                             }
                         }
-                        // 用户口径（2026-11-23）：首页推荐按账号独立设置，只影响当前登录的这个账号。
-                        val sessionKey = (graph.sessions.state.collectAsStateWithLifecycle().value as? SessionState.SignedIn)?.session?.key
-                        val heroNow = remember(sessionKey, settings.heroMode) { HeroModePerAccount.read(context, sessionKey, settings.heroMode) }
-                        ChoiceRow("首页推荐", HeroMode.entries, heroNow, { it.label }) {
-                            // 用户口径（2026-11-23）：只写当前账号，绝不改全局默认值。
-                            // 原来这里同时 setHeroMode(it) 会把全局值也改掉，
-                            // 于是没单独设置过的账号跟着一起变 —— 按账号独立就失效了。
-                            HeroModePerAccount.write(context, sessionKey, it)
-                            (context as? Activity)?.recreate()
-                        }
-                        /**
-                         * 用户口径（2026-11-23）**「隐藏媒体库」开关**（外观页）。
-                         *
-                         * 打开 = 首页最上面那一行「媒体库」模块整块不显示，
-                         * 继续播放 / 最新媒体库 / 其他区块照常。
-                         * 按账号独立（同「首页推荐」），不写全局默认值。
-                         */
-                        val hiddenLibs = remember(sessionKey) {
-                            HiddenLibrariesPerAccount.read(context, sessionKey)
-                        }
-                        var hiddenLibsNow by remember(sessionKey) { mutableStateOf(hiddenLibs) }
-                        SwitchRow(
-                            "隐藏媒体库",
-                            hiddenLibsNow,
-                        ) {
-                            hiddenLibsNow = it
-                            HiddenLibrariesPerAccount.write(context, sessionKey, it)
-                            (context as? Activity)?.recreate()
-                        }
                         val wide = LocalWindowLayout.current.wide
                         if (wide) {
                             ChoiceRow("导航位置", NavPosition.entries, settings.navPosition, { it.label }) { scope.launch { graph.settings.setNavPosition(it) } }
                         }
                         TabPicker(settings, side = wide && settings.navPosition == NavPosition.Side) { scope.launch { graph.settings.setTabs(it) } }
+                    }
+                    /**
+                     * 用户口径（2026-11-27）**新板块：媒体库设置**（位置 = 外观和播放之间）。
+                     *
+                     * 内容全部来自原「外观」和原「播放」，搬过来后功能必须照旧生效：
+                     *  · 首页推荐 —— 按账号独立（HeroModePerAccount），改完要 recreate 让首页重排
+                     *  · 隐藏媒体库 —— 按账号独立（HiddenLibrariesPerAccount），改完 recreate
+                     *  · 最新列表隐藏已观看 —— 存服务端 playback_preferences
+                     *  · 入库与获取通知 —— 存本地 DataStore，生效点 MainShell 的 IngestNoticesEffect
+                     */
+                    SettingsPage.MediaLibrary -> {
+                        val mlContext = LocalContext.current
+                        val mlSessionKey = (graph.sessions.state.collectAsStateWithLifecycle().value as? SessionState.SignedIn)?.session?.key
+                        val heroNow = remember(mlSessionKey, settings.heroMode) {
+                            HeroModePerAccount.read(mlContext, mlSessionKey, settings.heroMode)
+                        }
+                        ChoiceRow("首页推荐", HeroMode.entries, heroNow, { it.label }) {
+                            // 只写当前账号，绝不改全局默认值（沿用 11-23 的口径）
+                            HeroModePerAccount.write(mlContext, mlSessionKey, it)
+                            (mlContext as? Activity)?.recreate()
+                        }
+                        val hiddenLibs = remember(mlSessionKey) {
+                            HiddenLibrariesPerAccount.read(mlContext, mlSessionKey)
+                        }
+                        var hiddenLibsNow by remember(mlSessionKey) { mutableStateOf(hiddenLibs) }
+                        SwitchRow("隐藏媒体库", hiddenLibsNow) {
+                            hiddenLibsNow = it
+                            HiddenLibrariesPerAccount.write(mlContext, mlSessionKey, it)
+                            (mlContext as? Activity)?.recreate()
+                        }
+                        /** 服务端存的开关，见 ServerPreferences.kt 的 ServerHideWatchedLatest。 */
+                        ServerHideWatchedLatest()
+                        /** 本地存的通知开关，生效点 MainShell.kt 的 IngestNoticesEffect。 */
+                        SwitchRow("入库与获取通知", settings.ingestNotices) {
+                            scope.launch { graph.settings.setIngestNotices(it) }
+                        }
                     }
                     SettingsPage.Playback -> {
                         ChoiceRow("播放内核", PlayerEngine.entries, settings.engine, { it.label }) { scope.launch { graph.settings.setEngine(it) } }
@@ -161,7 +180,6 @@ fun SettingsScreen(page: SettingsPage) {
                         SwitchRow("自动播放下一集", settings.autoPlayNext) { scope.launch { graph.settings.setAutoPlayNext(it) } }
                         SwitchRow("后台播放", settings.backgroundPlay) { scope.launch { graph.settings.setBackgroundPlay(it) } }
                         ServerPlaybackPreferences()
-                        SwitchRow("入库与获取通知", settings.ingestNotices) { scope.launch { graph.settings.setIngestNotices(it) } }
                         // 用户口径（2026-11-23）：照参考图的缓存设置六项
                         CacheSettings(settings)
                     }
@@ -343,7 +361,7 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
         }
         usage = xyz.etkn.mobile.player.cache.VideoCache.usedBytes()
     }
-    SwitchRow("预加载", settings.preloadNext) { scope.launch { graph.settings.setPreloadNext(it) } }
+    SwitchRow("预加载下一集", settings.preloadNext) { scope.launch { graph.settings.setPreloadNext(it) } }
     NumberRow("最大缓存大小", settings.cacheMemoryMb, "MB", listOf(200, 400, 600, 800, 1200)) {
         scope.launch { graph.settings.setCacheMemoryMb(it) }
     }

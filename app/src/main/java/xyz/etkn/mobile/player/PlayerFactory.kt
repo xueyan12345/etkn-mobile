@@ -340,7 +340,17 @@ object PlayerFactory {
              * 自己起一条写入流，不依赖播放器。
              */
             VideoCache.rememberUpstream(plainHttp)
-            VideoCache.dataSource(
+            /**
+             * 用户口径（2026-11-27）**播放器只读，写入只归 preloadAhead**。
+             *
+             * 原来这里用带写入的 `dataSource`，于是播放器和后台预缓存是**两个写入者**
+             * 写同一个 cache key（mpv 那次直接 502）。SimpleCache 不支持两个写入者，
+             * 现在统一：播放侧只读，写盘只走那一条后台流。
+             *
+             * 好处：命中缓存就本地给（拖回去秒开），没命中就走上游，
+             * 但不再落盘 —— 落盘由预缓存按「播放位置往后 min(字节,时长)」负责。
+             */
+            VideoCache.readOnlyDataSource(
                 context = context,
                 upstream = plainHttp,
                 maxBytes = cacheMaxBytes,

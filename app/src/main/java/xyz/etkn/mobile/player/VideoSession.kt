@@ -1190,8 +1190,12 @@ class VideoSession(
         val engineNow = engine
         val cacheMaxBytes = settings.cacheDiskGb.coerceIn(0, 200).toLong() * 1024L * 1024L * 1024L
         val playUri: android.net.Uri = if (cacheMaxBytes > 0 && engineNow == Engine.Mpv) {
+            /**
+             * 用户口径（2026-11-27）**代理用只读数据源**（修 502）。
+             * 写入只由 preloadAhead 一条流负责，见 VideoCache.readOnlyDataSource 的说明。
+             */
             val port = xyz.etkn.mobile.player.cache.LocalProxy.start(
-                xyz.etkn.mobile.player.cache.VideoCache.dataSource(
+                xyz.etkn.mobile.player.cache.VideoCache.readOnlyDataSource(
                     context = context,
                     upstream = xyz.etkn.mobile.player.cache.httpFactory(
                         graph.http.media, graph.identity.userAgent,
