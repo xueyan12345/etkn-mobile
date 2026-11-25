@@ -743,8 +743,8 @@ class VideoSession(
         val id = item?.id ?: return 0L
         if (currentLength <= 0) return 0L
         return runCatching {
-            // 用官方缓存里真实落盘的连续字节数
-            xyz.etkn.mobile.player.cache.VideoCache.availableBytesFrom(id, 0L, currentLength)
+            // 用官方 getCachedBytes（CacheWriter 自己统计进度用的就是它）
+            xyz.etkn.mobile.player.cache.VideoCache.cachedBytesFrom(id, 0L, currentLength)
         }.getOrDefault(0L)
     }
 
@@ -1603,13 +1603,13 @@ class VideoSession(
                     } else 0L
                     val aheadB = if (totalB > 0 && pb < totalB) {
                         xyz.etkn.mobile.player.cache.VideoCache
-                            .availableBytesFrom(currentItem.id, pb, totalB - pb)
+                            .cachedBytesFrom(currentItem.id, pb, totalB - pb)
                     } else 0L
                     android.util.Log.i(
                         "ETKN-Cache",
                         "calc pos=${posMs / 1000}s dur=${durMs / 1000}s(arg=${durationMs / 1000}/srv=${serverDurationMs / 1000}/ply=${(player?.duration ?: 0L) / 1000}) " +
                             "total=${totalB / 1048576}MB posB=${pb / 1048576}MB aheadB=${aheadB / 1048576}MB " +
-                            "keys=${xyz.etkn.mobile.player.cache.VideoCache.keys().size}",
+                            "disk=${xyz.etkn.mobile.player.cache.VideoCache.usedBytes() / 1048576}MB",
                     )
                 }
                 /**
