@@ -1097,7 +1097,33 @@ object PlaybackCache {
      * 老版本积累的超额缓存（12GB+）不会自己消失，得先收一次口。
      */
     fun trimNow(context: Context, settings: Settings) {
-        workScope.launch { runCatching { trim(context, settings) } }
+        workScope.launch {
+            runCatching { trim(context, settings) }
+            /**
+             * 用户口径（2026-11-27）**清掉旧版遗留的整文件缓存，释放磁盘**。
+             *
+             * 缓存已经全部改成「按块存」（BlockStore）。旧的 mediafiles/ 目录里
+             * 那些 item-xxxxx / item-xxxxx.part 整文件再也用不到了，
+             * 却还占着空间（实测有 10 个文件约 10GB）。
+             *
+             * 只清一次（用 SharedPreferences 标记），避免每次进播放器都扫目录。
+             */
+            runCatching {
+                val prefs = context.getSharedPreferences("etkn_cache_migrate", android.content.Context.MODE_PRIVATE)
+                if (!prefs.getBoolean("legacy_purged", false)) {
+                    val dir = java.io.File(context.cacheDir, "mediafiles")
+                    val freed = dir.listFiles()?.sumOf { it.length() } ?: 0L
+                    if (freed > 0) {
+                        dir.listFiles()?.forEach { runCatching { it.delete() } }
+                        android.util.Log.i(
+                            "ETKN-Cache",
+                            "purged legacy cache ${freed / 1048576}MB (moved to block cache)",
+                        )
+                    }
+                    prefs.edit().putBoolean("legacy_purged", true).apply()
+                }
+            }
+        }
     }
 
     /** 退出播放 / 切集：停掉所有缓存下载（已写好的部分保留，下次续拉）。 */

@@ -380,7 +380,7 @@ internal fun EpisodeCard(
             Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(Corner.card)
                 .then(
                     if (current) {
-                        Modifier.border(2.dp, MaterialTheme.colorScheme.primary, Corner.card)
+                        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, Corner.card)
                     } else Modifier
                 ),
         ) {
@@ -414,7 +414,8 @@ internal fun EpisodeCard(
             overflow = TextOverflow.Ellipsis,
             color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             // 用户口径（2026-11-27）：选中的集号加粗，配合颜色一起更明显
-            fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+            // 用户口径（2026-11-27）：选中要更明显 —— Bold 换成 ExtraBold
+            fontWeight = if (current) FontWeight.ExtraBold else FontWeight.Normal,
             modifier = Modifier.padding(top = 6.dp),
         )
     }

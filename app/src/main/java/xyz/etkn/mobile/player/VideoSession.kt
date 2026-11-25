@@ -675,6 +675,28 @@ class VideoSession(
         return if (target == PlayerEngine.Exo) "Exo" else "mpv"
     }
 
+    /**
+     * 用户口径（2026-11-27）**缓存上限：当前位置往后 min(字节阈值, 时长阈值)**。
+     *
+     * 这是「两个条件相辅相成、谁先到谁停」的唯一实现点。
+     *
+     * 参数都在实时变化（播放位置前进、时长要等解析），所以做成函数，
+     * 每次算都用当下的真实值 —— 改设置里的 400/600/800MB 立刻生效。
+     *
+     * @return 允许缓存到的绝对字节位置；-1 = 目前算不出来（时长/总长未知）。
+     */
+    private fun computeCacheLimit(posMs: Long, durMs: Long, totalBytes: Long): Long {
+        if (totalBytes <= 0 || durMs <= 0) return -1L
+        val bySize = settings.cacheMemoryMb.coerceIn(32, 8192).toLong() * 1024L * 1024L
+        val seconds = settings.cacheMemorySeconds.coerceIn(30, 7200).toLong()
+        // 时长阈值换算成字节（按这一集的真实码率）
+        val byTime = (totalBytes.toDouble() * seconds * 1000.0 / durMs.toDouble()).toLong()
+        val span = minOf(bySize, byTime)            // 谁小谁生效
+        // 起点 = 当前播放位置（换算成字节）
+        val anchor = (totalBytes.toDouble() * posMs.coerceAtLeast(0L).toDouble() / durMs.toDouble()).toLong()
+        return (anchor + span).coerceAtMost(totalBytes)
+    }
+
     private fun engineFor(chosen: MediaSource, disc: Boolean): Engine {
         forcedEngine?.let { return it }
         // 用户口径（2026-11-27）：disc 恒为 false（ISO 已移除），这行留着只为兼容旧调用点。
@@ -1043,14 +1065,17 @@ class VideoSession(
             val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: startMs.coerceAtLeast(0L)
             val durMs = player?.duration?.coerceAtLeast(0L) ?: 0L
             val totalB = currentLength
-            val limitB = if (totalB > 0 && durMs > 0) {
-                val bySize = settings.cacheMemoryMb.coerceIn(32, 8192).toLong() * 1024L * 1024L
-                val seconds = settings.cacheMemorySeconds.coerceIn(30, 7200).toLong()
-                val byTime = (totalB.toDouble() * seconds * 1000.0 / durMs.toDouble()).toLong()
-                val span = minOf(bySize, byTime)
-                val anchor = (totalB.toDouble() * posMs.toDouble() / durMs.toDouble()).toLong()
-                (anchor + span).coerceAtMost(totalB)
-            } else -1L
+            /**
+             * 用户口径（2026-11-27）**必须在能算出真实上限时才登记，算不出就等下一次**。
+             *
+             * 修的 bug（日志实证：`proxy limit item=item-24847 pos=0s span=无限`）：
+             * 起播那一刻 duration 还是 0，于是走 else 分支得到 -1（=不限制），
+             * 结果是「阈值完全不生效」，一路下到 Exo 的 max 才停。
+             *
+             * 现在：算不出来就传 -1 表示「这一轮先别设限」，
+             * 但会在 tickCache 里每 5 秒重算并重新登记（见 cacheLimitBytes 计算处）。
+             */
+            val limitB = computeCacheLimit(posMs, durMs, totalB)
             xyz.etkn.mobile.player.cache.LocalProxy.register(current.id, url, currentLength, limitB)
             android.util.Log.i(
                 TAG,
@@ -1203,6 +1228,22 @@ class VideoSession(
             trimmedThisItem = true
             PlaybackCache.trimNow(graph.app, settings)
         }
+        /**
+         * 用户口径（2026-11-27）**持续播放时也要持续淘汰**，不能只在进播放器时查一次。
+         *
+         * 用户原话：
+         *  「持续播放，你那边持续缓存，当达到阈值之后，
+         *    就自动把最开始的那个数据一点点往下挤」
+         *
+         * 所以每次 tick 都按「最大磁盘缓存」检查一次。
+         * trim 内部是先算总量、没超就直接返回，开销很小（只 stat 目录）。
+         * 传入当前 itemId 作为保护，绝不删正在播的这一集。
+         */
+        runCatching {
+            val capBytes = settings.cacheDiskGb.coerceIn(1, 200).toLong() * 1024L * 1024L * 1024L
+            xyz.etkn.mobile.player.cache.BlockStore.get(graph.app)
+                .trim(capBytes, setOf(currentItem.id))
+        }
         // 两个阈值都是 0 = 不做缓存
         val cacheWindowOn = settings.cacheMemoryMb > 0 || settings.cacheMemorySeconds > 0
         if (!cacheWindowOn) return
@@ -1256,6 +1297,26 @@ class VideoSession(
          *  ② 剩余时长不足 [PRELOAD_LEAD_MS]（兜底，保证临到片尾一定开始）
          * 并且加防重入：本轮已经在铺就不再发起。
          */
+        /**
+         * 用户口径（2026-11-27）**每 5 秒按当前位置重算缓存上限并重新登记**。
+         *
+         * 这是「窗口跟着播放前移」和「改设置立刻生效」的实现点：
+         *  · 播放位置前进 → 上限右移 → 继续往后下
+         *  · 设置里 400 改 600 → 下一次 tick 就用新值
+         *  · 起播时 duration 还是 0 算不出来 → 等这里第一次拿到就补上
+         *
+         * 不做这一步的话，起播那一次登记的值（可能是 -1 或不含位置偏移）
+         * 会一直用下去 —— 这正是之前「阈值完全不生效」的原因。
+         */
+        if (durationMs > 0 && currentLength > 0) {
+            val liveLimit = computeCacheLimit(positionMs, durationMs, currentLength)
+            if (liveLimit > 0) {
+                xyz.etkn.mobile.player.cache.LocalProxy.register(
+                    currentItem.id, cur, currentLength, liveLimit,
+                )
+            }
+        }
+
         val nearEnd = durationMs > 0 && (durationMs - positionMs) <= PRELOAD_LEAD_MS
         val shouldPreload = settings.preloadNext && (PlaybackCache.currentCompleteFlag() || nearEnd)
 
@@ -1315,7 +1376,44 @@ class VideoSession(
              * 本地有块就是满的，缺的会边拉边补，天然不会出现
              * 「进度追上缓冲」这种矛盾。
              */
-            val cachedMs = player?.bufferedPosition?.coerceAtLeast(0L) ?: 0L
+            /**
+             * 用户口径（2026-11-27）**缓冲条 = 真实落盘量，不是播放器请求水位**。
+             *
+             * 这是第 N 次修正，也是唯一正确的数据源。
+             *
+             * 用户原话：
+             *  「这个缓冲条是因为我只能通过缓冲条来判断它是不是真正的已经缓存到本地了……
+             *    你现在光给我瞎画这个小动画，那你不掩耳盗铃吗」
+             *
+             * 之前用的 bufferedPosition 是「已经请求进内存的水位」，
+             * 而真实落盘可能只到一半 —— 两者差值就是虚假区间：
+             * 条上看着有、拖过去却卡。
+             *
+             * 现在：
+             *  · 从播放位置换算成字节偏移
+             *  · 查 BlockStore 里「从这个偏移往后连续有多少完整块」
+             *  · 换算回毫秒 → 这才是能秒开的真实范围
+             *  · 一段都没有（0）就返回当前位置，条不画
+             */
+            val cachedMs = run {
+                val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
+                val durMs = if (durationMs > 0) durationMs else (player?.duration ?: 0L)
+                val totalB = currentLength
+                if (durMs <= 0 || totalB <= 0 || posMs <= 0) {
+                    posMs
+                } else {
+                    val posBytes = (totalB.toDouble() * posMs.toDouble() / durMs.toDouble()).toLong()
+                    val ahead = xyz.etkn.mobile.player.cache.BlockStore
+                        .get(graph.app)
+                        .cachedBytesAhead(currentItem.id, posBytes, totalB)
+                    if (ahead <= 0) {
+                        posMs
+                    } else {
+                        val aheadMs = (durMs.toDouble() * ahead.toDouble() / totalB.toDouble()).toLong()
+                        posMs + aheadMs
+                    }
+                }
+            }
             /**
              * 用户口径（2026-11-24）**气泡不亮的根因就在这里**。
              *

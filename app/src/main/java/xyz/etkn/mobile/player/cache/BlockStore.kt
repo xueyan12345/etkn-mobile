@@ -118,6 +118,18 @@ class BlockStore(
     }
 
     /**
+     * 用户口径（2026-11-27）**缓冲条的唯一数据源：从播放位置往后真实连续落盘了多少字节**。
+     *
+     * 这是本次修复的核心 —— 条只能画「本地真的有数据」的部分。
+     *
+     * 为什么不能用播放器的 bufferedPosition：
+     *  那是「已经请求到内存里的水位」，不是「已经写进磁盘」。
+     *  两者差值就是虚假区间：条上看着有、拖过去却卡。
+     */
+    fun cachedBytesAhead(itemId: String, positionBytes: Long, totalBytes: Long): Long =
+        contiguousBytesFrom(itemId, positionBytes, totalBytes)
+
+    /**
      * 按偏移读一段（跨块）。返回实际读到的字节数；0 表示这段没有。
      *
      * ⚠️ 用户口径（2026-11-27）**必须支持 bufferOffset**。
