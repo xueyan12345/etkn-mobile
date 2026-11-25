@@ -1426,13 +1426,27 @@ class VideoSession(
              * 所以这里只保留「下一集预加载」这一个能力（它仍然有用：
              * 提前把下一集头部铺好，点下一集能秒开）。
              */
-            val job = PlaybackCache.preloadNextOnly(
-                client = graph.http.media,
-                context = graph.app,
-                settings = settings,
-                currentEpisodeId = currentItem.id,
-                next = nextInfo,
-            )
+            /**
+             * 用户口径（2026-11-27）**必须是 `if (shouldPreload)` 才铺**。
+             *
+             * 修的 bug（用户截图实证）：「刚播放就把下一集给预加载出来了？」
+             * 1:52 / 33:04 才刚开始播，下一集就已经在下。
+             *
+             * 根因：这里漏了判断条件 —— 无条件调用 preloadNextOnly，
+             * 而 tickCache 每秒跑一次，所以起播第一秒就开始铺下一集。
+             * shouldPreload 明明算出来了却没用上。
+             *
+             * 现在：缓冲到片尾 或 剩余不足 5 分钟 才铺。
+             */
+            val job = if (shouldPreload) {
+                PlaybackCache.preloadNextOnly(
+                    client = graph.http.media,
+                    context = graph.app,
+                    settings = settings,
+                    currentEpisodeId = currentItem.id,
+                    next = nextInfo,
+                )
+            } else null
             job?.join()
             /**
              * 用户口径（2026-11-24）**缓冲条数据源**。
@@ -1592,22 +1606,20 @@ class VideoSession(
                     .firstOrNull { it.markerType == "IntroEnd" }
                     ?.startTicks?.div(TICKS_PER_MS) ?: -1L
                 nextDurationMs = source.runTimeTicks.takeIf { it > 0 }?.div(TICKS_PER_MS) ?: 0L
-                PlaybackCache.pipeline(
-                    client = graph.http.media,
-                    context = graph.app,
-                    settings = settings,
-                    currentEpisodeId = current.id,
-                    currentUrl = currentUrl ?: return@runCatching,
-                    currentPositionMs = player?.currentPosition ?: 0L,
-                    currentDurationMs = player?.duration?.takeIf { it > 0 } ?: 0L,
-                    currentLength = currentLength,
-                    next = PlaybackCache.NextEpisode(
-                        itemId = nextItem.id,
-                        url = url,
-                        introEndMs = nextIntroEndMs,
-                        durationMs = nextDurationMs,
-                    ),
-                )
+                /**
+                 * 用户口径（2026-11-27）**这里只负责「取下一集直链」，绝不在这里开始预加载**。
+                 *
+                 * 修的 bug（用户截图实证）：「刚播放就把下一集给预加载出来了？」
+                 * —— 1:52 / 33:04 刚开始播，下一集就已经在下了。
+                 *
+                 * 根因：这里原来直接调 PlaybackCache.pipeline(...)，
+                 * 而 tickCache 是每秒调一次、只要 nextUrl==null 就会进来，
+                 * 于是起播那一秒就绕过了 shouldPreload 判断，立刻开始铺下一集。
+                 *
+                 * 现在：本函数只取直链 + 片头/时长信息，写进 nextUrl / nextIntroEndMs。
+                 * 真正什么时候铺，由 tickCache 里的 shouldPreload 统一决定
+                 * （缓冲到片尾 或 剩余不足 5 分钟）。
+                 */
             }
             nextFetching = false
         }
