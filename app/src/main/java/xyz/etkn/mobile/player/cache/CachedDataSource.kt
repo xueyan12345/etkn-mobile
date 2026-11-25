@@ -240,4 +240,3 @@ class CachedDataSource(
 fun httpFactory(client: OkHttpClient, userAgent: String): HttpDataSource.Factory =
     androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(client)
         .setUserAgent(userAgent)
-        .setAllowCrossProtocolRedirects(true)

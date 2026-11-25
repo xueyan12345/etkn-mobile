@@ -231,6 +231,8 @@ object PlayerFactory {
                 object : DataSource {
                     private var active: DataSource? = null
                     private var isFile = false
+                    /** 记住 Exo 传进来的监听器，每次新建数据源时立刻挂上（否则带宽统计丢失）。 */
+                    private val listeners = mutableListOf<androidx.media3.datasource.TransferListener>()
 
                     override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
                         val wantFile = dataSpec.uri.scheme.equals("file", true)
@@ -239,6 +241,7 @@ object PlayerFactory {
                             runCatching { cur?.close() }
                             active = if (wantFile) file.createDataSource() else cached.createDataSource()
                             isFile = wantFile
+                            listeners.forEach { runCatching { active?.addTransferListener(it) } }
                         }
                         return active!!.open(dataSpec)
                     }
@@ -249,6 +252,14 @@ object PlayerFactory {
                     override fun getUri(): android.net.Uri? = active?.uri
                     override fun getResponseHeaders(): Map<String, List<String>> =
                         active?.responseHeaders ?: emptyMap()
+                    /**
+                     * 用户口径（2026-11-27）：DataSource 接口要求实现这个。
+                     * 转发给当前活跃的数据源，Exo 的带宽统计才能正常工作。
+                     */
+                    override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {
+                        listeners.add(transferListener)
+                        runCatching { active?.addTransferListener(transferListener) }
+                    }
                     override fun close() {
                         runCatching { active?.close() }
                         active = null

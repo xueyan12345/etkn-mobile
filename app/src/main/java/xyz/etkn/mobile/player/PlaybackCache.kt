@@ -14,6 +14,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import xyz.etkn.mobile.data.settings.Settings
 import java.io.File
