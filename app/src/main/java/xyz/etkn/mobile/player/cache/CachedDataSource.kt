@@ -41,6 +41,11 @@ class CachedDataSource(
      *   谁先到停在谁那里
      */
     private val cacheLimitBytes: () -> Long = { -1L },
+    /**
+     * 用户口径（2026-11-27）**阈值的起点 = 当前播放位置**。
+     * 缓存从播放位置往后铺 limit 字节，而不是从文件 0 往后铺。
+     */
+    private val cacheAnchor: () -> Long = { 0L },
 ) : BaseDataSource(/* isNetwork = */ true) {
 
     companion object {
@@ -190,8 +195,23 @@ class CachedDataSource(
          * 超过用户设的缓存阈值 → 不再写盘（但数据照常返回给播放器，播放不中断）。
          * 这是「达到阈值就停止缓存」的实现点。
          */
+        /**
+         * 用户口径（2026-11-27）**阈值是「从当前位置往后能缓存多少」，不是「文件前多少」**。
+         *
+         * 修的 bug（用户实测这部 3.3GB 的片子停在 29:51 处，缓冲条只有一点点）：
+         *
+         * 原来写的是 `if (position >= limit) return` —— position 是**绝对文件偏移**。
+         * 用户在 93% 位置播放时，绝对偏移 ≈ 3.1GB，早就超过 400MB 阈值，
+         * 于是缓存直接不写了（只有播放器自己那点网络缓冲跟得上）。
+         *
+         * 这等于「只缓存文件开头的 400MB」，和用户理解的
+         * 「从播放位置往前铺 400MB」完全不是一回事。
+         *
+         * 现在：以「播放位置」为起点，往后算 limit 字节；
+         * 超过「起点 + limit」才停止写盘。
+         */
         val limit = cacheLimitBytes()
-        if (limit > 0 && position >= limit) return
+        if (limit > 0 && position >= cacheAnchor() + limit) return
         runCatching {
             var pos = position
             var off = offset
@@ -283,9 +303,10 @@ class CachedDataSource(
         private val itemId: () -> String,
         private val totalBytes: () -> Long,
         private val cacheLimitBytes: () -> Long = { -1L },
+        private val cacheAnchor: () -> Long = { 0L },
     ) : DataSource.Factory {
         override fun createDataSource(): DataSource =
-            CachedDataSource(upstream, store, itemId, totalBytes, cacheLimitBytes)
+            CachedDataSource(upstream, store, itemId, totalBytes, cacheLimitBytes, cacheAnchor)
     }
 }
 

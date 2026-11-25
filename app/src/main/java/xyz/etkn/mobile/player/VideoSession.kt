@@ -689,6 +689,7 @@ class VideoSession(
             cacheItemId = { item?.id ?: "" },
             cacheTotalBytes = { currentLength },
             cacheDurationMs = { player?.duration?.coerceAtLeast(0L) ?: 0L },
+            cachePositionMs = { player?.currentPosition?.coerceAtLeast(0L) ?: 0L },
         )
 
     private fun ensurePlayer(wanted: Engine): Player {
@@ -1004,7 +1005,29 @@ class VideoSession(
         val proxyStore = xyz.etkn.mobile.player.cache.BlockStore.get(context)
         val proxyPort = xyz.etkn.mobile.player.cache.LocalProxy.start(proxyStore, graph.http.media)
         if (proxyPort > 0) {
-            xyz.etkn.mobile.player.cache.LocalProxy.register(current.id, url, currentLength)
+            /**
+             * 用户口径（2026-11-27）**代理层也要按阈值停**，否则会一路下到片尾。
+             *
+             * 上限 = 播放位置 + min(字节阈值, 时长阈值换算字节)
+             * 这就是「缓冲条应该有多长」的真实右边界。
+             */
+            val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: startMs.coerceAtLeast(0L)
+            val durMs = player?.duration?.coerceAtLeast(0L) ?: 0L
+            val totalB = currentLength
+            val limitB = if (totalB > 0 && durMs > 0) {
+                val bySize = settings.cacheMemoryMb.coerceIn(32, 8192).toLong() * 1024L * 1024L
+                val seconds = settings.cacheMemorySeconds.coerceIn(30, 7200).toLong()
+                val byTime = (totalB.toDouble() * seconds * 1000.0 / durMs.toDouble()).toLong()
+                val span = minOf(bySize, byTime)
+                val anchor = (totalB.toDouble() * posMs.toDouble() / durMs.toDouble()).toLong()
+                (anchor + span).coerceAtMost(totalB)
+            } else -1L
+            xyz.etkn.mobile.player.cache.LocalProxy.register(current.id, url, currentLength, limitB)
+            android.util.Log.i(
+                TAG,
+                "proxy limit item=${current.id} pos=${posMs / 1000}s " +
+                    "span=${if (limitB > 0 && totalB > 0) "${limitB / 1048576}MB/${totalB / 1048576}MB" else "无限"}",
+            )
         }
         val proxied = xyz.etkn.mobile.player.cache.LocalProxy.urlFor(current.id)
 

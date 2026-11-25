@@ -111,6 +111,7 @@ object PlayerFactory {
         cacheItemId: () -> String = { "" },
         cacheTotalBytes: () -> Long = { -1L },
         cacheDurationMs: () -> Long = { 0L },
+        cachePositionMs: () -> Long = { 0L },
     ): ExoPlayer {
         DolbyVision.init(context)
         val renderers = NextRenderersFactory(context)
@@ -159,10 +160,25 @@ object PlayerFactory {
          * 保留 min / forPlayback 不动：起播速度仍然很快。
          * afterRebuffer 也不动：卡顿恢复行为不变。
          */
+        /**
+         * 用户口径（2026-11-27）**播放器缓冲上限必须 ≥ 缓存阈值，否则缓冲条长度不对**。
+         *
+         * 两个阈值谁先到谁停的逻辑在缓存层（CachedDataSource / LocalProxy），
+         * 但播放器自己也有个「最多缓冲多久」的刹车（max）。
+         * 如果 max 比用户阈值小 → 缓冲条被 max 砍短（上一版 60 秒就是这个毛病）。
+         * 如果 max 比用户阈值大太多 → 播放器会一直请求数据，
+         *   缓存层按阈值停了写盘，但 bufferedPosition 还会往前涨，
+         *   缓冲条就又变长了（显示与缓存不一致）。
+         *
+         * 所以这里让 max 略大于「字节/时长两个阈值里起作用的那个」：
+         *  · 时长阈值换算成时间（就是 cacheMemorySeconds 本身）
+         *  · 字节阈值换算成时间需要码率，播放器创建时还拿不到
+         *    → 取时长阈值 + 1 分钟余量，实际长度由缓存层的字节阈值再收一次
+         * 这样缓冲条 = 真实写盘范围，不会再出现「显示 62% 但只缓存了 12%」。
+         */
         val bufferedMaxMs = settings?.let {
-            // 用户设的时长阈值 + 5 分钟余量；至少 5 分钟，避免设很小值时反而卡顿
-            (it.cacheMemorySeconds.coerceIn(30, 7200).toLong() * 1000L + 5 * 60_000L)
-                .coerceAtLeast(5 * 60_000L)
+            (it.cacheMemorySeconds.coerceIn(30, 7200).toLong() * 1000L + 60_000L)
+                .coerceAtLeast(2 * 60_000L)
         } ?: (60 * 60_000L)
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
@@ -182,7 +198,7 @@ object PlayerFactory {
         return ExoPlayer.Builder(context, renderers)
             .setTrackSelector(selector)
             .setLoadControl(load)
-            .setMediaSourceFactory(videoSources(context, client, userAgent, settings, cacheItemId, cacheTotalBytes, cacheDurationMs))
+            .setMediaSourceFactory(videoSources(context, client, userAgent, settings, cacheItemId, cacheTotalBytes, cacheDurationMs, cachePositionMs))
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .setAudioAttributes(
@@ -240,6 +256,8 @@ object PlayerFactory {
         cacheTotalBytes: () -> Long = { -1L },
         /** 当前集总时长（毫秒），用于把「时长阈值」换算成字节。 */
         cacheDurationMs: () -> Long = { 0L },
+        /** 当前播放位置（毫秒），缓存阈值的起点。 */
+        cachePositionMs: () -> Long = { 0L },
     ): BlurayMediaSourceFactory {
         val plain: DataSource.Factory = dataSource(client, userAgent)
         /**
@@ -267,6 +285,15 @@ object PlayerFactory {
                  *
                  * totalBytes <= 0（还没探到）→ 不限，先让它正常缓冲。
                  */
+                cacheAnchor = {
+                    // 播放位置换算成字节：位置/时长 × 总字节
+                    val total = cacheTotalBytes()
+                    val dur = cacheDurationMs()
+                    val pos = cachePositionMs()
+                    if (total > 0 && dur > 0 && pos > 0) {
+                        (total.toDouble() * pos.toDouble() / dur.toDouble()).toLong()
+                    } else 0L
+                },
                 cacheLimitBytes = {
                     val total = cacheTotalBytes()
                     val cfg = settings

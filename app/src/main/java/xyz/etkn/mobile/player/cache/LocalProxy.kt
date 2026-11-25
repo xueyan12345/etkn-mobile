@@ -44,6 +44,8 @@ object LocalProxy {
     private val sources = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** itemId → 总字节数（-1 = 未知）。 */
     private val lengths = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** itemId → 缓存右边界字节（超过就不再写盘，但数据照常返回）。-1 = 不限制。 */
+    private val limits = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private val pool = Executors.newFixedThreadPool(4)
 
@@ -77,9 +79,17 @@ object LocalProxy {
     }
 
     /** 给某一集登记上游地址（每次播放前调用）。 */
-    fun register(itemId: String, upstreamUrl: String, totalBytes: Long) {
+    /**
+     * 用户口径（2026-11-27）**登记上游地址 + 缓存上限**。
+     *
+     * [cacheLimitBytes] 是「从播放位置往后最多写多少字节」的右边界，
+     * 超过就不再写盘（数据仍然照常返回给播放器，播放不中断）。
+     * 传 -1 表示不限制。
+     */
+    fun register(itemId: String, upstreamUrl: String, totalBytes: Long, cacheLimitBytes: Long = -1L) {
         sources[itemId] = upstreamUrl
         lengths[itemId] = totalBytes
+        limits[itemId] = cacheLimitBytes
     }
 
     /** 取这一集的本地代理地址；未启动或未登记返回 null。 */
@@ -149,7 +159,7 @@ object LocalProxy {
             output.write(header.toByteArray())
             output.flush()
 
-            streamBody(bs, itemId, upstreamUrl, start, contentLength, total, output)
+            streamBody(bs, itemId, upstreamUrl, start, contentLength, total, limits[itemId] ?: -1L, output)
             runCatching { output.flush() }
         }
     }
@@ -165,6 +175,7 @@ object LocalProxy {
         start: Long,
         length: Long,
         total: Long,
+        cacheLimit: Long,
         output: BufferedOutputStream,
     ) {
         var pos = start
@@ -209,7 +220,10 @@ object LocalProxy {
                     val read = runCatching { src.read(buf, 0, n) }.getOrDefault(-1)
                     if (read <= 0) break
                     // 写块（只写完整块）
-                    cacheFromBuffer(bs, itemId, pos, buf, read, total)
+                    // 超过缓存右边界就不写盘（数据照常返回，播放不中断）
+                    if (cacheLimit <= 0 || pos < cacheLimit) {
+                        cacheFromBuffer(bs, itemId, pos, buf, read, total)
+                    }
                     output.write(buf, 0, read)
                     output.flush()
                     pos += read
