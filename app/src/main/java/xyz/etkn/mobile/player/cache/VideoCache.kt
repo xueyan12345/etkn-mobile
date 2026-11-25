@@ -113,38 +113,59 @@ object VideoCache {
      */
     fun availableBytesFrom(itemId: String, fromBytes: Long, length: Long): Long {
         val store = cache ?: return 0L
-        if (fromBytes < 0 || length <= 0) return 0L
-        val maxProbe = length
-
-        val cachedAt = { n: Long ->
-            runCatching { store.isCached(itemId, fromBytes, n) }.getOrDefault(false)
-        }
-        // 起始一小段都没缓存 → 直接 0
-        if (!cachedAt(1L)) return 0L
-
+        if (length <= 0) return 0L
         /**
-         * 指数扩张找上界，再二分收敛。
-         * 每集最多 30 次 isCached 调用（1,2,4,...,2^30 字节 ≈ 1GB），开销可忽略。
+         * 用户口径（2026-11-27）**缓冲条必须能反映「正在写入」的那一段**。
+         *
+         * 两版都失败过，这里是最终做法：
+         *
+         * ① 用 isCached 逐段探测（1.7.2 方案）
+         *    实测 aheadB 恒为 0 —— 因为 isCached 只认「已 commit 的 span」，
+         *    而播放器正在读的那段 CacheDataSink 还在写，永远 false。
+         *    日志证据：posB 从 140MB 涨到 239MB（数据在写），aheadB 全是 0。
+         *
+         * ② 用 getCachedLength（1.7.1 方案）
+         *    拿到的值和真实能秒播的范围对不上。
+         *
+         * ③ 现在的做法：**取两者较大值**
+         *    · getCachedLength 能反映「已完成的连续区域」
+         *    · 同时用 getCachedSpans 把已落盘的 span 逐段累加
+         *    · 两者任一有值就用较大的那个
+         *
+         * 这样既有「已完成」，也尽量把「正在写」算进去 —— 对用户来说，
+         * 条画到的位置就是「已经能吃到的数据」，宁可少画也不多画。
          */
-        var lo = 1L
-        var step = 1L
-        while (lo < maxProbe) {
-            val next = minOf(lo + step, maxProbe)
-            if (cachedAt(next)) {
-                lo = next
-                step *= 2
-                if (lo >= maxProbe) return maxProbe
-            } else {
-                break
+        val byCachedLength = runCatching {
+            val v = store.getCachedLength(
+                itemId,
+                fromBytes,
+                if (length > 0) length else androidx.media3.common.C.LENGTH_UNSET.toLong(),
+            )
+            if (v > 0) v else 0L
+        }.getOrDefault(0L)
+
+        val bySpans = runCatching {
+            val spans = store.getCachedSpans(itemId)?.toList().orEmpty()
+            if (spans.isEmpty()) return@runCatching 0L
+            var cursor = fromBytes
+            var total = 0L
+            val limit = fromBytes + length
+            for (sp in spans) {
+                if (sp.length <= 0) continue          // hole 不计
+                val spEnd = sp.position + sp.length
+                if (spEnd <= cursor) continue
+                if (sp.position > cursor) break       // 中间有洞，断开
+                val end = minOf(spEnd, limit)
+                val take = end - cursor
+                if (take <= 0) break
+                total += take
+                cursor += take
+                if (cursor >= limit) break
             }
-        }
-        var hi = minOf(lo + step, maxProbe)
-        // 二分在 (lo, hi] 里找最大全缓存长度
-        while (lo < hi) {
-            val mid = (lo + hi + 1) / 2
-            if (cachedAt(mid)) lo = mid else hi = mid - 1
-        }
-        return lo
+            total
+        }.getOrDefault(0L)
+
+        return maxOf(byCachedLength, bySpans).coerceAtMost(length)
     }
 
     fun isComplete(itemId: String, totalBytes: Long): Boolean {
