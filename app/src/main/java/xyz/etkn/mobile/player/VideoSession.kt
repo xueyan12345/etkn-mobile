@@ -1413,6 +1413,31 @@ class VideoSession(
         val effDurMs = if (durationMs > 0) durationMs else serverDurationMs
 
         /**
+         * 用户口径（2026-11-27）**主动缓存窗口：从当前播放位置往后写到阈值**。
+         *
+         * 这是这轮重构的核心 —— 之前一直靠调 Exo 的 LoadControl，
+         * 但那只决定「播放器自己拉多少」，播放器觉得够就停，
+         * 所以永远到不了用户设的 400MB（日志实证峰值 141MB）。
+         *
+         * 现在用官方 CacheWriter 主动下载：
+         *  · 目标 = 播放位置 + min(字节阈值, 时长阈值换算字节)
+         *  · 播放前进 → 窗口前移（旧数据保留，可回拖）
+         *  · 改设置 400→800MB → 目标跟着变，立刻补下
+         */
+        val cacheUrl = currentUrl
+        if (cacheUrl != null && currentLength > 0) {
+            xyz.etkn.mobile.player.cache.VideoCache.startCacheWindow(
+                itemId = currentItem.id,
+                url = cacheUrl,
+                positionMs = positionMs,
+                durationMs = effDurMs,
+                totalBytes = currentLength,
+                limitBytes = settings.cacheMemoryMb.coerceIn(50, 4096).toLong() * 1024L * 1024L,
+                limitMs = settings.cacheMemorySeconds.coerceIn(30, 7200).toLong() * 1000L,
+            )
+        }
+
+        /**
          * 用户口径（2026-11-27）**duration=0 时也要能触发预加载**。
          *
          * 日志实证这一集 `dur=0ms` 全程如此（strm 源给不出时长），
@@ -1607,8 +1632,12 @@ class VideoSession(
                     posMs
                 } else {
                     val posBytes = (totalB.toDouble() * posMs.toDouble() / durMs.toDouble()).toLong()
+                    /**
+                     * 用户口径（2026-11-27）**官方 getCachedBytes**（CacheWriter 自己就用这个）。
+                     * 语义 = 从播放位置往后，本地真实可读的字节数。
+                     */
                     val ahead = xyz.etkn.mobile.player.cache.VideoCache
-                        .availableBytesFrom(currentItem.id, posBytes, totalB - posBytes)
+                        .cachedBytesFrom(currentItem.id, posBytes, totalB - posBytes)
                     if (ahead <= 0) {
                         posMs
                     } else {
