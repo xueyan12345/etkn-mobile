@@ -251,6 +251,14 @@ class VideoSession(
     private var currentUrl: String? = null
     /** 当前集资源总字节数（-1 = 未知）。 */
     private var currentLength: Long = -1L
+    /**
+     * 用户口径（2026-11-27）**服务端给的时长（毫秒），Exo 给不出 duration 时用它兜底**。
+     *
+     * 日志实证：strm 源播放时 Exo 一直返回 duration=0，
+     * 导致缓存阈值、缓冲条刻度、预加载触发全部失效。
+     * 而服务端的 MediaSource.runTimeTicks 里一直有这个值。
+     */
+    private var serverDurationMs: Long = 0L
     /** 下一集资源总字节数（-1 = 未知，预加载时现场探）。 */
     private var nextLength: Long = -1L
     /** 下一集的 (episodeId, url)，用于流水线预加载。 */
@@ -686,15 +694,51 @@ class VideoSession(
      * @return 允许缓存到的绝对字节位置；-1 = 目前算不出来（时长/总长未知）。
      */
     private fun computeCacheLimit(posMs: Long, durMs: Long, totalBytes: Long): Long {
-        if (totalBytes <= 0 || durMs <= 0) return -1L
+        if (totalBytes <= 0) return -1L
         val bySize = settings.cacheMemoryMb.coerceIn(32, 8192).toLong() * 1024L * 1024L
         val seconds = settings.cacheMemorySeconds.coerceIn(30, 7200).toLong()
+
+        /**
+         * 用户口径（2026-11-27）**拿不到时长时也要能按字节阈值工作**。
+         *
+         * 日志实证：这一集 `tickCache 首次驱动 pos=562019ms dur=0ms` ——
+         * Exo 对这个 strm 源一直给不出 duration。
+         * 而旧实现 `if (durMs <= 0) return -1L` 直接放弃 → 阈值完全失效
+         * → 缓存一路下到片尾（用户看到「根本不按 400MB 停」）。
+         *
+         * 现在三条路：
+         *  · 有 duration → 两个阈值都参与，谁小谁生效（正常路径）
+         *  · 无 duration → 只用**字节阈值**，并且按「已落盘量」估算位置偏移
+         *    （字节阈值本身就是绝对量，不需要时长也能执行）
+         */
+        if (durMs <= 0) {
+            /**
+             * 无时长：位置换成字节只能用「已落盘到哪」来估。
+             * 拿不到位置偏移时，就从 0 起算 —— 至少保证「整集最多缓存 bySize」，
+             * 而不是完全不管。
+             */
+            val anchorBytes = currentCachedEndBytes()
+            return (anchorBytes + bySize).coerceAtMost(totalBytes)
+        }
+
         // 时长阈值换算成字节（按这一集的真实码率）
         val byTime = (totalBytes.toDouble() * seconds * 1000.0 / durMs.toDouble()).toLong()
         val span = minOf(bySize, byTime)            // 谁小谁生效
         // 起点 = 当前播放位置（换算成字节）
         val anchor = (totalBytes.toDouble() * posMs.coerceAtLeast(0L).toDouble() / durMs.toDouble()).toLong()
         return (anchor + span).coerceAtMost(totalBytes)
+    }
+
+    /**
+     * 用户口径（2026-11-27）**无时长时的兜底：已落盘到哪个字节位置**。
+     * 用 BlockStore 里真实连续的块长度反推，不依赖 duration。
+     */
+    private fun currentCachedEndBytes(): Long {
+        val id = item?.id ?: return 0L
+        return runCatching {
+            val store = xyz.etkn.mobile.player.cache.BlockStore.get(graph.app)
+            store.contiguousEndBlock(id, 0L, currentLength) * xyz.etkn.mobile.player.cache.BlockStore.DEFAULT_BLOCK_SIZE
+        }.getOrDefault(0L)
     }
 
     private fun engineFor(chosen: MediaSource, disc: Boolean): Engine {
@@ -892,7 +936,19 @@ class VideoSession(
         _ui.update { it.copy(sources = info.sources, sourceIndex = index) }
         playSource(info.sources[index], startMs)
         applyDanmaku()
-        if (base.isEpisode) loadNext(base.id)
+        /**
+         * 用户口径（2026-11-27）**不管什么类型都试着取下一集**。
+         *
+         * 修的 bug（日志实证：103 条 isNextReady 全是 next=null，预加载从没启动）：
+         * 原来只在 `base.isEpisode` 时才调 loadNext。
+         * 但通过 strm / version 形式进入播放时，base 可能是 Series 或 Movie，
+         * 于是 loadNext 从不调用 → next 永远 null → startNextIfIdle 第一行就 return
+         * → 预加载和小气泡永远不会出现。
+         *
+         * 现在：无条件尝试。nextEpisode 接口本身就是「有下一集就返回，没有就 null」，
+         * 所以对电影调用也无害（返回 null，什么都不做）。
+         */
+        loadNext(base.id)
         val full = detail.await()
         if (full != null && item?.id == full.id && full !== base) {
             showItem(full)
@@ -992,6 +1048,8 @@ class VideoSession(
         // 换集时把「下一集直链」清掉，避免沿用上一集的。
         currentUrl = url
         currentLength = chosen.size ?: -1L
+        // 服务端时长：Exo 拿不到 duration 时用它兜底（见 serverDurationMs 说明）
+        serverDurationMs = chosen.runTimeTicks.takeIf { it > 0 }?.div(TICKS_PER_MS) ?: 0L
         nextUrl = null
         PlaybackCache.clearReady()
         /**
@@ -1309,8 +1367,10 @@ class VideoSession(
          * 不做这一步的话，起播那一次登记的值（可能是 -1 或不含位置偏移）
          * 会一直用下去 —— 这正是之前「阈值完全不生效」的原因。
          */
-        if (durationMs > 0 && currentLength > 0) {
-            val liveLimit = computeCacheLimit(positionMs, durationMs, currentLength)
+        // Exo 给不出时长时用服务端的（日志实证 strm 源 dur 恒为 0）
+        val effDurMs = if (durationMs > 0) durationMs else serverDurationMs
+        if (effDurMs > 0 && currentLength > 0) {
+            val liveLimit = computeCacheLimit(positionMs, effDurMs, currentLength)
             if (liveLimit > 0) {
                 xyz.etkn.mobile.player.cache.LocalProxy.register(
                     currentItem.id, cur, currentLength, liveLimit,
@@ -1318,8 +1378,29 @@ class VideoSession(
             }
         }
 
-        val nearEnd = durationMs > 0 && (durationMs - positionMs) <= PRELOAD_LEAD_MS
+        /**
+         * 用户口径（2026-11-27）**duration=0 时也要能触发预加载**。
+         *
+         * 日志实证这一集 `dur=0ms` 全程如此（strm 源给不出时长），
+         * 而 old 判据是 `durationMs > 0 && 剩余 < 5分钟` —— 永远不成立
+         * → 预加载永远不触发。
+         *
+         * 现在：duration 未知时，用「已播放时长」兜底 ——
+         * 播到 20 分钟以上就认为「够久了，该铺下一集了」。
+         */
+        val nearEnd = when {
+            effDurMs > 0 -> (effDurMs - positionMs) <= PRELOAD_LEAD_MS
+            // 时长未知：播够 20 分钟就当接近尾声（短剧也不至于太早）
+            else -> positionMs >= 20 * 60 * 1000L
+        }
         val shouldPreload = settings.preloadNext && (PlaybackCache.currentCompleteFlag() || nearEnd)
+        if (settings.preloadNext && !shouldPreload) {
+            android.util.Log.i(
+                TAG,
+                "preload wait: pos=${positionMs / 1000}s dur=${effDurMs / 1000}s " +
+                    "nearEnd=$nearEnd complete=${PlaybackCache.currentCompleteFlag()}",
+            )
+        }
 
         val length = currentLength
         scope.launch {
@@ -1398,7 +1479,9 @@ class VideoSession(
              */
             val cachedMs = run {
                 val posMs = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
-                val durMs = if (durationMs > 0) durationMs else (player?.duration ?: 0L)
+                val durMs = if (durationMs > 0) durationMs
+                    else if (serverDurationMs > 0) serverDurationMs
+                    else (player?.duration ?: 0L)
                 val totalB = currentLength
                 if (durMs <= 0 || totalB <= 0 || posMs <= 0) {
                     posMs
@@ -1477,8 +1560,19 @@ class VideoSession(
     /** 当前集缓存完成后，取下一集直链并交给流水线。 */
     private fun startNextIfIdle(current: Item) {
         // 「预加载下一集」开关：只管下一集，和当前集的缓存窗口无关
-        if (!settings.preloadNext) return
-        val nextItem = _ui.value.next ?: return
+        if (!settings.preloadNext) {
+            android.util.Log.i(TAG, "preload skip: 开关关闭")
+            return
+        }
+        /**
+         * 用户口径（2026-11-27）**每一步都要有日志**，否则「气泡不亮」无法定位。
+         * 之前日志里只有 next=null，看不出是「没取到下一集」还是「取了但没预加载」。
+         */
+        val nextItem = _ui.value.next
+        if (nextItem == null) {
+            android.util.Log.i(TAG, "preload skip: next 为空（nextEpisode 没返回，可能本片没有下一集）")
+            return
+        }
         // 已经取过这一集的直链就不再重复取
         if (nextUrl?.first == nextItem.id) return
         if (nextFetching) return
