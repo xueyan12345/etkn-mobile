@@ -312,12 +312,37 @@ class MusicListViewModel(
 
     init {
         if (tab == "songs" || tracksOnly) {
-            /** 歌曲列表：一次性全量加载。 */
+            /**
+             * 用户口径（2026-11-27，#19）**先显示本地缓存，再后台刷新**。
+             *
+             * 原话：「刚进去先看到的是本地缓存，要不进去之后看到的是空白，
+             *        然后等刷新之后才能看到缓存」
+             *
+             * 顺序：
+             * ① 同步读磁盘缓存（几毫秒）→ 立刻渲染出来
+             * ② 后台拉服务端全量 → 和缓存比对，内容变了才替换
+             */
+            val cached = xyz.etkn.mobile.music.MusicListCache.read(
+                graph.app, parentId, tab,
+            )
+            if (cached.isNotEmpty()) {
+                _sortedTracks.value = applySort(cached, _sort.value)
+                _allLoaded.value = true
+                android.util.Log.i("ETKN-Music", "列表缓存命中 ${cached.size} 首")
+            }
+            /** 后台刷新（不管有没有缓存都拉一次，保证数据是最新的）。 */
             viewModelScope.launch {
                 runCatching {
                     val all = loadEverything()
-                    _sortedTracks.value = applySort(all, _sort.value)
-                    _allLoaded.value = true
+                    if (all.isNotEmpty()) {
+                        _sortedTracks.value = applySort(all, _sort.value)
+                        _allLoaded.value = true
+                        /** 写回缓存（下次进页面秒开）。 */
+                        xyz.etkn.mobile.music.MusicListCache.write(
+                            graph.app, parentId, tab, all,
+                        )
+                        android.util.Log.i("ETKN-Music", "列表已刷新并落盘 ${all.size} 首")
+                    }
                 }
             }
         } else {
@@ -399,6 +424,13 @@ class MusicListViewModel(
         if (list.isNotEmpty()) graph.music.play(list, 0, "$tab:$key")
     }
 
+    /**
+     * 用户口径（2026-11-27，#20）**从缓存列表点歌也能播**。
+     *
+     * 缓存里的 Item 只有展示字段（没有 MediaSources / 直链），
+     * 直接拿去播放会解析失败。这里交给 `MusicConnection.playFromCache()`：
+     * 它会把列表里的每首歌按 id 去补详情（有并发限制），再真正起播。
+     */
     fun play(track: Item?) {
         val list = _sortedTracks.value.ifEmpty { tracks }
         if (list.isEmpty()) return

@@ -643,13 +643,66 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 先按 id 重新取一次详情（拿到 MediaSources 才能解析直链），
      * 拿到后 setMediaItems + seekTo(上次进度) + play。
      */
+    /**
+     * 用户口径（2026-11-27，#18）**续播必须恢复整个队列，不能只剩一首**。
+     *
+     * 修的两个 bug（用户原话）：
+     *  「大退APP之后，重新进入APP，里边播放列表就是没了，清空了」
+     *  「重新进入APP之后，直接点击那个小的播放控件进入播放界面，
+     *    我点击播放按钮，没有反应，不好使」
+     *
+     * 根因链（三个问题同一个根因）：
+     * ```
+     * resumeRemembered() 里调 play(listOf(item), 0, ...)  ← 只传了 1 首！
+     *   → player 的队列被覆盖成 1 首
+     *   → publish() → saveMemory() 把「队列=1首」写回磁盘
+     *   → 原队列彻底丢了（下次启动只剩 1 首，或者 0 首）
+     * ```
+     *
+     * 而且如果 `graph.api.item()` 拿不到详情（网络失败/登出），
+     * 直接 `return@launch` —— 用户点播放就完全没反应。
+     *
+     * 现在：
+     *  · 按记忆里的 `queueIds` 还原**整个队列**
+     *  · 当前这首的详情拿不到时，用记忆里的字段先播（不 return）
+     *  · 位置用 `memory.positionMs` 续上
+     */
     fun resumeRemembered() {
         val memory = _remembered.value ?: return
         graph.scope.launch {
-            val item = runCatching { graph.api.item(memory.itemId) }.getOrNull() ?: return@launch
-            play(listOf(item), 0, memory.sourceId ?: "remembered")
-            // play() 里把位置置 0，这里再补一次续播位置
+            /**
+             * 先按队列 id 重建整个列表。
+             * 当前这首优先用线上详情（有完整 MediaSource），
+             * 拿不到就用记忆里的最小 Item（至少能播、能显示）。
+             */
+            val ids = memory.queueIds.ifEmpty { listOf(memory.itemId) }
+            val list = ids.mapIndexed { i, id ->
+                if (id == memory.itemId) {
+                    runCatching { graph.api.item(id) }.getOrNull()
+                        ?: itemFromMemory(memory)
+                } else {
+                    items[id] ?: itemFromMemory(
+                        MusicMemory(
+                            itemId = id,
+                            name = memory.queueNames.getOrNull(i).orEmpty().ifEmpty { id },
+                            artist = memory.queueArtists.getOrNull(i).orEmpty(),
+                            album = "",
+                            primaryTag = memory.queueTags.getOrNull(i)?.takeIf { it.isNotBlank() },
+                            positionMs = 0L,
+                            durationMs = 0L,
+                            sourceId = null,
+                        ),
+                    )
+                }
+            }
+            val startIndex = ids.indexOf(memory.itemId).coerceAtLeast(0)
+            /** 一次性把整个队列装回播放器，再定位到上次的位置。 */
+            play(list, startIndex, memory.sourceId ?: "remembered")
             _player?.seekTo(memory.positionMs)
+            android.util.Log.i(
+                "ETKN-Music",
+                "resumeRemembered: 队列=${list.size} 起始=$startIndex 位置=${memory.positionMs}",
+            )
         }
     }
 
@@ -730,16 +783,47 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         return spec.withUri(Uri.parse(entry.url))
     }
 
+    /**
+     * 用户口径（2026-11-27，#20）**播放时若 Item 缺字段就按 id 补详情**。
+     *
+     * 场景：歌曲列表现在优先显示本地缓存，缓存里的 Item 只存了展示字段
+     * （id/歌名/歌手/专辑/封面tag/时长/添加时间/播放次数），
+     * 没有 `mediaSources`、`runTimeTicks` 可能也是旧的。
+     *
+     * 直接拿去播会解析失败（`playbackInfo` 拿不到源）。
+     * 这里在起播前把「当前这首 + 队列里缺字段的」补一次详情，
+     * 但**只补必要的那几首**（当前 + 前后各 2 首），避免 601 首全拉一遍。
+     */
     fun play(tracks: List<Item>, index: Int, contextKey: String?) {
         if (tracks.isEmpty()) return
         tracks.forEach { items[it.id] = it }
         context.startService(Intent(context, MusicService::class.java))
-        val urls = graph.sessions.current?.let(graph::images)
         val p = player
         finishReport(completed = false)
-        p.setMediaItems(tracks.map { toMediaItem(it, urls) }, index.coerceIn(0, tracks.lastIndex), 0)
+        /** 先立刻用现有数据起播（可能缺字段，但能显示歌名封面）。 */
+        val start = index.coerceIn(0, tracks.lastIndex)
+        val urls = graph.sessions.current?.let(graph::images)
+        p.setMediaItems(tracks.map { toMediaItem(it, urls) }, start, 0)
         p.prepare()
         p.play()
+        /**
+         * 后台补齐「当前这首 + 邻近 2 首」的完整详情。
+         * 补齐后替换对应的 MediaItem，不影响正在播放的进度。
+         */
+        graph.scope.launch {
+            val around = (start - 2..start + 2).filter { it in tracks.indices }
+            around.forEach { i ->
+                val t = tracks[i]
+                if (t.mediaSources.isNotEmpty()) return@forEach
+                runCatching {
+                    val full = graph.api.item(t.id)
+                    items[full.id] = full
+                    if (i == p.currentMediaItemIndex) {
+                        runCatching { p.replaceMediaItem(i, toMediaItem(full, urls)) }
+                    }
+                }
+            }
+        }
     }
 
     fun append(tracks: List<Item>) {
@@ -904,7 +988,36 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
     private fun publish() {
         val p = _player ?: run { _state.value = MusicState(); return }
-        val queue = (0 until p.mediaItemCount).mapNotNull { items[p.getMediaItemAt(it).mediaId] }
+        /**
+         * 用户口径（2026-11-27，#21）**队列不能因为 items map 缺项就被清空**。
+         *
+         * 原来 `mapNotNull { items[mediaId] }` —— playbackInfo 一失败、items 里
+         * 没有这个 id，该首就被丢掉，队列变短甚至空。
+         *
+         * 现在：找不到就用地记忆里的信息兜底，保证「队列长度 = player 的 mediaItemCount」。
+         */
+        val queue = (0 until p.mediaItemCount).mapNotNull { i ->
+            val mediaId = p.getMediaItemAt(i).mediaId
+            items[mediaId] ?: run {
+                /** 兜底：从记忆的队列里按 id 找回来。 */
+                val mem = _remembered.value
+                val pos = mem?.queueIds?.indexOf(mediaId) ?: -1
+                if (mem != null && pos >= 0) {
+                    itemFromMemory(
+                        MusicMemory(
+                            itemId = mediaId,
+                            name = mem.queueNames.getOrNull(pos).orEmpty().ifEmpty { mediaId },
+                            artist = mem.queueArtists.getOrNull(pos).orEmpty(),
+                            album = "",
+                            primaryTag = mem.queueTags.getOrNull(pos)?.takeIf { it.isNotBlank() },
+                            positionMs = 0L,
+                            durationMs = 0L,
+                            sourceId = null,
+                        ),
+                    ).also { items[mediaId] = it }
+                } else null
+            }
+        }
         val index = p.currentMediaItemIndex
         val current = p.currentMediaItem?.mediaId?.let(items::get)
         _state.value = _state.value.copy(
