@@ -15,6 +15,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import xyz.etkn.mobile.MainActivity
 import xyz.etkn.mobile.graph
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 
 /**
  * 音乐播放服务。
@@ -98,6 +99,56 @@ class MusicService : MediaLibraryService() {
          * 注意必须 try-catch：Android 12+ 对后台启动前台服务有限制，
          * 失败也不能让 Service 崩掉。
          */
+        /**
+         * 用户口径（2026-11-27，#29）**Session 建好后立刻同步塞入 remembered 的 metadata**。
+         *
+         * ColorOS 日志（决定性证据）：
+         * ```
+         * OplusMediaControlService: getPlayerInfo, pkgname: xyz.etkn.mobile
+         * OplusMediaControlService: E getTitleAndArtist is null
+         * OplusMediaControlService: E getMediaMetadata is null
+         * OplusMediaControlService: D players is empty
+         * OplusMediaControlService: setLastMediaButtonReceiver: not add to stack
+         * ```
+         *
+         * 它在 MediaButton 到达的**那一瞬间**就去读 Session 的 metadata
+         * （来自 `player.currentMediaItem`）。而 `restoreForResumption()`
+         * 是异步的（要等 token + 网络解析直链），那个瞬间 player 还是空的
+         * → metadata null → 它判定 players is empty → 踢出栈 → 按钮永远灰。
+         *
+         * 所以：Session 建好后**同步**把 remembered 的 MediaItem 塞进 player
+         * （纯内存操作，零网络），metadata 立刻就有。真直链之后异步换。
+         */
+        runCatching {
+            val music = graph.music
+            val mem = music.remembered.value
+            if (mem != null && music.player.mediaItemCount == 0) {
+                music.player.setMediaItem(music.resumeMediaItem(mem))
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "Service: 同步预装 metadata title=${mem.name} artist=${mem.artist} dur=${mem.durationMs}",
+                )
+            } else if (mem == null) {
+                /**
+                 * `remembered` 本身也是从磁盘异步读的，Service 刚创建时可能还是 null。
+                 * 这里补一次监听：一拿到就装进 player（ColorOS 才读得到 metadata）。
+                 */
+                applicationContext.graph.scope.launch {
+                    runCatching {
+                        val m = music.remembered.first { it != null }
+                        if (m != null && music.player.mediaItemCount == 0) {
+                            music.player.setMediaItem(music.resumeMediaItem(m))
+                            android.util.Log.i(
+                                "ETKN-Music",
+                                "Service: 延迟预装 metadata title=${m.name}",
+                            )
+                        }
+                    }
+                }
+            }
+        }.onFailure {
+            android.util.Log.w("ETKN-Music", "同步预装 metadata 失败", it)
+        }
         runCatching { enterForeground() }
         /**
          * 用户口径（#1）**Session 必须知道「当前在播哪首」**，
@@ -274,6 +325,29 @@ class MusicService : MediaLibraryService() {
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
             val music = applicationContext.graph.music
             val remembered = music.remembered.value
+            /**
+             * 用户口径（2026-11-27，#28）**这一层必须同步返回完整 metadata**。
+             *
+             * ColorOS 的决定性日志（adb 实测）：
+             * ```
+             * OplusMediaControlService: getPlayerInfo, pkgname: xyz.etkn.mobile
+             * OplusMediaControlService: E getTitleAndArtist is null
+             * OplusMediaControlService: E getMediaMetadata is null
+             * OplusMediaControlService: D players is empty      ← 于是不加进自己的栈
+             * ```
+             *
+             * ColorOS 的 `OplusMediaControlService` 会在 MediaButton 到达时
+             * **立刻**去读 Session 的 metadata。如果那一刻是空的（我们还在等
+             * token 恢复队列），它就判定 "players is empty"，
+             * 控制中心的按钮就永远是灰的、点不动。
+             *
+             * 所以这里**同步**用记忆里的字段构造 MediaItem（歌名/歌手/专辑/封面/时长全有），
+             * 一个网络请求都不发。真直链在之后异步 `resumeRemembered()` 里换。
+             */
+            android.util.Log.i(
+                "ETKN-Music",
+                "onPlaybackResumption: 同步返回 metadata title=${remembered?.name} artist=${remembered?.artist} dur=${remembered?.durationMs}",
+            )
             if (remembered == null) {
                 // 从没播过：返回空列表，系统就不会拉起播放（符合预期）
                 return Futures.immediateFuture(
