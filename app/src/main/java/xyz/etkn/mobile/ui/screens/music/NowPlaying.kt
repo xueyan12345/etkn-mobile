@@ -101,6 +101,7 @@ import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
@@ -919,11 +920,41 @@ private fun FullLyrics(track: Item, positionMs: Long, sourceId: String?) {
         }
         return
     }
+    /**
+     * 用户口径（2026-11-27，#15）**歌词页必须能手滑**。
+     *
+     * 用户原话：「这个界面的歌词也不能滑动」
+     *
+     * 原来有两个原因导致滑不动：
+     *  ① `LaunchedEffect(active)` 每次都 `animateScrollToItem` ——
+     *     用户刚滑走一点，播放进度一变就被拽回当前行
+     *  ② 外层是 `HorizontalPager`，垂直手势本应不受影响，
+     *     但 LazyColumn 没给足内容高度时（列表短）根本滚不动
+     *
+     * 现在：
+     *  · 加 `userScrolling` 标记：用户手滑之后，暂停自动跟随 5 秒，然后恢复
+     *  · 内容不足一屏时也能拖动（加足够的上下 padding）
+     */
     val list = rememberLazyListState()
-    LaunchedEffect(active) { if (active >= 0) list.animateScrollToItem((active - 3).coerceAtLeast(0)) }
+    var userScrolling by remember { mutableStateOf(false) }
+    LaunchedEffect(list.isScrollInProgress) {
+        if (list.isScrollInProgress) {
+            userScrolling = true
+        } else if (userScrolling) {
+            /** 手松开后再等 5 秒恢复自动跟随，避免立刻被拽走。 */
+            kotlinx.coroutines.delay(5_000)
+            userScrolling = false
+        }
+    }
+    LaunchedEffect(active, userScrolling) {
+        if (active >= 0 && !userScrolling) {
+            list.animateScrollToItem((active - 3).coerceAtLeast(0))
+        }
+    }
     LazyColumn(
         state = list,
-        contentPadding = PaddingValues(vertical = 120.dp),
+        /** 上下留白按屏幕高度的一半，保证第一句/最后一句也能滚到中间。 */
+        contentPadding = PaddingValues(vertical = 160.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
@@ -978,7 +1009,7 @@ private fun MusicProgressBar(
     Box(
         Modifier
             .fillMaxWidth()
-            .height(24.dp)
+            .height(32.dp)
             .pointerInput(duration) {
                 detectTapGestures { offset ->
                     if (duration > 0) onSeek((offset.x / size.width * duration).toLong())
@@ -1012,20 +1043,25 @@ private fun MusicProgressBar(
         Box(
             Modifier.fillMaxWidth(playedFraction).height(barHeight).background(accent, Corner.pill),
         )
-        // 拖动手柄
+        /**
+         * 用户口径（2026-11-27，#10）**进度条头部的实心圆点必须看得见**。
+         *
+         * 之前写的圆点是 13dp，但外层 Box 只有 `barHeight`(4dp) 高
+         * —— 圆点被裁掉一大半，看起来就像没有。
+         *
+         * 现在用 `wrapContentHeight` 让外层容器跟着圆点撑开，
+         * 并用 `offset` 把圆心对齐到进度末端。
+         */
         Box(
             Modifier
                 .fillMaxWidth(playedFraction)
-                .height(barHeight),
+                .wrapContentHeight(Alignment.CenterVertically),
             contentAlignment = Alignment.CenterEnd,
         ) {
-            /**
-             * 用户口径（#4⑦）**进度条头部要有实心圆点**，照视频播放器那个。
-             * 拖动时变大，静止时小一点（和视频那边手感一致）。
-             */
             Box(
                 Modifier
-                    .size(if (scrubbing) 16.dp else 13.dp)
+                    .offset(y = 0.dp)
+                    .size(if (scrubbing) 18.dp else 14.dp)
                     .background(accent, CircleShape),
             )
         }
@@ -1104,8 +1140,21 @@ private fun AdaptiveLyrics(track: Item, positionMs: Long, rows: Int) {
         }
         return
     }
+    /**
+     * 用户口径（2026-11-27，#11）**当前这句必须在正中间**。
+     *
+     * 原话：「正在播放的那句歌词，不是在下方的正中间，好像有点偏下吧」
+     *
+     * 原因：上下各有 half 行，但每行有 padding(vertical=4dp)，
+     * 且中间行字号更大（titleLarge vs bodyLarge），实际行高不同，
+     * 导致中间行的视觉中心偏下。
+     *
+     * 修法：给每行固定高度（`heightIn(min = rowH)`），
+     * 让所有行等高，Column 的 Center 才是真正居中。
+     */
     val half = rows / 2
     val base = MaterialTheme.colorScheme.onSurface
+    val rowH = 28.dp
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
         for (offset in -half..half) {
             val idx = active + offset
@@ -1128,7 +1177,8 @@ private fun AdaptiveLyrics(track: Item, positionMs: Long, rows: Int) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                /** 固定行高，保证中间行真正居中（#11）。 */
+                modifier = Modifier.fillMaxWidth().heightIn(min = rowH),
             )
         }
     }

@@ -370,8 +370,43 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
          * 现在：只有在「已经处于 BUFFERING/READY/PAUSED」时才跳过
          * （说明之前真的 prepare 成功过），否则一律走一次真直链解析。
          */
+        /**
+         * 用户口径（2026-11-27，#14）**已有内容时不能整块跳过，队列还得恢复**。
+         *
+         * 用户原话：「大退重开，播放列表不在了，进度条还在，
+         *            下边的小播放条里边个词也不显示（正常播放时候歌词显示）」
+         *
+         * 根因：上面这个早退在「player 已有 item 且不是 IDLE」时直接 return，
+         * 连 `items` map 和 `_state.queue` 都没恢复 ——
+         * 结果播放列表是空的、迷你条拿不到歌词（歌词依赖 sourceId）。
+         *
+         * 现在早退时也要保证：items map 填好、publish() 一次、
+         * 让 state.queue 有内容、sourceId 有值。
+         */
         if (p.mediaItemCount > 0 && p.playbackState != Player.STATE_IDLE) {
-            android.util.Log.i("ETKN-Music", "restore: 已有内容且状态=${p.playbackState}，跳过")
+            android.util.Log.i("ETKN-Music", "restore: 已有内容且状态=${p.playbackState}，只补队列状态")
+            /** 把队列重新映射回 items（publish 依赖它）。 */
+            memory.queueIds.forEachIndexed { i, id ->
+                if (items[id] == null) {
+                    items[id] = itemFromMemory(
+                        MusicMemory(
+                            itemId = id,
+                            name = memory.queueNames.getOrNull(i).orEmpty().ifEmpty { id },
+                            artist = memory.queueArtists.getOrNull(i).orEmpty(),
+                            album = "",
+                            primaryTag = memory.queueTags.getOrNull(i)?.takeIf { it.isNotBlank() },
+                            positionMs = 0L,
+                            durationMs = 0L,
+                            sourceId = null,
+                        ),
+                    )
+                }
+            }
+            /** sourceId 也要补回，否则迷你条歌词取不到（#14）。 */
+            if (_state.value.sourceId == null && memory.sourceId != null) {
+                _state.value = _state.value.copy(sourceId = memory.sourceId)
+            }
+            publish()
             return
         }
         runCatching {
@@ -713,7 +748,37 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         _player?.addMediaItems(tracks.map { toMediaItem(it, urls) })
     }
 
-    fun toggle() { _player?.let { if (it.isPlaying) it.pause() else { if (it.playbackState == Player.STATE_IDLE) it.prepare(); it.play() } } }
+    /**
+     * 用户口径（2026-11-27，#12）**大退后点播放必须能出声**。
+     *
+     * 用户原话：
+     *  「大退后进入APP，直接点击下方的播放小条，进入播放界面点击播放按钮，不能播放没反应」
+     *
+     * 根因：恢复出来的 item 用的是**占位 URL**（`etkn-music://track/<id>`），
+     * 真直链要在 `resolve()` 里才换。而 `resolve()` 只在 ExoPlayer
+     * 真正去读数据源时才被调用 —— `pause()` 后 `play()` 只是恢复播放，
+     * 不会重新走 prepare，所以永远是「点了没反应」。
+     *
+     * 修法：播放前检查当前 item 的 URL 是不是占位 scheme，
+     * 是的话先用记忆里的 itemId 重新走一次完整播放（`resumeRemembered()`）。
+     */
+    fun toggle() {
+        val p = _player ?: return
+        if (p.isPlaying) {
+            p.pause()
+            return
+        }
+        /** 当前 item 还是占位 URL → 重新解析并起播。 */
+        val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+        if (uri.startsWith("$SCHEME://") && _remembered.value != null) {
+            resumeRemembered()
+            return
+        }
+        if (p.playbackState == Player.STATE_IDLE) {
+            runCatching { p.prepare() }
+        }
+        p.play()
+    }
     fun pause() { _player?.pause() }
     fun next() { _player?.seekToNextMediaItem() }
     fun previous() { _player?.let { if (it.currentPosition > 3_000) it.seekTo(0) else it.seekToPreviousMediaItem() } }

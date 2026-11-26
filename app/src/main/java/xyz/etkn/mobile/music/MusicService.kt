@@ -271,7 +271,8 @@ class MusicService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
             isForPlayback: Boolean,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            val remembered = applicationContext.graph.music.remembered.value
+            val music = applicationContext.graph.music
+            val remembered = music.remembered.value
             if (remembered == null) {
                 // 从没播过：返回空列表，系统就不会拉起播放（符合预期）
                 return Futures.immediateFuture(
@@ -280,10 +281,23 @@ class MusicService : MediaLibraryService() {
                     ),
                 )
             }
+            /**
+             * 用户口径（2026-11-27，#13）**系统点播放要真的出声**。
+             *
+             * 只返回 `MediaItem` 的话，Media3 会拿占位 URL 去 prepare，
+             * 而 `resolve()` 需要网络换真直链 —— 系统那边的 `PlaybackState`
+             * 会停在 BUFFERING 很久，用户感觉「点了没反应」。
+             *
+             * 这里在返回 item 的同时**主动触发一次真实播放**（异步），
+             * 保证系统卡片点下去之后确实开始播。
+             */
+            applicationContext.graph.scope.launch {
+                runCatching { music.resumeRemembered() }
+            }
             return Futures.immediateFuture(
                 MediaSession.MediaItemsWithStartPosition(
                     /* mediaItems = */ ImmutableList.of(
-                        applicationContext.graph.music.resumeMediaItem(remembered),
+                        music.resumeMediaItem(remembered),
                     ),
                     /* startIndex = */ 0,
                     /* startPositionMs = */ remembered.positionMs,

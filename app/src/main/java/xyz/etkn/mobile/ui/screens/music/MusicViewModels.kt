@@ -193,7 +193,28 @@ class MusicListViewModel(
      *
      * 四种方式与参考图一致：添加时间 / 首字母 / 歌手首字母 / 播放次数。
      */
-    private val _sort = MutableStateFlow(MusicSort.AddedTime)
+    /**
+     * 用户口径（2026-11-27，#8）**排序选项要能记住**。
+     *
+     * 原话：「排序固定不住，没有记忆，每次都恢复默认初始的状态，你要把这个选项有记忆固定住」
+     *
+     * 存 SharedPreferences（按 tab 分开存），进页面时读回来。
+     */
+    private val _sort = MutableStateFlow(readSortPref())
+
+    private fun sortPrefKey() = "music_sort_$tab"
+    private fun readSortPref(): MusicSort = runCatching {
+        val name = graph.app.getSharedPreferences("etkn_music_sort", android.content.Context.MODE_PRIVATE)
+            .getString(sortPrefKey(), null)
+        name?.let { MusicSort.valueOf(it) }
+    }.getOrNull() ?: MusicSort.AddedTime
+
+    private fun saveSortPref(v: MusicSort) {
+        runCatching {
+            graph.app.getSharedPreferences("etkn_music_sort", android.content.Context.MODE_PRIVATE)
+                .edit().putString(sortPrefKey(), v.name).apply()
+        }
+    }
     val sort: StateFlow<MusicSort> = _sort.asStateFlow()
 
     /**
@@ -224,9 +245,43 @@ class MusicListViewModel(
         }
     }
 
+    /**
+     * 用户口径（2026-11-27，#9）**切排序必须先把整库拉完再排**。
+     *
+     * 用户原话：
+     *  「排序固定不住…而且排序有问题，选中之后需要往下滑动一会，
+     *    然后才会刷新不会整库直接刷新，全部直接就变」
+     *  「它不是一次性请求所有的歌曲数据，好像一次请求60个，
+     *    我往下翻到60之后他才刷新全部」
+     *  「所以就导致排序出问题，因为不是全部的」
+     *
+     * 根因：列表是分页的（一次 60 条），排序只作用于「已加载的那部分」，
+     * 所以看上去只有翻页后才"慢慢刷新"，而且排出来的顺序是错的
+     * （比如「以沫」y 开头却排在最前面 —— 因为它只在第一页里出现过）。
+     *
+     * 现在：切换排序时先 `loadEverything()` 把全库拉完，再整体重排。
+     * 中途给 UI 一个 loading 标记，避免用户以为没反应。
+     */
     fun setSort(value: MusicSort) {
+        if (_sort.value == value) return
         _sort.value = value
+        saveSortPref(value)
+        /** 全量拉取后重排（只有「歌曲」tab 需要，其他 tab 本身就是分组）。 */
+        if (tab == "songs" || tracksOnly) {
+            viewModelScope.launch {
+                _sortLoading.value = true
+                runCatching {
+                    val all = loadEverything()
+                    _sortedTracks.value = applySort(all, value)
+                }
+                _sortLoading.value = false
+            }
+        }
     }
+
+    /** 切换排序时全量重排的加载态。 */
+    private val _sortLoading = MutableStateFlow(false)
+    val sortLoading: StateFlow<Boolean> = _sortLoading.asStateFlow()
 
     /**
      * 用户口径（2026-11-27，#34）**「播放全部」要把整张列表都加进队列，按当前排序**。
