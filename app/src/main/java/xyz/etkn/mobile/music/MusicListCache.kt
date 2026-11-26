@@ -5,9 +5,9 @@ import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.data.model.UserData
 
 /**
- * 用户口径（2026-11-27，#19）**歌曲列表本地缓存**。
+ * 用户口径（2026-11-27，#19/#23）**歌曲列表本地缓存**。
  *
- * 用户原话：
+ * 用户原话（需求来源）：
  *  「我发现每次好像进入APP打开，都是要重新请求服务器重新拉一下，
  *    这个能不能写进本地缓存呀，就像是视频的那页一样，
  *    刚进去先看到的是本地缓存，要不进去之后看到的是空白，
@@ -18,14 +18,29 @@ import xyz.etkn.mobile.data.model.UserData
  * 进「歌曲」页
  *   → 立刻显示上次缓存的完整列表（0 延迟，不空白）
  *   → 后台静默拉服务端最新数据
- *   → 拿到后替换（并且只在内容真的变了时才滚动位置）
+ *   → 拿到后替换并回写缓存
  * ```
  *
- * 实现：
- *  · 存 SharedPreferences，key 按「库 id + tab」分开
- *  · `Item` 不是 @Serializable，所以只存排序/播放/展示必需的字段，
- *    用 `\u001F`（单元分隔符）拼接，`\u001E`（记录分隔符）分行
- *  · 601 首约 100KB，SharedPreferences 能吃下（远小于 1MB 的坑）
+ * ## 为什么**不**按时间过期
+ *
+ * 用户质疑（完全正确）：
+ *  「14天过期，那么第14天的时候，打开，你给我清理了，那会不会又出现这种问题？
+ *    就是没有数据了，东西啥都没了，还得重新加载，列表里的歌也都没有了需要重新弄」
+ *
+ * 两者的用途根本不同：
+ * ```
+ * 接口缓存(ResponseCache)  过期 = 数据可能错了，必须重新拉 → 该删
+ * 歌曲列表缓存(本类)       只是"先把列表画出来"的占位，
+ *                          进页面后很快就被服务端最新数据覆盖 → 删它只有坏处
+ * ```
+ *
+ * 删掉的唯一后果：第 14 天进页面又看到一次空白，等网络回来。
+ * 所以这里**永不按时间过期**，永远「先显示旧的，后台再刷新」。
+ *
+ * 真正会被清掉的时机只有三个：
+ *  · 用户点「清空缓存」
+ *  · 退出登录 / 换账号（缓存必须失效）
+ *  · 服务端返回列表为空（说明这批歌真没了，覆盖成空）
  */
 object MusicListCache {
     private const val PREFS = "etkn_music_list_cache"
@@ -115,33 +130,20 @@ object MusicListCache {
     private fun timeKeyOf(libraryId: String, tab: String) = "time_${libraryId}_$tab"
 
     /**
-     * 用户口径（2026-11-27，#22）**过期规则照视频/接口缓存那套**。
+     * 读缓存：**不做时间过期**（见类注释）。有多少返回多少。
      *
-     * 参考实现：`data/net/ResponseCache.kt:40`
-     * ```
-     * fun prune(maxAgeDays: Int = 14, maxBytes: Long = 16L * 1024 * 1024)
-     * ```
-     * 即「**14 天过期**，最多 16MB，App 启动时清理一次」。
-     *
-     * 音乐列表缓存沿用同一套：
-     *  · 超过 [MAX_AGE_MS]（14 天）→ 读取时当作没有，同时删掉
-     *  · 每次写入刷新时间戳
-     *  · [prune] 在 App 启动时调用，清理所有过期的库
-     *  · 用户点「清空缓存」时直接 [clear]
+     * `savedAt` 只用于日志（看缓存有多旧），不参与任何判定。
      */
-    private const val MAX_AGE_MS = 14L * 86_400_000L   // 14 天，和 ResponseCache 一致
-
     fun read(context: Context, libraryId: String, tab: String): List<Item> = runCatching {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        /** 过期检查：超过 14 天就当没缓存。 */
-        val savedAt = prefs.getLong(timeKeyOf(libraryId, tab), 0L)
-        if (savedAt <= 0L || System.currentTimeMillis() - savedAt > MAX_AGE_MS) {
-            android.util.Log.i("ETKN-Music", "列表缓存已过期（${'$'}{(System.currentTimeMillis() - savedAt) / 86_400_000L} 天）")
-            prefs.edit().remove(keyOf(libraryId, tab)).remove(timeKeyOf(libraryId, tab)).apply()
-            return emptyList()
-        }
         val raw = prefs.getString(keyOf(libraryId, tab), null) ?: return emptyList()
-        raw.split(ROW).mapNotNull(::decode)
+        val list = raw.split(ROW).mapNotNull(::decode)
+        val savedAt = prefs.getLong(timeKeyOf(libraryId, tab), 0L)
+        if (savedAt > 0) {
+            val days = (System.currentTimeMillis() - savedAt) / 86_400_000L
+            android.util.Log.i("ETKN-Music", "列表缓存命中 ${list.size} 首（${days} 天前写入）")
+        }
+        list
     }.getOrDefault(emptyList())
 
     fun write(context: Context, libraryId: String, tab: String, items: List<Item>) {
@@ -150,7 +152,7 @@ object MusicListCache {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .putString(keyOf(libraryId, tab), raw)
-                /** 写入时刷新时间戳（用于 14 天过期判定）。 */
+                /** 时间戳只用于日志，不做过期判定。 */
                 .putLong(timeKeyOf(libraryId, tab), System.currentTimeMillis())
                 .apply()
         }
@@ -163,26 +165,10 @@ object MusicListCache {
         }
     }
 
-    /**
-     * 启动时清理过期条目（照 `ResponseCache.prune()` 的做法）。
-     *
-     * 只按时间清理；音乐列表本身不大（601 首约 100KB），不需要按容量淘汰。
-     */
-    fun prune(context: Context) {
+    /** 清空全部（退出登录/换账号时用）。 */
+    fun clearAll(context: Context) {
         runCatching {
-            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val now = System.currentTimeMillis()
-            val stale = prefs.all.keys.filter { k ->
-                k.startsWith("time_") && (now - ((prefs.all[k] as? Long) ?: 0L)) > MAX_AGE_MS
-            }
-            if (stale.isEmpty()) return@runCatching
-            prefs.edit().apply {
-                stale.forEach { tk ->
-                    remove(tk)
-                    remove("list_" + tk.removePrefix("time_"))
-                }
-            }.apply()
-            android.util.Log.i("ETKN-Music", "列表缓存清理 ${stale.size} 个过期库")
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
         }
     }
 }

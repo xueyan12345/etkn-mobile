@@ -121,17 +121,24 @@ class AppGraph(val app: Application) {
         xyz.etkn.mobile.player.PlaybackCache.init(http.media)
         scope.launch(Dispatchers.IO) { responses.prune() }
         /**
-         * 用户口径（2026-11-27，#22）**音乐列表缓存也照这套清理规则**。
-         * 和 `responses.prune()` 一样在启动时跑一次，14 天过期就删。
+         * 用户口径（2026-11-27，#23）**音乐列表缓存不做时间清理**。
+         *
+         * 它的作用只是「进页面先把列表画出来」，进页面后几秒就被服务端数据覆盖。
+         * 按 14 天删掉只会让用户在那一天又看到一次空白，纯亏。
+         * 详见 `MusicListCache` 类注释。
          */
-        scope.launch(Dispatchers.IO) {
-            runCatching { xyz.etkn.mobile.music.MusicListCache.prune(app) }
-        }
         // Nothing of a signed-out account stays on disk.
         scope.launch {
             sessions.state.collect {
                 if (it is SessionState.SignedOut) {
-                    withContext(Dispatchers.IO) { responses.clear() }
+                    withContext(Dispatchers.IO) {
+                        responses.clear()
+                        /**
+                         * 用户口径（#23）**换账号必须清音乐列表缓存**，
+                         * 否则登出后还能看到上一个账号的歌单。
+                         */
+                        runCatching { xyz.etkn.mobile.music.MusicListCache.clearAll(app) }
+                    }
                     LauncherEntries.clear(app)
                 }
             }
