@@ -318,8 +318,34 @@ class MusicService : MediaLibraryService() {
             "ETKN-Music",
             "onStartCommand: 媒体键=$pressed (intent=$keyCode hint=$hintedKey)",
         )
-        if ((pressed != null || isMediaButtonAction) && MediaButtonHint.handledRecently()) {
-            android.util.Log.i("ETKN-Music", "onStartCommand: Session 层已处理，跳过（防重复）")
+        /**
+         * 用户口径（2026-11-27，#56）**彻底解决"一次跳两首"**。
+         *
+         * 已确认的事实：
+         * ```
+         * ① 全仓库只有一处 seekToNextMediaItem（MusicConnection L1120）
+         * ② onPlayerCommandRequest 只被调用 1 次（cmd=9）
+         * ③ 但 active item id 从 413 → 415，跨了 2
+         * ```
+         * 说明：`onPlayerCommandRequest` 里我们已经切了一次（RESULT_SUCCESS），
+         * 而 `onStartCommand` 那条异步路径**又切了一次** —— 因为
+         * `MediaButtonHint.handledRecently()` 只有 2 秒窗口，
+         * 而 onStartCommand 里要 `await SignedIn`（异步等登录态），
+         * 等完早就过了 2 秒，去重失效。
+         *
+         * 根治：**只要播放器里已经有内容（队列非空），onStartCommand 就完全不处理**。
+         * 它只在真正的冷启动（队列还没装回来）时才有意义 ——
+         * 那时的目标就是"把队列装回来并开始播"，不是切歌。
+         */
+        val alreadyLoaded = runCatching {
+            applicationContext.graph.music.player.mediaItemCount > 0
+        }.getOrDefault(false)
+        if (alreadyLoaded) {
+            android.util.Log.i(
+                "ETKN-Music",
+                "onStartCommand: 队列已加载(${applicationContext.graph.music.player.mediaItemCount} 首)，" +
+                    "跳过（交给 onPlayerCommandRequest）pressed=$pressed",
+            )
             return super.onStartCommand(intent, flags, startId)
         }
         if (pressed != null || isMediaButtonAction) {
@@ -557,7 +583,8 @@ class MusicService : MediaLibraryService() {
         ): Int {
             android.util.Log.i(
                 "ETKN-Music",
-                "onPlayerCommandRequest: cmd=$playerCommand from=${controller.packageName}",
+                "onPlayerCommandRequest: cmd=$playerCommand from=${controller.packageName} " +
+                    "idxNow=${applicationContext.graph.music.player.currentMediaItemIndex}",
             )
             /**
              * 用户口径（#40）**标记"这个键已由 Session 层处理"**，

@@ -36,9 +36,25 @@ data class Lyrics(val lines: List<LyricLine>, val synced: Boolean) {
          * 会当成正常歌词显示在最前面，用户看到的就是"播了半天还在第一句"。
          */
         private val CREDIT = Regex(
-            """^\s*(作词|作曲|编曲|制作人|混音|母带|和声|监制|出品|录音|吉他|贝斯|鼓|弦乐|填词|原唱|翻唱|OP|SP)\s*[:：].*$""",
+            """^\s*(作词|作曲|编曲|制作人|混音|母带|和声|监制|出品|录音|吉他|贝斯|鼓|弦乐|填词|原唱|翻唱|OP|SP|词|曲|演唱|演唱者|专辑|发行|策划|统筹)\s*[:：].*$""",
             RegexOption.IGNORE_CASE,
         )
+
+        /**
+         * 用户口径（2026-11-27，#57）**制作信息行首尾带歌名/歌手名也要过滤**。
+         *
+         * 实测「天外来物」：
+         * ```
+         * [00:00.00]天外来物 - 薛之谦      ← 歌名+歌手，重复显示
+         * [00:06.03]词：薛之谦             ← 用「词：」不是「作词：」
+         * [00:12.06]曲：罗小黑
+         * [00:18.09]你降落的 太突然了       ← 真正的第一句
+         * ```
+         * 上一版 CREDIT 只认「作词：」，漏了「词：」「曲：」这种简写，
+         * 于是这三行都被当歌词显示，用户看到开头 18 秒全是这些东西，
+         * 主观感受就是"歌词延迟特别严重"。
+         */
+        private val TITLE_LINE = Regex("""^\s*(.+?)\s*[-–—]\s*(.+?)\s*$""")
 
         /**
          * Parses LRC (multiple time tags per line supported) or plain text. Blank lines and
@@ -57,8 +73,19 @@ data class Lyrics(val lines: List<LyricLine>, val synced: Boolean) {
                 }
                 sawTag = true
                 val content = line.substring(tags.last().range.last + 1).trim()
-                /** 制作信息（作词/作曲…）带时间戳也跳过（#55）。 */
+                /** 制作信息（作词/作曲…）带时间戳也跳过（#55/#57）。 */
                 if (content.isNotEmpty() && CREDIT.matches(content)) return@forEach
+                /**
+                 * 「歌名 - 歌手」这种标题行也跳过（#57）。
+                 *
+                 * 实测「天外来物」第一行就是 `[00:00.00]天外来物 - 薛之谦`，
+                 * 和界面顶部的歌名/歌手完全重复，不该出现在歌词里。
+                 * 判定：包含「-」或「–」或「—」且前面部分长度 < 30（排除正常歌词里的破折号）。
+                 */
+                if (content.isNotEmpty()) {
+                    val m = TITLE_LINE.matchEntire(content)
+                    if (m != null && m.groupValues[1].length < 30) return@forEach
+                }
                 /**
                  * 用户口径（2026-11-27，#55）**空内容的时间戳行不能直接丢掉**。
                  *

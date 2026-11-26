@@ -823,6 +823,24 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             override fun onEvents(player: Player, events: Player.Events) = publish()
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                /**
+                 * 用户口径（2026-11-27，#56）**定位「一次跳两首」到底是谁多切了一次**。
+                 *
+                 * 现象：命令只收到 1 次（cmd=9），我们的 systemNext 也只执行 1 次，
+                 * 但 active item id 从 413 跳到 415 —— 跨了 2。
+                 *
+                 * 这里把每次 transition 的 reason 打出来，就能看出：
+                 * ```
+                 * reason=AUTO(1)   Media3 自己前进
+                 * reason=SEEK(2)   我们 seekToNextMediaItem 触发
+                 * ```
+                 * 如果一次按键出现两条记录（AUTO + SEEK），就说明两边各干了一次。
+                 */
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "onMediaItemTransition: reason=$reason idx=${player.currentMediaItemIndex} " +
+                        "id=${mediaItem?.mediaId} count=${player.mediaItemCount}",
+                )
                 finishReport(completed = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
                 // Gapless advance keeps STATE_READY, so start the next track's report here.
                 if (player.playbackState == Player.STATE_READY) startReport()
