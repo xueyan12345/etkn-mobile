@@ -242,6 +242,56 @@ class MusicService : MediaLibraryService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
 
+    /**
+     * 用户口径（2026-11-27，#30）**从广播里拿到用户按的是哪个键，直接开始播**。
+     *
+     * 用户诉求：
+     *  「连蓝牙耳机，我点蓝牙耳机的下一集，或者是播放，
+     *    能不能直接给它唤醒起来播放呀，要不每次我还要给它打开播放」
+     *
+     * 实测现状（adb）：
+     * ```
+     * App force-stop → 按 KEYCODE_MEDIA_NEXT
+     *   → 进程被拉起 ✅
+     *   → 恢复到上次那首（PAUSED, 57s）✅
+     *   → 但没出声 ❌
+     * ```
+     *
+     * 原因：ColorOS 在进程启动后 91ms 就完成 Session 判定并踢出栈，
+     * 那条「下一曲」命令在 App 起来之前就被丢弃了。
+     * 但 **`MediaButtonReceiver` 收到的广播 Intent 里带着 keycode**，
+     * 只要 Service 能拿到这个 Intent，就知道用户按的是播放还是下一曲，
+     * 然后直接开始播 —— 不依赖系统再发一次命令。
+     *
+     * `MediaSessionService` 被 MediaButtonReceiver 拉起时会调 `onStartCommand`，
+     * 这里读 intent 的 `EXTRA_KEY_EVENT` 拿到 keycode。
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val keyCode = intent
+            ?.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT)
+            ?.keyCode
+        val action = intent?.action
+        android.util.Log.i(
+            "ETKN-Music",
+            "onStartCommand: action=$action keyCode=$keyCode",
+        )
+        if (keyCode != null) {
+            /**
+             * 用户口径（#27）：没在播时，「播放」和「下一曲」都等于开始播放。
+             * 所以这里统一走 `systemPlay()` —— 它会等会话就绪、解析真直链、真的出声。
+             */
+            applicationContext.graph.scope.launch {
+                runCatching {
+                    /** 等 Session 建好 + 会话就绪（构造里已经等过，这里再兜一次）。 */
+                    kotlinx.coroutines.delay(300)
+                    applicationContext.graph.music.systemPlay()
+                    android.util.Log.i("ETKN-Music", "onStartCommand: 已触发播放（keyCode=$keyCode）")
+                }
+            }
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         /**
          * 用户口径（2026-11-27，#1 最终修复）**App 被划掉时绝对不能 stopSelf()**。
