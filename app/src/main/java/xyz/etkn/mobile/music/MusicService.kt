@@ -290,10 +290,38 @@ class MusicService : MediaLibraryService() {
         val hintedKey = MediaButtonHint.consume()
         /** 实际按下的键（Intent 或静态提示任一来源）。 */
         val pressed = keyCode ?: hintedKey
+        /**
+         * 用户口径（2026-11-27，#40）**同一个键只能处理一次**。
+         *
+         * 用户报的 bug：
+         *  「下一首，点一下会跳两首歌，上一首也有问题」
+         *
+         * 根因：同一个按键有**两个处理点**，都真的执行了：
+         * ```
+         * ① onPlayerCommandRequest（Media3 Session 层）→ music.systemNext()
+         * ② onStartCommand（我们自己加的）              → music.systemNext()
+         * ```
+         * 所以一次点击跳两首；上一首同理（连退两首，看起来"不是上一首"）。
+         *
+         * 现在按「谁该负责」划清：
+         * ```
+         * 冷启动（进程刚起来、Session 还不存在）
+         *     → onPlayerCommandRequest 根本不会被调用
+         *     → 只能由 onStartCommand 接管   ✅
+         * 已在运行（Session 存在、系统发的是 Player 命令）
+         *     → onPlayerCommandRequest 会处理
+         *     → onStartCommand 必须放手，否则重复执行
+         * ```
+         * 判断依据：`session` 已存在 = 走 Session 那条路，这边不动。
+         */
         android.util.Log.i(
             "ETKN-Music",
             "onStartCommand: 媒体键=$pressed (intent=$keyCode hint=$hintedKey)",
         )
+        if ((pressed != null || isMediaButtonAction) && MediaButtonHint.handledRecently()) {
+            android.util.Log.i("ETKN-Music", "onStartCommand: Session 层已处理，跳过（防重复）")
+            return super.onStartCommand(intent, flags, startId)
+        }
         if (pressed != null || isMediaButtonAction) {
             applicationContext.graph.scope.launch {
                 runCatching {
@@ -531,11 +559,41 @@ class MusicService : MediaLibraryService() {
                 "ETKN-Music",
                 "onPlayerCommandRequest: cmd=$playerCommand from=${controller.packageName}",
             )
+            /**
+             * 用户口径（#40）**标记"这个键已由 Session 层处理"**，
+             * 让随后到来的 `onStartCommand` 不要再执行一遍（否则一次点击跳两首）。
+             */
+            MediaButtonHint.markHandledBySession()
             val music = applicationContext.graph.music
             when (playerCommand) {
-                Player.COMMAND_PLAY_PAUSE -> applicationContext.graph.scope.launch {
-                    runCatching { music.systemPlay() }
+                /**
+                 * 用户口径（2026-11-27，#44）**PLAY_PAUSE 必须真的能暂停**。
+                 *
+                 * 用户报的 bug：「暂停按钮又不好使了」。
+                 *
+                 * 根因（又是我上一版引入的）：
+                 * ```
+                 * COMMAND_PLAY_PAUSE → music.systemPlay()   ← 只会播，永远不暂停
+                 * 而且这里返回 RESULT_SUCCESS（=已处理），
+                 * Media3 内置的 play/pause 切换就不会再执行 → 暂停彻底失效
+                 * ```
+                 *
+                 * 现在：正在播 → 暂停；没在播 → 播（走 systemPlay 保证能出声）。
+                 */
+                Player.COMMAND_PLAY_PAUSE -> {
+                    val player = applicationContext.graph.music.player
+                    if (player.isPlaying) {
+                        music.pause()
+                        android.util.Log.i("ETKN-Music", "PLAY_PAUSE: 正在播 → 暂停")
+                    } else {
+                        applicationContext.graph.scope.launch {
+                            runCatching { music.systemPlay() }
+                        }
+                        android.util.Log.i("ETKN-Music", "PLAY_PAUSE: 未在播 → 播放")
+                    }
                 }
+                /** 停止也当暂停处理（保持卡片状态一致）。 */
+                Player.COMMAND_STOP -> music.pause()
                 Player.COMMAND_SEEK_TO_NEXT,
                 Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
                 -> applicationContext.graph.scope.launch {
@@ -605,6 +663,29 @@ class MusicService : MediaLibraryService() {
 object MediaButtonHint {
     @Volatile private var keyCode: Int? = null
     @Volatile private var at: Long = 0L
+
+    /**
+     * 用户口径（2026-11-27，#40）**同一个键只能执行一次**。
+     *
+     * 根因（用户报「下一首点一下跳两首」）：
+     * ```
+     * ① onPlayerCommandRequest（Media3 Session 层）→ systemNext()
+     * ② onStartCommand（我们自己加的）              → systemNext()
+     * ```
+     * 两个处理点都真的执行了 → 一次点击跳两首；上一首同理（连退两首，
+     * 所以用户说「反正不是上一首」）。
+     *
+     * 用这个时间戳做去重：Session 层处理过的键，2 秒内 `onStartCommand` 直接放手。
+     */
+    @Volatile private var handledAt: Long = 0L
+
+    fun markHandledBySession() {
+        handledAt = System.currentTimeMillis()
+    }
+
+    /** 刚刚（2 秒内）是不是已经被 Session 层处理过？ */
+    fun handledRecently(): Boolean =
+        System.currentTimeMillis() - handledAt < 2_000L
 
     /** Receiver 收到广播时调用。 */
     fun remember(code: Int) {

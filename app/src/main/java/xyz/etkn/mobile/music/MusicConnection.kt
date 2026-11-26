@@ -506,22 +506,51 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                      * 用户感知不到声音，但 Session 从此有了完整状态，
                      * 状态栏/车机卡片的播放键就亮了。
                      */
-                    val realVolume = p.volume
-                    p.volume = 0f
-                    p.play()
-                    /** 等到真的进入 READY 或超时（最多 2 秒）。 */
-                    val deadline = System.currentTimeMillis() + 2_000
-                    while (p.playbackState != Player.STATE_READY &&
-                        System.currentTimeMillis() < deadline
-                    ) {
-                        kotlinx.coroutines.delay(50)
+                    /**
+                     * 用户口径（2026-11-27，#45）**静默起播的音量必须绝对还原**。
+                     *
+                     * 用户报的 bug：「手机音量已经调大了，一点声没有」。
+                     *
+                     * 根因（我这版引入的严重 bug）：
+                     * ```
+                     * val realVolume = p.volume     ← 若上次没还原成功，这里取到的就是 0
+                     * p.volume = 0f
+                     * ... p.pause(); p.volume = realVolume; p.seekTo(...)
+                     *                    ↑ 只要上面任何一步抛异常，音量永远停在 0
+                     * ```
+                     * 上一版就是 `seekTo`/`pause` 中途失败，`p.volume` 卡在 0，
+                     * 而下次进来 `realVolume` 又读到 0 —— **永久静音，调音量键也没用**
+                     * （系统音量是 30，但播放器客户端音量是 0，所以
+                     * `dumpsys audio` 显示 `mutedState:clientVolume`）。
+                     *
+                     * 现在三重保险：
+                     *  · `realVolume` 取到时如果是 0，按 1.0 处理（不能把自己越锁越死）
+                     *  · `try/finally` 保证无论中间怎么失败都把音量还原
+                     *  · 还原后再断言一次
+                     */
+                    val realVolume = if (p.volume <= 0f) 1f else p.volume
+                    try {
+                        p.volume = 0f
+                        p.play()
+                        val deadline = System.currentTimeMillis() + 2_000
+                        while (p.playbackState != Player.STATE_READY &&
+                            System.currentTimeMillis() < deadline
+                        ) {
+                            kotlinx.coroutines.delay(50)
+                        }
+                        p.pause()
+                    } finally {
+                        /** **必须**还原，哪怕上面抛了异常。 */
+                        p.volume = realVolume
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "restore: 音量还原为 ${p.volume}（原 ${realVolume}）",
+                        )
                     }
-                    p.pause()
-                    p.volume = realVolume
-                    p.seekTo(memory.positionMs)
+                    runCatching { p.seekTo(memory.positionMs) }
                     android.util.Log.i(
                         "ETKN-Music",
-                        "restore: 静默起播完成 state=${p.playbackState} pos=${p.currentPosition}",
+                        "restore: 静默起播完成 state=${p.playbackState} pos=${p.currentPosition} vol=${p.volume}",
                     )
                 }.onFailure {
                     android.util.Log.w("ETKN-Music", "restore 解析直链失败", it)
@@ -779,6 +808,17 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val musicCacheMb = MusicCache.limitMb
         val factory = MusicCache.dataSource(context, resolving, musicCacheMb)
         val player = PlayerFactory.music(context, factory)
+        /**
+         * 用户口径（2026-11-27，#45）**播放器音量必须是 1.0**。
+         *
+         * 历史 bug 留下的后遗症：曾经"静默起播"把 `p.volume` 设成 0 却没还原，
+         * 这个状态会跟着进程活着 —— `dumpsys audio` 里显示
+         * `mutedState:clientVolume`，系统音量调到最大也没声音。
+         *
+         * 所以在播放器一创建就显式归位，不依赖任何"还原"逻辑。
+         */
+        player.volume = 1f
+        android.util.Log.i("ETKN-Music", "player 创建，音量归位=${player.volume}")
         player.addListener(object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) = publish()
 
@@ -949,6 +989,11 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             withTimeoutOrNull(10_000L) {
                 graph.sessions.state.first { it is SessionState.SignedIn }
             }
+            /**
+             * 用户口径（#45）**播放前确保音量不是 0**。
+             * 防止历史"静默起播"留下的 0 音量让用户以为播放坏了。
+             */
+            _player?.let { if (it.volume <= 0f) it.volume = 1f }
             val p = _player
             if (p != null && p.mediaItemCount > 0 && p.playbackState != Player.STATE_IDLE) {
                 /** 已有内容：直接播（可能停在占位 URL，先尝试 prepare）。 */
@@ -1273,6 +1318,20 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      *
      * 只预载下一首；同一首不重复提交（`MusicPrefetch` 内部去重）。
      */
+    /**
+     * 用户口径（2026-11-27，#42）**按需补取 sourceId**。
+     *
+     * 歌词接口必须带 `MediaSourceId`，而它只在解析直链时才拿到。
+     * 冷启动 / 刚切歌那一刻 `state.sourceId` 是 null，
+     * 界面那边就需要一个「立刻帮我取一下」的入口。
+     */
+    suspend fun ensureSourceId(itemId: String): String? {
+        resolved[itemId]?.sourceId?.let { return it }
+        return runCatching {
+            graph.api.playbackInfo(itemId, audio = true).sources.firstOrNull()?.id
+        }.getOrNull()
+    }
+
     private fun maybePrefetchNext(p: androidx.media3.common.Player) {
         if (p.mediaItemCount == 0) return
         val nextIndex = p.currentMediaItemIndex + 1
@@ -1302,18 +1361,24 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val nextId = p.getMediaItemAt(nextIndex).mediaId
         /** 当前这首已经为它预载过了，就不再重复。 */
         val curId = p.currentMediaItem?.mediaId ?: return
-        if (prefetchedFor == curId) {
-            return
-        }
+        if (prefetchedFor == curId) return
         prefetchedFor = curId
         android.util.Log.i("ETKN-Music", "开始预载下一首 cur=$curId next=$nextId")
         graph.scope.launch {
             runCatching {
-                /** 已经在预载/已解析过就不重复请求。 */
+                android.util.Log.i("ETKN-Music", "预载协程启动 next=$nextId")
                 if (MusicPrefetch.lastKey?.endsWith(nextId) == true) return@launch
-                val active = session ?: return@launch
+                val active = session
+                if (active == null) {
+                    android.util.Log.w("ETKN-Music", "预载中止：session 为空")
+                    return@launch
+                }
                 val info = graph.api.playbackInfo(nextId, audio = true)
-                val source = info.sources.firstOrNull() ?: return@launch
+                val source = info.sources.firstOrNull()
+                if (source == null) {
+                    android.util.Log.w("ETKN-Music", "预载中止：无 source")
+                    return@launch
+                }
                 val url = PlaybackAddress.music(
                     source, active.server, active.token, active.userId, info.playSessionId,
                 )

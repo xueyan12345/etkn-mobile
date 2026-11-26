@@ -732,8 +732,26 @@ private fun FiveLineLyrics(track: Item, positionMs: Long) {
     val graph = LocalContext.current.graph
     val music by graph.music.state.collectAsStateWithLifecycle()
     var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
+    /**
+     * 用户口径（2026-11-27，#42）**不能因为 sourceId 为空就不加载歌词**。
+     *
+     * 用户报的 bug（截图里正在播放却没有歌词）：
+     * ```
+     * val sid = music.sourceId ?: return@LaunchedEffect
+     * ```
+     * `sourceId` 要等直链解析完才有，冷启动 / 刚切歌的那一刻是 null
+     * → 直接 return，歌词永远不加载 → 界面空白。
+     *
+     * 修法：sourceId 为空时**主动去取一次**（后台，不阻塞界面），
+     * 拿到就存进 MusicConnection 的解析表并立刻用上。
+     */
     LaunchedEffect(track.id, music.sourceId) {
-        val sid = music.sourceId ?: return@LaunchedEffect
+        var sid = music.sourceId
+        if (sid == null) {
+            /** 顺带把 sourceId 补上，避免每次切歌都白等一次。 */
+            sid = runCatching { graph.music.ensureSourceId(track.id) }.getOrNull()
+        }
+        if (sid == null) return@LaunchedEffect
         val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
         parsed = if (text.isBlank()) null else Lyrics.parse(text)
     }
@@ -1180,16 +1198,22 @@ private fun SeekerLyrics(
             pinnedIndex = idx
         }
 
-        /** 手松开 1.2 秒后：自动跳播到定位行。 */
+        /**
+         * 用户口径（2026-11-27，#41）**松手后不自动跳播，只回到正在播的那句并隐藏控件**。
+         *
+         * 用户原话：
+         *  「松手之后，如果没有操作，就跳回现正在播放的歌词位置，
+         *    然后隐藏掉这个横线和小播放按钮」
+         *
+         * 所以：松手 → 等 1 秒 → 滚回当前播放行、隐藏定位线和跳播按钮。
+         * **不 seek**。要跳播只能点那个小播放按钮（显式操作）。
+         */
         LaunchedEffect(dragging, pinnedIndex) {
-            if (dragging && !list.isScrollInProgress && pinnedIndex >= 0) {
-                kotlinx.coroutines.delay(1_200)
-                val target = lines.getOrNull(pinnedIndex)
-                if (target != null) {
-                    onSeek(target.timeMs)
-                }
+            if (dragging && !list.isScrollInProgress) {
+                kotlinx.coroutines.delay(1_000)
                 dragging = false
                 pinnedIndex = -1
+                /** 回落到正在播放的那句（`activeIndex` 的跟随逻辑会自动滚过去）。 */
             }
         }
 
@@ -1223,14 +1247,25 @@ private fun SeekerLyrics(
                 }
             }
 
-            /** 中间定位线（细横线，左右各留边）。 */
-            Box(
-                Modifier
-                    .align(Alignment.Center)
-                    .fillMaxWidth(0.72f)
-                    .height(1.dp)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.30f), Corner.pill),
-            )
+            /**
+             * 用户口径（2026-11-27，#41）**定位线只在我手动滑动时才出现**。
+             *
+             * 用户原话：
+             *  「那条线和那个右边那个小播放按钮，这个是要在我手动滑动歌词的时候才出现，
+             *    平常的时候不让它出现，滑动歌词的时候出现」
+             */
+            if (dragging) {
+                Box(
+                    Modifier
+                        .align(Alignment.Center)
+                        .fillMaxWidth(0.72f)
+                        .height(1.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                            Corner.pill,
+                        ),
+                )
+            }
 
             /** 定位线右侧的「跳到这里播」按钮（滑动时才出现）。 */
             if (dragging && pinnedIndex >= 0) {
