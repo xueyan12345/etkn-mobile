@@ -17,6 +17,7 @@ import xyz.etkn.mobile.ui.screens.library.PagedViewModel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.combine
 
 /**
  * 用户口径（2026-11-27，#33）**首页分类精简并重排**。
@@ -132,8 +133,33 @@ class MusicListViewModel(
     private val _sort = MutableStateFlow(MusicSort.AddedTime)
     val sort: StateFlow<MusicSort> = _sort.asStateFlow()
 
-    /** 排序后的已加载列表（UI 直接用它渲染，切换排序立刻生效）。 */
-    val sortedTracks: List<Item> get() = applySort(tracks, _sort.value)
+    /**
+     * 用户口径（2026-11-27，#47）**排序必须真的让列表变**。
+     *
+     * 修的 bug（用户原话）：
+     *  「必须要保证点完之后，这个排序要好使，不能光把这个按钮加上」
+     *
+     * 根因：原来写的是
+     * ```
+     * val sortedTracks: List<Item> get() = applySort(tracks, _sort.value)
+     * ```
+     * 这是个**普通 getter**，Compose 在重组时读到它不会订阅 `_sort` 的变化，
+     * 所以点排序后 `_sort.value` 变了、`sortedTracks` 算出来也变了，
+     * **但界面不会重组** → 看起来就是「点了没反应」。
+     *
+     * 现在改成 StateFlow：排序变化 + 分页数据变化都会推一次新列表，
+     * UI 用 collectAsStateWithLifecycle 订阅它，一定会刷新。
+     */
+    private val _sortedTracks = MutableStateFlow<List<Item>>(emptyList())
+    val sortedTracks: StateFlow<List<Item>> = _sortedTracks.asStateFlow()
+
+    init {
+        // 排序或分页数据任一变化，就重算一次并推给 UI
+        viewModelScope.launch {
+            combine(_sort, _paged) { sort, page -> applySort(page.items.filter { it.isAudio && !it.isMusicGroup }, sort) }
+                .collect { _sortedTracks.value = it }
+        }
+    }
 
     fun setSort(value: MusicSort) {
         _sort.value = value
@@ -150,6 +176,7 @@ class MusicListViewModel(
     fun playAll(onDone: (Int) -> Unit = {}) {
         viewModelScope.launch {
             val all = loadEverything()
+            /** 用户口径（#47）「播放全部」按当前排序整体进队列。 */
             val ordered = applySort(all, _sort.value)
             if (ordered.isNotEmpty()) {
                 graph.music.play(ordered, 0, "$tab:$key")
@@ -164,7 +191,7 @@ class MusicListViewModel(
     }
 
     fun play(track: Item?) {
-        val list = sortedTracks
+        val list = _sortedTracks.value.ifEmpty { tracks }
         if (list.isEmpty()) return
         val index = track?.let { t -> list.indexOfFirst { it.id == t.id } }?.coerceAtLeast(0) ?: 0
         graph.music.play(list, index, "$tab:$key")

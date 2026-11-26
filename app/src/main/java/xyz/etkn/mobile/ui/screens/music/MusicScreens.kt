@@ -345,13 +345,26 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
                         modifier = Modifier.padding(vertical = 4.dp).fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        /**
+                         * 用户口径（2026-11-27，#47）**按钮上要显示有多少首**。
+                         *
+                         * 用户原话：「加一个全部播放的这个按钮，然后要显示多少首歌」。
+                         *
+                         * 数字来源优先级：
+                         *  · 已经点过播放全部 → 用实际进队列的数（最准）
+                         *  · 否则用分页返回的 total（服务端总数，601 这种）
+                         */
+                        val totalSongs = paged.total.takeIf { it > 0 } ?: sortedList.size
                         Button(
                             onClick = { vm.playAll { count = it } },
                             modifier = Modifier.height(ButtonDefaults.MediumContainerHeight),
                         ) {
                             Icon(Icons.Rounded.PlayArrow, null)
                             Spacer(Modifier.width(6.dp))
-                            Text(count?.let { "播放全部 $it 首" } ?: "播放全部")
+                            Text(
+                                count?.let { "播放全部 $it 首" }
+                                    ?: if (totalSongs > 0) "播放全部 · $totalSongs 首" else "播放全部",
+                            )
                         }
                         Spacer(Modifier.width(10.dp))
                         FilledTonalButton(onClick = vm::shuffle, modifier = Modifier.height(ButtonDefaults.MediumContainerHeight)) {
@@ -386,8 +399,12 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
                 }
             }
             items(folders, key = { "f-" + (it.key ?: it.id) }) { folder -> SquareCard(folder, onClick = { nav.open(folder) }, width = null) }
-            /** 用户口径（#34）列表按当前排序显示（`sortedTracks` 是排序后的音频列表）。 */
-            val ordered = if (route.tab == "songs" || route.tracksOnly) vm.sortedTracks else paged.items
+            /**
+             * 用户口径（#47）列表按当前排序显示。
+             * `sortedTracks` 现在是 StateFlow，配合 collectAsStateWithLifecycle 才能真正触发重组。
+             */
+            val sortedList by vm.sortedTracks.collectAsStateWithLifecycle()
+            val ordered = if (route.tab == "songs" || route.tracksOnly) sortedList else paged.items
             ordered.forEach { entry ->
                 if (entry.isAudio && !entry.isMusicGroup) {
                     item(span = { GridItemSpan(maxLineSpan) }, key = "t-" + entry.id, contentType = "track") {

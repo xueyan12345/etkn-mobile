@@ -44,6 +44,14 @@ data class MusicState(
     val repeat: Int = Player.REPEAT_MODE_OFF,
     val error: String? = null,
     val sourceId: String? = null,
+    /**
+     * 用户口径（2026-11-27，#32⑤）**音乐进度条的缓存段要用它**。
+     *
+     * 语义和视频那边一致：从播放位置往后，本地已缓存的毫秒数
+     * （由 `MusicCache` 真实落盘量换算）。0 表示还没有缓存数据，
+     * 此时进度条只画"已播放 + 未播放"两段。
+     */
+    val cachedPosition: Long = 0L,
 )
 
 /**
@@ -134,9 +142,23 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 positionMs = prefs.getLong("m_pos", 0L),
                 durationMs = prefs.getLong("m_dur", 0L),
                 sourceId = prefs.getString("m_src", null),
+                /** 用户口径（#43）队列一起读回来，重启后播放列表才有内容。 */
+                queueIds = prefs.getString("m_q_ids", "").orEmpty().splitToSeq(),
+                queueNames = prefs.getString("m_q_names", "").orEmpty().splitToSeq(),
+                queueArtists = prefs.getString("m_q_artists", "").orEmpty().splitToSeq(),
+                queueTags = prefs.getString("m_q_tags", "").orEmpty().splitToSeq(),
             )
         }.getOrNull()
     }
+
+    /** 单元分隔符：歌曲名里不会出现，用来拼多条记录。 */
+    private companion object {
+        const val SEP = "\u001F"
+    }
+
+    /** 空串返回空列表（不是 [""]）。 */
+    private fun String.splitToSeq(): List<String> =
+        if (isEmpty()) emptyList() else split(SEP)
 
     /** 每次状态变化时写盘（`publish()` 里调用，见下方）。 */
     private fun saveMemory() {
@@ -164,6 +186,22 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             durationMs = dur,
             sourceId = s.sourceId,
         )
+    }
+
+    /**
+     * 用户口径（#32⑤）**进度条的缓存段用播放器真实 bufferedPosition**。
+     *
+     * 一开始我想自己按 SimpleCache 的落盘字节换算，但那需要「文件总字节」，
+     * 而我们没有可靠来源（直链是 302 到 115 CDN，长度得额外 HEAD 一次）。
+     *
+     * 直接用 `Player.bufferedPosition` 更准也简单：它反映「当前已能连续播放到的位置」，
+     * 在有 SimpleCache 的情况下就等于「已缓存的末尾」。
+     * 视频播放器那条缓冲条最终也是这个语义。
+     */
+    private fun cachedAheadMs(itemId: String?, positionMs: Long, durationMs: Long): Long {
+        val p = _player ?: return 0L
+        val buffered = p.bufferedPosition
+        return if (buffered > positionMs) buffered else positionMs
     }
 
     /**
@@ -216,9 +254,46 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val p = player
         if (p.mediaItemCount > 0) return   // 已经有内容，不用重装
         runCatching {
-            p.setMediaItem(resumeMediaItem(memory))
+            /**
+             * 用户口径（2026-11-27，#43）**恢复整个队列，不只恢复一首**。
+             *
+             * 修的 bug：重启后点播放列表是空的。
+             *
+             * 根因：原来只 `setMediaItem(一首)`，播放器里只有 1 条 MediaItem，
+             * 而 `publish()` 的队列是从播放器的 MediaItem 列表算出来的：
+             * ```
+             * val queue = (0 until p.mediaItemCount).mapNotNull { items[...] }
+             * ```
+             * 1 条（甚至 0 条，如果 items map 里没这个 id）→ 列表空。
+             *
+             * 现在：按记忆里的队列 id 逐个还原成 MediaItem，一起装进播放器，
+             * 并**同时填回 `items` map** —— 否则 `mapNotNull` 依然会把它们过滤掉。
+             */
+            val ids = memory.queueIds
+            if (ids.isEmpty()) {
+                // 老版本只存了一首：退化成单曲恢复
+                p.setMediaItem(resumeMediaItem(memory))
+            } else {
+                val list = ids.mapIndexed { i, id ->
+                    val mini = MusicMemory(
+                        itemId = id,
+                        name = memory.queueNames.getOrNull(i).orEmpty().ifEmpty { id },
+                        artist = memory.queueArtists.getOrNull(i).orEmpty(),
+                        album = "",
+                        primaryTag = memory.queueTags.getOrNull(i)?.takeIf { it.isNotBlank() },
+                        positionMs = if (id == memory.itemId) memory.positionMs else 0L,
+                        durationMs = if (id == memory.itemId) memory.durationMs else 0L,
+                        sourceId = if (id == memory.itemId) memory.sourceId else null,
+                    )
+                    val mediaItem = resumeMediaItem(mini)
+                    // 关键：填回 items map，publish() 才认得出这些 id
+                    items[id] = itemFromMemory(mini)
+                    mediaItem
+                }
+                val startIndex = ids.indexOf(memory.itemId).coerceAtLeast(0)
+                p.setMediaItems(list, startIndex, memory.positionMs)
+            }
             p.prepare()
-            p.seekTo(memory.positionMs)
         }.onFailure { android.util.Log.w("ETKN-Music", "restoreForResumption failed", it) }
     }
 
@@ -428,6 +503,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             repeat = p.repeatMode,
             error = if (p.playerError == null) null else _state.value.error,
             sourceId = current?.id?.let { resolved[it]?.sourceId },
+            /** #32⑤ 缓存进度：从当前播放位置往后，本地已落盘的毫秒数。 */
+            cachedPosition = cachedAheadMs(current?.id, p.currentPosition, p.duration),
         )
         // 用户口径（#29）：每次状态变化都把「上次播的歌 + 进度」落盘，供下次启动恢复。
         if (current != null) saveMemory()
@@ -515,4 +592,18 @@ data class MusicMemory(
     val positionMs: Long,
     val durationMs: Long,
     val sourceId: String?,
+    /**
+     * 用户口径（2026-11-27，#43）**整个播放队列也要记住**。
+     *
+     * 修的 bug（用户原话）：
+     *  「APP 彻底退出之后，重新打开后，这个右边的那个播放列表，打开是空的，
+     *    没有记忆功能，正常必须要记忆，有播放列表的记忆」
+     *
+     * 原先只存了「当前那一首」，重启后播放器里只有 1 条（或 0 条）MediaItem，
+     * 队列自然是空的。现在把整条队列的 id 和名字都存下来。
+     */
+    val queueIds: List<String> = emptyList(),
+    val queueNames: List<String> = emptyList(),
+    val queueArtists: List<String> = emptyList(),
+    val queueTags: List<String> = emptyList(),
 )

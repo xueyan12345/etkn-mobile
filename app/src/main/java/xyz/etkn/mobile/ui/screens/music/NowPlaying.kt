@@ -93,6 +93,12 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material3.ModalBottomSheet
 import xyz.etkn.mobile.music.LyricLine
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.mutableIntStateOf
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
@@ -327,26 +333,18 @@ private fun MiniLyrics(track: Item?, remembered: xyz.etkn.mobile.music.MusicMemo
 private enum class Pane { Lyrics, Queue }
 
 @Composable
+@Composable
 fun NowPlayingScreen() {
     val nav = LocalNav.current
     val graph = LocalContext.current.graph
     val music = graph.music
     val state by music.state.collectAsStateWithLifecycle()
-    var pane by remember { mutableStateOf<Pane?>(null) }
     /**
      * 用户口径（2026-11-27，#41）**重启后点迷你条要能进得来**。
      *
-     * 修的 bug（用户原话）：
-     *  「完全退出 app，打开音乐界面，下边的播放控制条现在显示都正常，但是不能点，
-     *    正常点这个播放控制条不是应该能弹出来界面吗，但是点不了，点的时候它抖了一下，
-     *    不弹出那个详情页」
-     *
-     * 根因：这里原来写 `if (track == null) { nav.back(); return }` ——
-     * 用的是 `state.current`，而重启后还没播，它是 null，
-     * 于是页面刚被推上去就立刻 pop 回来，用户看到的就是「抖了一下」。
-     *
-     * 现在：`state.current` 为空时退回记忆里的那首（和迷你条同一套判断），
-     * 只有**记忆也没有**（从没播过）才返回。
+     * 根因：原来 `if (track == null) { nav.back(); return }`，而重启后
+     * `state.current` 是 null → 页面刚推上去就立刻 pop → 用户看到「抖了一下」。
+     * 现在 state.current 为空时退回记忆里的那首，只有从没播过才返回。
      */
     val remembered by music.remembered.collectAsStateWithLifecycle()
     val memory = remembered
@@ -356,123 +354,237 @@ fun NowPlayingScreen() {
         return
     }
     val urls = images()
+    val (position, duration) = rememberPlayerClock()
+
+    /**
+     * 用户口径（2026-11-27，#32）**播放器整页重做**。
+     *
+     * 需求（用户逐条提的，下面全部落到实现里）：
+     *  ① 顶部只留「歌曲 / 歌词」两个标签居中；删掉原来右上角那两个按钮
+     *  ② 专辑封面放大到屏幕 70% 以上
+     *  ③ 歌名 + 歌手居中
+     *  ④ 5 行歌词滚动，最上/最下两行渐变淡出
+     *  ⑤ 进度条改成视频播放器那种（带缓存段）
+     *  ⑥ 底部：循环模式合并成 1 个按钮切 3 态 + 播放列表按钮
+     *  ⑦ 左右滑动切「歌曲 / 歌词」，点歌词也能进，要有过渡动画
+     *  ⑧ 参考图里划掉的 6 处一律不做（收起箭头、右上两个图标、
+     *     歌曲信息右侧小按钮、底部三个功能小图标）
+     */
+    var page by remember { mutableIntStateOf(0) }   // 0 = 歌曲  1 = 歌词
+    val pager = rememberPagerState(initialPage = 0) { 2 }
+    var queueOpen by remember { mutableStateOf(false) }
+
+    /** 左右滑动切换两页（#32⑦）。 */
+    LaunchedEffect(pager.currentPage) { page = pager.currentPage }
+    LaunchedEffect(page) { if (pager.currentPage != page) pager.animateScrollToPage(page) }
+
     Box(Modifier.fillMaxSize()) {
-        // Ambient backdrop: the cover, heavily blurred and darkened.
-        Artwork(urls.music(track, 320), Modifier.fillMaxSize().blur(60.dp), null, background = MaterialTheme.colorScheme.surface)
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f), MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)))))
-        BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            val wide = maxWidth > maxHeight
-            if (wide) {
-                Row(Modifier.fillMaxSize().padding(24.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-                    Column(Modifier.weight(1f)) { PlayerColumn(track, state.isPlaying, state.buffering, state.shuffle, state.repeat, pane, { pane = it }, nav::back, compact = true) }
-                    Box(Modifier.weight(1f).fillMaxSize()) { SidePane(pane ?: Pane.Lyrics, track, state.sourceId, state.queue, state.index) }
+        // 背景：封面严重模糊 + 暗化，保持原样
+        Artwork(
+            urls.music(track, 320),
+            Modifier.fillMaxSize().blur(60.dp),
+            null,
+            background = MaterialTheme.colorScheme.surface,
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                    ),
+                ),
+            ),
+        )
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+
+            /** ① 顶部两个标签，居中一左一右（原来的收起箭头和右侧图标都删了）。 */
+            Row(
+                Modifier.fillMaxWidth().padding(top = 10.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                listOf("歌曲", "歌词").forEachIndexed { i, label ->
+                    val active = page == i
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .clip(Corner.pill)
+                            .clickable { page = i }
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                            color = if (active) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        // 选中下划线
+                        Box(
+                            Modifier
+                                .padding(top = 4.dp)
+                                .width(if (active) 26.dp else 0.dp)
+                                .height(2.dp)
+                                .background(MaterialTheme.colorScheme.onSurface, Corner.pill),
+                        )
+                    }
                 }
-            } else {
-                Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
-                    AnimatedContent(pane, label = "pane", modifier = Modifier.weight(1f)) { current ->
-                        if (current == null) {
-                            PlayerColumn(track, state.isPlaying, state.buffering, state.shuffle, state.repeat, null, { pane = it }, nav::back, compact = false)
-                        } else {
-                            Column(Modifier.fillMaxSize()) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
-                                    Artwork(urls.music(track, 96), Modifier.size(48.dp).clip(Corner.small), null, placeholder = Icons.Rounded.MusicNote)
-                                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                                        Text(track.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(track.artistLine, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                                    }
-                                    IconButton(onClick = { pane = null }) { Icon(Icons.Rounded.Close, "收起") }
-                                }
-                                Box(Modifier.weight(1f)) { SidePane(current, track, state.sourceId, state.queue, state.index) }
-                                MiniTransport(state.isPlaying)
-                            }
+            }
+
+            HorizontalPager(
+                state = pager,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                userScrollEnabled = true,
+            ) { index ->
+                if (index == 0) {
+                    /**
+                     * ② ③ ④ 歌曲页：大封面 + 歌名歌手居中 + 5 行歌词。
+                     * 封面占满可用宽度（70% 以上），受 480dp 上限约束避免平板上过大。
+                     */
+                    Column(
+                        Modifier.fillMaxSize().padding(horizontal = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Spacer(Modifier.weight(0.15f))
+                        Box(
+                            Modifier.fillMaxWidth().widthIn(max = 480.dp).aspectRatio(1f),
+                        ) {
+                            Artwork(
+                                urls.music(track, 1080),
+                                Modifier.fillMaxSize().clip(Corner.panel),
+                                track.name,
+                                placeholder = Icons.Rounded.MusicNote,
+                            )
+                            if (state.buffering) LoadingIndicator(Modifier.align(Alignment.Center))
                         }
+                        Spacer(Modifier.height(20.dp))
+                        Text(
+                            track.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                        )
+                        Text(
+                            listOfNotNull(track.artistLine.ifEmpty { null }, track.album).joinToString(" · "),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        /**
+                         * ④ 5 行歌词（中间完整、上下渐隐），点它进歌词页（#32⑦）。
+                         */
+                        Box(
+                            Modifier.fillMaxWidth().height(120.dp)
+                                .clickable { page = 1 },
+                        ) {
+                            FiveLineLyrics(track, position)
+                        }
+                        Spacer(Modifier.weight(0.15f))
+                    }
+                } else {
+                    /** 歌词页：整页滚动歌词。 */
+                    Box(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+                        FullLyrics(track, position, state.sourceId)
+                    }
+                }
+            }
+
+            /**
+             * ⑤ 进度条（带缓存段）+ 底部控制（#32⑤⑥）。
+             */
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+                MusicProgressBar(
+                    position = position,
+                    duration = duration,
+                    cached = state.cachedPosition,
+                    onSeek = { music.seekTo(it) },
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        formatClock(position),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        formatClock(duration),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                /**
+                 * ⑥ 底部五个按钮：
+                 *  循环模式（一个按钮切三态） / 上一首 / 播放 / 下一首 / 播放列表
+                 *
+                 * 用户明确要求把原来的「随机播放」「顺序播放+单曲循环」两个按钮
+                 * 合并成左边一个，点一下切一种状态。
+                 */
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    /** 循环模式：OFF(顺序) → ALL(列表循环) → ONE(单曲循环) */
+                    IconButton(onClick = music::cycleRepeat) {
+                        Icon(
+                            when (state.repeat) {
+                                Player.REPEAT_MODE_ONE -> Icons.Rounded.RepeatOne
+                                Player.REPEAT_MODE_ALL -> Icons.Rounded.Repeat
+                                else -> Icons.Rounded.RepeatOne  // 顺序播放也用 repeat 图标示意
+                            },
+                            contentDescription = when (state.repeat) {
+                                Player.REPEAT_MODE_ONE -> "单曲循环"
+                                Player.REPEAT_MODE_ALL -> "列表循环"
+                                else -> "顺序播放"
+                            },
+                            tint = if (state.repeat == Player.REPEAT_MODE_OFF) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    IconButton(onClick = music::previous) {
+                        Icon(Icons.Rounded.SkipPrevious, "上一首", Modifier.size(30.dp))
+                    }
+                    FilledIconButton(
+                        onClick = music::toggle,
+                        modifier = Modifier.size(60.dp),
+                    ) {
+                        Icon(
+                            if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            if (state.isPlaying) "暂停" else "播放",
+                            Modifier.size(32.dp),
+                        )
+                    }
+                    IconButton(onClick = music::next) {
+                        Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(30.dp))
+                    }
+                    /** 播放列表（#32⑥ 右侧改成播放列表）。 */
+                    IconButton(onClick = { queueOpen = true }) {
+                        Icon(Icons.AutoMirrored.Rounded.QueueMusic, "播放列表")
                     }
                 }
             }
         }
     }
-}
 
-@Composable
-private fun PlayerColumn(
-    track: Item,
-    playing: Boolean,
-    buffering: Boolean,
-    shuffle: Boolean,
-    repeat: Int,
-    pane: Pane?,
-    onPane: (Pane?) -> Unit,
-    onClose: () -> Unit,
-    compact: Boolean,
-) {
-    val music = LocalContext.current.graph.music
-    val (position, duration) = rememberPlayerClock()
-    var scrubbing by remember { mutableStateOf(false) }
-    var scrub by remember { mutableFloatStateOf(0f) }
-    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onClose) { Icon(Icons.Rounded.KeyboardArrowDown, "收起") }
-            Spacer(Modifier.weight(1f))
-            IconToggleButton(checked = pane == Pane.Lyrics, onCheckedChange = { onPane(if (it) Pane.Lyrics else null) }) { Icon(Icons.Rounded.Lyrics, "歌词") }
-            IconToggleButton(checked = pane == Pane.Queue, onCheckedChange = { onPane(if (it) Pane.Queue else null) }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, "播放队列") }
+    if (queueOpen) {
+        MusicQueueSheet(state.queue, state.index, onDismiss = { queueOpen = false }) { item ->
+            val i = state.queue.indexOfFirst { it.id == item.id }
+            if (i >= 0) music.skipTo(i)
+            queueOpen = false
         }
-        Spacer(Modifier.weight(if (compact) 0.3f else 1f))
-        val coverScale by animateDpAsState(if (playing) 0.dp else 18.dp, label = "cover")
-        Box(Modifier.fillMaxWidth(if (compact) 0.62f else 1f).widthIn(max = 420.dp).aspectRatio(1f).padding(coverScale)) {
-            Artwork(
-                images().music(track, 900.dp.px().coerceAtMost(1080)),
-                Modifier.fillMaxSize().clip(Corner.panel),
-                track.name,
-                placeholder = Icons.Rounded.MusicNote,
-            )
-            if (buffering) LoadingIndicator(Modifier.align(Alignment.Center))
-        }
-        Spacer(Modifier.weight(if (compact) 0.2f else 0.6f))
-        Column(Modifier.fillMaxWidth()) {
-            Text(track.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(
-                listOfNotNull(track.artistLine.ifEmpty { null }, track.album).joinToString(" · "),
-                style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.height(16.dp))
-        val seek = remember { SliderState() }
-        seek.value = if (scrubbing) scrub else if (duration > 0) position.toFloat() / duration else 0f
-        Slider(
-            state = seek,
-            onValueChange = { scrubbing = true; scrub = it },
-            onValueChangeFinished = { music.seekTo((scrub * duration).toLong()); scrubbing = false },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Row(Modifier.fillMaxWidth()) {
-            Text(formatClock(if (scrubbing) (scrub * duration).toLong() else position), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.weight(1f))
-            Text(formatClock(duration), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            val active = MaterialTheme.colorScheme.primary
-            val idle = MaterialTheme.colorScheme.onSurfaceVariant
-            val shuffleTint by animateColorAsState(if (shuffle) active else idle, label = "shuffle")
-            val repeatTint by animateColorAsState(if (repeat != Player.REPEAT_MODE_OFF) active else idle, label = "repeat")
-            IconButton(onClick = music::toggleShuffle) { Icon(Icons.Rounded.Shuffle, "随机播放", tint = shuffleTint) }
-            IconButton(onClick = music::previous, modifier = Modifier.size(56.dp)) { Icon(Icons.Rounded.SkipPrevious, "上一首", Modifier.size(36.dp)) }
-            FilledIconButton(
-                onClick = music::toggle,
-                modifier = Modifier.size(84.dp),
-                shape = if (playing) Corner.panel else CircleShape,
-                colors = IconButtonDefaults.filledIconButtonColors(),
-            ) {
-                Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "暂停" else "播放", Modifier.size(44.dp))
-            }
-            IconButton(onClick = music::next, modifier = Modifier.size(56.dp)) { Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(36.dp)) }
-            IconButton(onClick = music::cycleRepeat) {
-                Icon(if (repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "循环", tint = repeatTint)
-            }
-        }
-        Spacer(Modifier.weight(if (compact) 0.3f else 0.8f))
     }
 }
+
 
 @Composable
 private fun MiniTransport(playing: Boolean) {
@@ -604,6 +716,196 @@ fun MusicQueueSheet(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-27，#32④）**播放页里的 5 行歌词**。
+ *
+ * 需求原文：
+ *  「下面除了放歌名和歌手，还要居中滚动歌词，我想要一共显示 5 行，
+ *    其中最上面的那行和最下面的那行要做成跟刚才播放控制条一样，
+ *    越往上和越往下渐变显示的效果」
+ *
+ * 实现：中间那行（index=2）完整不透明，往两侧逐级降透明度，
+ * 第一行和第五行几乎看不见 —— 就是"渐变淡出"的观感。
+ */
+@Composable
+private fun FiveLineLyrics(track: Item, positionMs: Long) {
+    val graph = LocalContext.current.graph
+    val music by graph.music.state.collectAsStateWithLifecycle()
+    var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
+    LaunchedEffect(track.id, music.sourceId) {
+        val sid = music.sourceId ?: return@LaunchedEffect
+        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
+        parsed = if (text.isBlank()) null else Lyrics.parse(text)
+    }
+    val lines = parsed?.lines.orEmpty()
+    val active = parsed?.indexAt(positionMs) ?: -1
+    if (lines.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "暂无歌词",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+    val base = MaterialTheme.colorScheme.onSurface
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+        // 5 行：以当前行为中心，offset 从 -2 到 +2
+        listOf(-2, -1, 0, 1, 2).forEach { offset ->
+            val idx = active + offset
+            val line: LyricLine? = lines.getOrNull(idx)
+            val isCenter = offset == 0
+            Text(
+                text = line?.text.orEmpty(),
+                style = if (isCenter) MaterialTheme.typography.titleMedium
+                else MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isCenter) FontWeight.Bold else FontWeight.Normal,
+                color = base.copy(
+                    alpha = when (offset) {
+                        0 -> 1f
+                        -1, 1 -> 0.45f
+                        else -> 0.16f
+                    },
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 用户口径（#32）**歌词页（整页）**：滚动列表 + 当前行高亮。
+ */
+@Composable
+private fun FullLyrics(track: Item, positionMs: Long, sourceId: String?) {
+    val graph = LocalContext.current.graph
+    var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
+    LaunchedEffect(track.id, sourceId) {
+        val sid = sourceId ?: return@LaunchedEffect
+        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
+        parsed = if (text.isBlank()) null else Lyrics.parse(text)
+    }
+    val lines = parsed?.lines.orEmpty()
+    val active = parsed?.indexAt(positionMs) ?: -1
+    if (lines.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("暂无歌词", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
+    val list = rememberLazyListState()
+    LaunchedEffect(active) { if (active >= 0) list.animateScrollToItem((active - 3).coerceAtLeast(0)) }
+    LazyColumn(
+        state = list,
+        contentPadding = PaddingValues(vertical = 120.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        itemsIndexed(lines, key = { i, _ -> i }) { i, line ->
+            val highlighted = i == active
+            Text(
+                line.text,
+                style = if (highlighted) MaterialTheme.typography.titleMedium
+                else MaterialTheme.typography.bodyLarge,
+                fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Normal,
+                color = if (highlighted) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-27，#32⑤）**音乐进度条照视频播放器那套**。
+ *
+ * 需求原文：「下面的播放进度条还是这个 app 最开始的样子，
+ *            我需要你参考现在咱们播放视频的那个界面，我要那个界面的那种播放进度条，
+ *            同样也要加入缓存条」
+ *
+ * 三段：已播放（实色） / 已缓存（淡一点） / 未缓存（底轨）。
+ * 拖动时显示实时位置，松手才 seek。
+ */
+@Composable
+private fun MusicProgressBar(
+    position: Long,
+    duration: Long,
+    cached: Long,
+    onSeek: (Long) -> Unit,
+) {
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrubFraction by remember { mutableFloatStateOf(0f) }
+    val playedFraction = when {
+        scrubbing -> scrubFraction
+        duration > 0 -> (position.toFloat() / duration).coerceIn(0f, 1f)
+        else -> 0f
+    }
+    val cachedFraction = when {
+        duration > 0 -> (cached.toFloat() / duration).coerceIn(0f, 1f)
+        else -> 0f
+    }
+    val accent = MaterialTheme.colorScheme.primary
+    val cachedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.32f)
+    val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
+
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .height(24.dp)
+            .pointerInput(duration) {
+                detectTapGestures { offset ->
+                    if (duration > 0) onSeek((offset.x / size.width * duration).toLong())
+                }
+            }
+            .pointerInput(duration) {
+                detectHorizontalDragGestures(
+                    onDragStart = { scrubbing = true },
+                    onDragEnd = {
+                        if (duration > 0) onSeek((scrubFraction * duration).toLong())
+                        scrubbing = false
+                    },
+                    onDragCancel = { scrubbing = false },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        scrubFraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                    },
+                )
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val barHeight = 4.dp
+        // 底轨
+        Box(Modifier.fillMaxWidth().height(barHeight).background(trackColor, Corner.pill))
+        // 缓存段
+        Box(
+            Modifier.fillMaxWidth(cachedFraction.coerceAtLeast(playedFraction))
+                .height(barHeight).background(cachedColor, Corner.pill),
+        )
+        // 已播放
+        Box(
+            Modifier.fillMaxWidth(playedFraction).height(barHeight).background(accent, Corner.pill),
+        )
+        // 拖动手柄
+        Box(
+            Modifier
+                .fillMaxWidth(playedFraction)
+                .height(barHeight),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            Box(
+                Modifier
+                    .size(if (scrubbing) 14.dp else 10.dp)
+                    .background(accent, CircleShape),
+            )
         }
     }
 }

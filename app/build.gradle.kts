@@ -7,8 +7,8 @@ plugins {
 }
 
 // CI overrides: -PetknVersionCode=<monotonic> -PetknVersionName=<x.y.z>
-val baseVersionCode = 110
-val baseVersionName = "1.14.0"
+val baseVersionCode = 111
+val baseVersionName = "1.15.0"
 val versionCodeOverride = providers.gradleProperty("etknVersionCode").orNull?.toIntOrNull()
 val versionNameOverride = providers.gradleProperty("etknVersionName").orNull
 

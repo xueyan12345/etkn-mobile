@@ -157,8 +157,23 @@
             android:name=".music.MusicService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
+            <!--
+                用户口径（2026-11-27，#44）**action 必须和类的实际类型一致**。
+
+                上一版把类改成了 MediaLibraryService，但这里还写着 MediaSessionService 的 action
+                —— 系统按 MediaLibraryService 这个 action 去找「谁能提供媒体库/续播」，
+                找不到我们，所以状态栏那张卡片的播放键永远是灰的。
+
+                实测对照：
+                 · 系统音乐设为默认（后台已关）→ 卡片播放键可点，点了续播
+                 · ETKN 设为默认（v1.14.0）  → 同一位置灰色点不动  ← 就是这一行没改
+
+                MediaBrowserService 这个 action 是给"默认音乐播放器探测"用的，
+                ColorOS / 部分车机靠它识别候选 App。
+            -->
             <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
             <!-- #28A：告诉系统这个 Service 处理媒体按键 -->
             <meta-data
