@@ -423,6 +423,76 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = ROW_INSET),
     )
+    /**
+     * 用户口径（2026-11-27，#1 真根因）**ColorOS 自启动开关引导**。
+     *
+     * adb 实测（一加 13 / ColorOS 16）：
+     * ```
+     * OplusAppStartupManager: *Do not want to launch app xyz.etkn.mobile/10687
+     * for broadcast Intent { act=android.intent.action.MEDIA_BUTTON
+     * cmp=xyz.etkn.mobile/...MediaButtonReceiver }
+     * ```
+     * 系统发播放按键 → ColorOS 拦下不拉起进程 → 状态栏卡片一直是灰的。
+     *
+     * 这个白名单只能用户手动开，App 无法自己改（系统设置权限）。
+     * 这里给一个一键跳转，避免用户找不到入口。
+     */
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = ROW_INSET, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("允许后台运行（ColorOS 需手动开）", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "状态栏/车机那个播放按钮点不动，是因为系统拦截了自启动。到这里把「允许自启动」「允许后台活动」都打开。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(
+            onClick = {
+                val pkg = context.packageName
+                // ColorOS 的自启动管理页，多个候选按序尝试
+                val candidates = listOf(
+                    android.content.ComponentName(
+                        "com.coloros.safecenter",
+                        "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+                    ),
+                    android.content.ComponentName(
+                        "com.coloros.oppoguardelf",
+                        "com.coloros.powermanager.fuelgaue.PowerUsageModelActivity",
+                    ),
+                    android.content.ComponentName(
+                        "com.oplus.battery",
+                        "com.oplus.powermanager.fuelgaue.PowerUsageModelActivity",
+                    ),
+                )
+                var launched = false
+                for (cmp in candidates) {
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent().apply {
+                                component = cmp
+                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            },
+                        )
+                        launched = true
+                    }
+                    if (launched) break
+                }
+                if (!launched) {
+                    // 兜底：跳系统电池优化列表
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS,
+                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }
+            },
+        ) { Text("去设置") }
+    }
     NumberRow("音乐缓存大小", settings.musicCacheMb, "MB", listOf(512, 1024, 2048, 4096, 8192, 16384)) {
         /** 同时写进 MusicCache 的内存配额，播放器下次创建就用新值（#39）。 */
         xyz.etkn.mobile.music.MusicCache.setLimit(it)
