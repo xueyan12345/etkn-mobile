@@ -492,23 +492,29 @@ class HomeViewModel(
                 val finalPicked = if (picked.size >= HERO_SIZE) {
                     picked
                 } else {
+                    /**
+                     * 注意：`async` 必须在 coroutineScope 里（否则 Kotlin 报 deprecation 且编译失败）。
+                     * 这里外面包 coroutineScope，内层 runCatching 只包网络异常。
+                     */
                     val extra = runCatching {
-                        data.libraries
-                            .filter { it.collectionType !in NON_LATEST }
-                            .map { lib ->
-                                async {
-                                    val t = when (lib.collectionType) {
-                                        "movies" -> "Movie"
-                                        "tvshows" -> "Series"
-                                        else -> null
+                        coroutineScope {
+                            data.libraries
+                                .filter { it.collectionType !in NON_LATEST }
+                                .map { lib ->
+                                    async {
+                                        val t = when (lib.collectionType) {
+                                            "movies" -> "Movie"
+                                            "tvshows" -> "Series"
+                                            else -> null
+                                        }
+                                        runCatching { api.latest(lib.id, t, HERO_POOL_PER_LIBRARY) }
+                                            .getOrDefault(emptyList())
                                     }
-                                    runCatching { api.latest(lib.id, t, HERO_POOL_PER_LIBRARY) }
-                                        .getOrDefault(emptyList())
-                                }
-                            }.awaitAll().flatten()
-                            .filter(::hasBackdrop)
-                            .filter { !isFinished(it) }
-                            .distinctBy { it.id }
+                                }.awaitAll().flatten()
+                                .filter(::hasBackdrop)
+                                .filter { !isFinished(it) }
+                                .distinctBy { it.id }
+                        }
                     }.getOrDefault(emptyList())
                     val have = picked.map { it.id }.toSet()
                     val merged = picked + extra.filter { it.id !in have }
