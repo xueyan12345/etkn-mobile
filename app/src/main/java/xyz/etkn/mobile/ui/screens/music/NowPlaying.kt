@@ -104,6 +104,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.platform.LocalDensity
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
@@ -356,7 +357,6 @@ private fun MiniLyrics(track: Item?, remembered: xyz.etkn.mobile.music.MusicMemo
 
 private enum class Pane { Lyrics, Queue }
 
-@Composable
 @Composable
 fun NowPlayingScreen() {
     val nav = LocalNav.current

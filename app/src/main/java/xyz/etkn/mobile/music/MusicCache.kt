@@ -6,6 +6,7 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
+import kotlinx.coroutines.launch
 
 /**
  * 用户口径（2026-11-27，#39）**音乐用一套独立的磁盘缓存**。
