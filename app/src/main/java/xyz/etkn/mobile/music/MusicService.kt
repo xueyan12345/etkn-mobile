@@ -602,9 +602,15 @@ class EtknMediaButtonReceiver : android.content.BroadcastReceiver() {
             MediaButtonHint.remember(it.keyCode)
             android.util.Log.i("ETKN-Music", "Receiver: 记住媒体键 ${it.keyCode}")
         }
-        /** 继续交给 Media3 的标准 Receiver 处理（它负责拉起 Service / 转发 Session）。 */
+        /**
+         * 继续交给 Media3 的标准 Receiver 处理（它负责拉起 Service / 转发 Session）。
+         *
+         * 注意：`MediaButtonReceiver.onReceive` 是**实例方法**（继承自 BroadcastReceiver），
+         * 不是静态的，所以要 new 一个实例来调。
+         */
         runCatching {
-            androidx.media3.session.MediaButtonReceiver.onReceive(context, intent)
+            androidx.media3.session.MediaButtonReceiver()
+                .onReceive(context, intent)
         }.onFailure {
             android.util.Log.w("ETKN-Music", "转发给 Media3 MediaButtonReceiver 失败", it)
         }
