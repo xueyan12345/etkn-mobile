@@ -550,6 +550,35 @@ class MusicService : MediaLibraryService() {
          * 关键：这些命令可能在「App 刚被拉起、token 还没恢复」时到达，
          * 所以统一走 `music.executeSystemCommand()`，它内部会等会话就绪。
          */
+        /**
+         * 用户口径（#46）**Media3 默认切歌后要确保真的播起来**。
+         *
+         * 上一首/下一首已交给 Media3 默认处理（避免跳两首），
+         * 但它默认的 `seekToNext` 在某些情况下（占位 URL / 未 prepare）
+         * 只会移动索引不会播放。这里在索引变化后补一次 `play()`，
+         * 保证「点了下一首就真的在放下一首」。
+         */
+        override fun onMediaItemTransition(
+            mediaItem: MediaItem?,
+            reason: Int,
+        ) {
+            val p = applicationContext.graph.music.player
+            /**
+             * 只在「用户主动切歌」且当前没在播时补 play，
+             * 避免把用户手动暂停的状态又播起来。
+             */
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK && !p.isPlaying) {
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "onMediaItemTransition: 切歌后未播放，补一次 play（idx=${p.currentMediaItemIndex}）",
+                )
+                runCatching {
+                    if (p.playbackState == Player.STATE_IDLE) p.prepare()
+                    p.play()
+                }
+            }
+        }
+
         override fun onPlayerCommandRequest(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
@@ -594,15 +623,37 @@ class MusicService : MediaLibraryService() {
                 }
                 /** 停止也当暂停处理（保持卡片状态一致）。 */
                 Player.COMMAND_STOP -> music.pause()
+                /**
+                 * 用户口径（2026-11-27，#46）**下一首/上一首交给 Media3 自己执行**。
+                 *
+                 * 用户报的 bug（这次有实测日志）：
+                 *  「点下一首，播放的是下下首；上一首也一样」
+                 *
+                 * 抓到的日志（`logcat --pid -s ETKN-Music`）：
+                 * ```
+                 * onPlayerCommandRequest: cmd=9 from=com.android.shell   ← 只收到 1 次
+                 * systemNext 完成（切歌） idx=408                        ← 我们也只切了 1 次
+                 * ```
+                 * 但实际播放项从 406 跳到了 410 —— **索引跨了 2**。
+                 *
+                 * 结论：不是两个处理点重复（那个已经修了），而是
+                 * **Media3 的 Session 层自己已经执行了一次「下一首」**，
+                 * 我们在这个回调里又 `seekToNextMediaItem()` 一次 → 共 2 次。
+                 *
+                 * 修法：这几条命令**直接返回 -1 交给 Media3 默认处理**，
+                 * 我们不插手。这样只跳 1 首，播放/暂停仍由我们自己控制（#44）。
+                 */
                 Player.COMMAND_SEEK_TO_NEXT,
                 Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                -> applicationContext.graph.scope.launch {
-                    runCatching { music.systemNext() }
-                }
                 Player.COMMAND_SEEK_TO_PREVIOUS,
                 Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                -> applicationContext.graph.scope.launch {
-                    runCatching { music.systemPrevious() }
+                Player.COMMAND_SEEK_TO_MEDIA_ITEM,
+                -> {
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "onPlayerCommandRequest: cmd=$playerCommand 交给 Media3 默认处理（避免跳两首）",
+                    )
+                    return -1
                 }
                 else -> return android.os.Bundle.EMPTY.let {
                     /** 不认识的命令：返回 -1 让 Media3 走默认处理。 */

@@ -415,8 +415,19 @@ fun NowPlayingScreen() {
             Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            /** ① 封面上移到最顶（原来标签的位置），去掉多余空白。 */
-            Spacer(Modifier.height(8.dp))
+            /**
+             * 用户口径（2026-11-27，#49）**播放页整体下移一点**。
+             *
+             * 用户原话：
+             *  「把专辑的图片往下移一点，移多少呢，大概就移现在的播放界面的歌名的高度就行，
+             *    然后歌名和歌手也都稍微往下移，歌词部分稍微压缩压缩」
+             *
+             * 做法：
+             *  · 封面顶部空白 8dp → 34dp（约等于歌名那行的高度）
+             *  · 歌名/歌手与封面之间的间距 14dp → 18dp
+             *  · 歌词区是 weight(1f) 自适应，上面多占的部分自然从这里扣
+             */
+            Spacer(Modifier.height(34.dp))
             Box(Modifier.fillMaxWidth(0.58f).widthIn(max = 240.dp).aspectRatio(1f)) {
                 Artwork(
                     urls.music(track, 1080),
@@ -426,8 +437,8 @@ fun NowPlayingScreen() {
                 )
                 if (state.buffering) LoadingIndicator(Modifier.align(Alignment.Center))
             }
-            Spacer(Modifier.height(14.dp))
-            /** ② 歌名 + 歌手 */
+            Spacer(Modifier.height(18.dp))
+            /** ② 歌名 + 歌手（#49 整体下移） */
             Text(
                 track.name,
                 style = MaterialTheme.typography.headlineSmall,
@@ -1129,9 +1140,36 @@ private fun SeekerLyrics(
     val music by graph.music.state.collectAsStateWithLifecycle()
     var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
 
+    /**
+     * 用户口径（2026-11-27，#48）**从迷你条进播放页必须能看到歌词**。
+     *
+     * 用户报的 bug：「从下边的播放小条点进去，到播放界面，播放界面不显示歌词」
+     *
+     * 根因（改播放页时漏了这一处）：
+     * ```
+     * val sid = music.sourceId ?: return@LaunchedEffect
+     * ```
+     * `state.sourceId` 要等直链解析完才有；从迷你条进来时往往还是 null
+     * → 直接 return，歌词永远不会加载 → 界面空着。
+     * （之前 #42 我只修了旧的 FiveLineLyrics，新的 SeekerLyrics 没修。）
+     *
+     * 现在：为空就调 `ensureSourceId()` 主动取一次，取到再拉歌词。
+     */
     LaunchedEffect(track.id, music.sourceId) {
-        val sid = music.sourceId ?: return@LaunchedEffect
+        var sid = music.sourceId
+        if (sid.isNullOrBlank()) {
+            sid = runCatching { graph.music.ensureSourceId(track.id) }.getOrNull()
+            android.util.Log.i("ETKN-Music", "歌词: 补取 sourceId=$sid (track=${track.id})")
+        }
+        if (sid.isNullOrBlank()) {
+            android.util.Log.w("ETKN-Music", "歌词: sourceId 仍为空，跳过 track=${track.id}")
+            return@LaunchedEffect
+        }
         val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
+        android.util.Log.i(
+            "ETKN-Music",
+            "歌词: track=${track.id} sid=$sid 长度=${text.length} 行数=${text.lines().size}",
+        )
         parsed = if (text.isBlank()) null else Lyrics.parse(text)
         /** 供车机/CarLife 卡片显示当前行（#34）。 */
         parsed?.lines?.let { ls ->
