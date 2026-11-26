@@ -405,6 +405,27 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 "restore done: count=${p.mediaItemCount} idx=${p.currentMediaItemIndex}",
             )
             /**
+             * 用户口径（#1）**这里必须 prepare，否则 Session 状态停在 NONE**。
+             *
+             * 实测：只 setMediaItems 不 prepare，`dumpsys media_session` 是
+             * ```
+             * PlaybackState {state=NONE(0), ...}
+             * metadata: size=2, description=null
+             * queueTitle=null, size=0
+             * ```
+             * ColorOS 的 `createActionsFromState: curState = 0` 直接据此判定"没有可播内容"，
+             * 播放键不给点亮。
+             *
+             * 而系统音乐暂停时是 `PAUSED(2)` + metadata 完整 → 按钮一直亮。
+             *
+             * 所以：prepare() 让它至少进入 BUFFERING/READY。
+             * 占位 URL `etkn-music://track/<id>` 会由 `resolve()` 换成真直链 ——
+             * 这一步是异步网络请求，失败也不影响 Session 已有 metadata。
+             */
+            runCatching { p.prepare() }.onFailure {
+                android.util.Log.w("ETKN-Music", "restore prepare failed", it)
+            }
+            /**
              * 用户口径（#2）**装完必须 publish 一次**。
              *
              * `state.queue` 是从 player 的 MediaItem 列表算出来的（在 `publish()` 里），

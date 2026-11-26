@@ -98,6 +98,42 @@ class MusicService : MediaLibraryService() {
          * 失败也不能让 Service 崩掉。
          */
         runCatching { enterForeground() }
+        /**
+         * 用户口径（#1）**Session 必须知道「当前在播哪首」**，
+         * 否则系统控制中心拿到的是 `queueTitle=null, size=0`，
+         * 显示成「未在播放」→ 播放键灰。
+         *
+         * 实测：`init done: mediaItemCount=1 queue=1`（MusicConnection 里确实有 1 条）
+         * 但 `dumpsys media_session` 显示 `size=0` ——
+         * 因为 Session 的 PlaybackState 停留在 `NONE(0)`，Media3 不会往系统推 queue。
+         *
+         * 这里在 Session 建好后强制同步一次：把播放器的当前项 metadata
+         * 显式喂给 Session（`setMediaItem` 已做，但状态没转过去）。
+         */
+        runCatching { syncSessionMetadata() }
+    }
+
+    /**
+     * 把播放器的当前 MediaItem metadata 显式同步到 Session。
+     *
+     * 作用：让 `dumpsys media_session` 里 `metadata` 不再是 `description=null`，
+     * 系统控制中心才能显示歌名/歌手/时长，并把播放键点亮。
+     */
+    private fun syncSessionMetadata() {
+        val s = session ?: return
+        val player = s.player
+        val item = player.currentMediaItem ?: return
+        val meta = item.mediaMetadata
+        android.util.Log.i(
+            "ETKN-Music",
+            "syncSession: title=${meta.title} artist=${meta.artist} dur=${meta.durationMs} " +
+                "count=${player.mediaItemCount} state=${player.playbackState}",
+        )
+        /**
+         * `setMediaItem`（单项替换）会触发 Session 重新读取 metadata，
+         * 且不改变播放位置，比 prepare 安全（不会因占位 URL 失败落到 IDLE）。
+         */
+        runCatching { player.replaceMediaItem(player.currentMediaItemIndex, item) }
     }
 
     /**
