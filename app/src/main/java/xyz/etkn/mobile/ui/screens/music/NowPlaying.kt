@@ -7,7 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -856,7 +855,7 @@ private fun MusicProgressBar(
     val cachedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.32f)
     val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
 
-    BoxWithConstraints(
+    Box(
         Modifier
             .fillMaxWidth()
             .height(24.dp)
