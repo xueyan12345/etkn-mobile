@@ -260,7 +260,15 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             .setArtist(memory.artist.ifEmpty { null })
             .setAlbumTitle(memory.album.ifEmpty { null })
             .setArtworkUri(artwork?.let(Uri::parse))
-            .setDurationMs(memory.durationMs.takeIf { it > 0 })
+            /**
+             * 用户口径（#1）**duration 必须有值**。
+             * 系统控制中心/车机卡片就是靠这个显示总时长（如 00:00 / 04:00），
+             * 没有它 → 卡片判定"未在播放" → 播放键变灰不可点。
+             */
+            .setDurationMs(
+                memory.durationMs.takeIf { it > 0 }
+                    ?: itemFromMemory(memory).runtimeMs.takeIf { it > 0 },
+            )
             .setIsPlayable(true)
             .setIsBrowsable(false)
             .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
@@ -371,10 +379,26 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 val startIndex = ids.indexOf(memory.itemId).coerceAtLeast(0)
                 p.setMediaItems(list, startIndex, memory.positionMs)
             }
-            p.prepare()
+            /**
+             * 用户口径（#1）**不要对占位 URL 调 prepare**。
+             *
+             * 实测：`etkn-music://track/item-xxx` 是占位 scheme，真正的直链在
+             * `resolve()` 里按需换取。对占位 URL prepare 会解析失败，
+             * 播放器状态变成 `STATE_IDLE`，Session 随之 `PlaybackState=NONE`，
+             * 系统控制中心看到 NONE 就判定「未在播放」→ 播放键变灰。
+             *
+             * 系统音乐的做法：它暂停时是 `PAUSED(2)` 且 metadata 完整，
+             * 所以卡片一直亮着。
+             *
+             * 现在改成：
+             *  · 只 setMediaItems（Session 立刻有 metadata + duration）
+             *  · 不 prepare（避免 IDLE）
+             *  · 真正播放时（用户点播放键 / music.play）才 prepare ——
+             *    那时 resolve() 会把占位 URL 换成真直链
+             */
             android.util.Log.i(
                 "ETKN-Music",
-                "restore done: count=${p.mediaItemCount} idx=${p.currentMediaItemIndex} dur=${p.duration}",
+                "restore done: count=${p.mediaItemCount} idx=${p.currentMediaItemIndex}",
             )
             /**
              * 用户口径（#2）**装完必须 publish 一次**。
@@ -412,7 +436,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         tmdbRating = null,
         doubanRating = null,
         imdbRating = null,
-        runTimeTicks = 0L,
+        /** 用户口径（#1）时长必须带上，否则恢复后系统卡片显示 00:00、播放键不可用。 */
+        runTimeTicks = memory.durationMs.takeIf { it > 0 }?.let { it * 10_000L } ?: 0L,
         genres = emptyList(),
         studios = emptyList(),
         seriesId = null,
