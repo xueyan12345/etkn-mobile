@@ -1292,13 +1292,21 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
          *  · 用 `prefetchedFor` 记住「已经为哪首歌预载过下一首」，同一首只做一次
          */
         val cached = _state.value.cachedPosition
-        if (cached <= 0 || (cached - cur) > 20_000L) return
+        if (cached <= 0 || (cached - cur) > 20_000L) {
+            return
+        }
+        android.util.Log.i(
+            "ETKN-Music",
+            "预载条件成立 cur=$cur cached=$cached dur=$dur nextIndex=$nextIndex",
+        )
+        val nextId = p.getMediaItemAt(nextIndex).mediaId
         /** 当前这首已经为它预载过了，就不再重复。 */
         val curId = p.currentMediaItem?.mediaId ?: return
-        if (prefetchedFor == curId) return
+        if (prefetchedFor == curId) {
+            return
+        }
         prefetchedFor = curId
-
-        val nextId = p.getMediaItemAt(nextIndex).mediaId
+        android.util.Log.i("ETKN-Music", "开始预载下一首 cur=$curId next=$nextId")
         graph.scope.launch {
             runCatching {
                 /** 已经在预载/已解析过就不重复请求。 */
