@@ -92,6 +92,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material3.ModalBottomSheet
+import xyz.etkn.mobile.music.LyricLine
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
@@ -265,9 +266,9 @@ private fun MiniLyrics(track: Item?, positionMs: Long) {
     ) {
         // 三行：当前行在中间，上下各一行；上下用低透明度形成渐隐
         listOf(-1, 0, 1).forEach { offset ->
-            val line = lines.getOrNull(current + offset)
+            val line: LyricLine? = lines.getOrNull(current + offset)
             Text(
-                text = line ?: "",
+                text = line?.text ?: "",
                 style = if (offset == 0) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodySmall,
                 color = base.copy(
                     alpha = when (offset) {
