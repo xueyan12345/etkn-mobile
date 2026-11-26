@@ -75,9 +75,76 @@ class MusicService : MediaLibraryService() {
          * 对照图（系统音乐）：00:00 / 04:00 —— 时长已知，正是"预装 + prepare"的结果。
          */
         applicationContext.graph.music.restoreForResumption()
+        /**
+         * 用户口径（2026-11-27，#1 真根因）**主动进入前台服务状态，避免被 ColorOS 冻结**。
+         *
+         * adb 实测证据（一加 13 / ColorOS 16）：
+         * ```
+         * OplusHansManager: freeze uid: 10687 xyz.etkn.mobile pids: [11210] scene: LcdOff
+         * MediaPlayerWrapper: The session was destroyed xyz.etkn.mobile
+         * ```
+         *
+         * 结论：ColorOS 的 OplusHansManager 一息屏（scene: LcdOff）就冻结整个进程，
+         * MediaSession 被销毁 → 状态栏卡片变灰、点不了、队列恢复也没机会跑。
+         *
+         * 这不是我们代码的 bug，是 ColorOS 的后台管理策略。
+         * 官方对抗手段只有一个：**让 Service 常驻前台**（有持续通知就不冻结）。
+         *
+         * `MediaSessionService` 本来会在「真正播放」时自动进前台，
+         * 但我们恢复的队列是 prepare 但不 play，不算播放中，
+         * 于是它一直是后台状态 → 一息屏就被冻。这里显式进前台。
+         *
+         * 注意必须 try-catch：Android 12+ 对后台启动前台服务有限制，
+         * 失败也不能让 Service 崩掉。
+         */
+        runCatching { enterForeground() }
+    }
+
+    /**
+     * 把本 Service 提升为前台服务（带一条常驻通知）。
+     *
+     * 用 `mediaPlayback` 类型，Android 14+ 要求该类前台服务必须有通知。
+     */
+    private fun enterForeground() {
+        val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE)
+            as android.app.NotificationManager
+        val channelId = "etkn_music_service"
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            nm.createNotificationChannel(
+                android.app.NotificationChannel(
+                    channelId,
+                    "音乐播放服务",
+                    android.app.NotificationManager.IMPORTANCE_LOW,
+                ).apply { setShowBadge(false) },
+            )
+        }
+        val open = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle("ETKN 音乐")
+            .setContentText("准备就绪")
+            .setContentIntent(open)
+            .setOngoing(true)
+            .setSilent(true)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
+            .build()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            startForeground(
+                1,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+            )
+        } else {
+            startForeground(1, notification)
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
+
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         /**
