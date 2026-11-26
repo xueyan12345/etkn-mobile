@@ -1143,35 +1143,19 @@ private fun SeekerLyrics(
     /**
      * 用户口径（2026-11-27，#48）**从迷你条进播放页必须能看到歌词**。
      *
-     * 用户报的 bug：「从下边的播放小条点进去，到播放界面，播放界面不显示歌词」
-     *
-     * 根因（改播放页时漏了这一处）：
-     * ```
-     * val sid = music.sourceId ?: return@LaunchedEffect
-     * ```
-     * `state.sourceId` 要等直链解析完才有；从迷你条进来时往往还是 null
-     * → 直接 return，歌词永远不会加载 → 界面空着。
-     * （之前 #42 我只修了旧的 FiveLineLyrics，新的 SeekerLyrics 没修。）
-     *
-     * 现在：为空就调 `ensureSourceId()` 主动取一次，取到再拉歌词。
+     * `state.sourceId` 要等直链解析才有，从迷你条进来时往往还是 null；
+     * 旧代码 `?: return` 直接跳过 → 歌词永远不加载。
+     * 现在为空就调 `ensureSourceId()` 主动取一次。
      */
     LaunchedEffect(track.id, music.sourceId) {
         var sid = music.sourceId
         if (sid.isNullOrBlank()) {
             sid = runCatching { graph.music.ensureSourceId(track.id) }.getOrNull()
-            android.util.Log.i("ETKN-Music", "歌词: 补取 sourceId=$sid (track=${track.id})")
         }
-        if (sid.isNullOrBlank()) {
-            android.util.Log.w("ETKN-Music", "歌词: sourceId 仍为空，跳过 track=${track.id}")
-            return@LaunchedEffect
-        }
+        if (sid.isNullOrBlank()) return@LaunchedEffect
         val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
-        android.util.Log.i(
-            "ETKN-Music",
-            "歌词: track=${track.id} sid=$sid 长度=${text.length} 行数=${text.lines().size}",
-        )
         parsed = if (text.isBlank()) null else Lyrics.parse(text)
-        /** 供车机/CarLife 卡片显示当前行（#34）。 */
+        /** 供车机/CarLife 卡片显示当前行（#34/#50）。 */
         parsed?.lines?.let { ls ->
             graph.music.publishLyrics(track.id, ls.map { it.timeMs to it.text })
         }
@@ -1192,67 +1176,85 @@ private fun SeekerLyrics(
     }
 
     val list = rememberLazyListState()
-    /** 用户正在手动滑动（暂停自动跟随）。 */
     var dragging by remember { mutableStateOf(false) }
-    /** 定位线锁定的行（滑动时跟着变，用于高亮 + 跳播）。 */
     var pinnedIndex by remember { mutableIntStateOf(-1) }
 
-    /** 行高（固定，保证定位线判定准确）。 */
+    /** 行高固定，居中算法依赖它保持常量。 */
     val rowHeight = 34.dp
     val density = LocalDensity.current
     val rowPx = with(density) { rowHeight.toPx() }
 
-    /**
-     * 布局：上下各留 half 高度，这样第一行/最后一行也能滚到正中。
-     */
     BoxWithConstraints(modifier) {
-        val halfPx = with(density) { (maxHeight / 2).toPx() }
-        val paddingPx = (halfPx - rowPx / 2).coerceAtLeast(0f)
+        val boxPx = with(density) { maxHeight.toPx() }
+        /**
+         * 上下留白 = 半个容器减半行高：
+         * 让第一行和最后一行也能滚到正中间。
+         */
+        val paddingPx = (boxPx / 2 - rowPx / 2).coerceAtLeast(0f)
 
-        /** 自动跟随：不拖动时，把当前行滚到中间。 */
-        LaunchedEffect(activeIndex, dragging) {
+        /**
+         * 用户口径（2026-11-27，#51/#53）**正在唱的那一句必须在正中间，字号最大**。
+         *
+         * 用户原话：
+         *  「歌词的位置对不上」「看不到正在播放的那一句」
+         *  「正常播放的那一句不应该在最中间的最大字吗」
+         *
+         * 上一版错在哪：
+         * ```
+         * val target = activeIndex * rowPx + paddingPx - (boxPx - rowPx) / 2
+         * val itemIndex = (target / rowPx).toInt()     ← 把绝对滚动量又拆回"下标"
+         * val offset = target - itemIndex * rowPx       ← 再算残差当 offset
+         * list.scrollToItem(itemIndex, offset)
+         * ```
+         * `scrollToItem(index, offset)` 的语义是「第 index 项顶部落在容器顶部往下
+         * offset 像素处」。上面那套「先算绝对量、再拆下标、再取残差」等价于
+         * 把结果又滚回去了一部分，所以永远对不上中线。
+         *
+         * 现在用最直接的形式：
+         * ```
+         * scrollToItem(activeIndex, offsetPx)
+         * 其中 offsetPx = (容器高 - 行高) / 2
+         *   → 第 activeIndex 行的顶部正好落在容器 (H-h)/2 处，
+         *     即该行的垂直中心 = 容器中心。恒等式，没有中间换算。
+         * ```
+         */
+        LaunchedEffect(activeIndex, dragging, boxPx, rowPx) {
             if (!dragging && activeIndex >= 0) {
-                /**
-                 * 滚到「当前行居中」的位置。
-                 * 用 `scrollToItem` + 偏移（`animateScrollTo` 在此 Compose 版本不可用）。
-                 */
-                val boxPx = with(density) { maxHeight.toPx() }
-                val target = (activeIndex * rowPx + paddingPx - (boxPx - rowPx) / 2)
-                    .coerceAtLeast(0f).toInt()
-                val itemIndex = (target / rowPx).toInt().coerceIn(0, lines.lastIndex)
-                val offset = (target - itemIndex * rowPx).toInt()
-                list.scrollToItem(itemIndex, offset)
+                val offset = ((boxPx - rowPx) / 2).toInt().coerceAtLeast(0)
+                list.scrollToItem(activeIndex, offset)
             }
         }
 
-        /** 拖动时：根据滚动位置更新定位行。 */
+        /**
+         * 拖动时把「最接近中线的那一行」作为定位行。
+         *
+         * 内容坐标换算（LazyColumn 的 firstVisibleItemScrollOffset 是相对该 item 顶部的
+         * 负位移，方向为「内容相对视口向上滚了多少」）：
+         * ```
+         * 第 i 行内容坐标 = paddingPx + i * rowPx
+         * 视口顶部内容坐标 = paddingPx + firstIndex*rowPx + firstOffset
+         * 中线内容坐标     = 上面的值 + (boxPx - rowPx) / 2
+         * 中线所在行 i     = (中线 - paddingPx) / rowPx
+         * ```
+         */
         LaunchedEffect(list.isScrollInProgress, list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) {
             if (!list.isScrollInProgress) return@LaunchedEffect
             dragging = true
-            /** 正中那一点落在第几行。 */
-            val boxPx = with(density) { maxHeight.toPx() }
-            val centerInList = list.firstVisibleItemScrollOffset +
-                (boxPx - rowPx) / 2 + list.firstVisibleItemIndex * rowPx - paddingPx
-            val idx = (centerInList / rowPx).toInt().coerceIn(0, lines.lastIndex)
+            val centered = list.firstVisibleItemScrollOffset + (boxPx - rowPx) / 2
+            val idx = ((centered / rowPx).toInt() + list.firstVisibleItemIndex)
+                .coerceIn(0, lines.lastIndex)
             pinnedIndex = idx
         }
 
         /**
-         * 用户口径（2026-11-27，#41）**松手后不自动跳播，只回到正在播的那句并隐藏控件**。
-         *
-         * 用户原话：
-         *  「松手之后，如果没有操作，就跳回现正在播放的歌词位置，
-         *    然后隐藏掉这个横线和小播放按钮」
-         *
-         * 所以：松手 → 等 1 秒 → 滚回当前播放行、隐藏定位线和跳播按钮。
-         * **不 seek**。要跳播只能点那个小播放按钮（显式操作）。
+         * 用户口径（#41）**松手 1 秒后回到正在播的那句并隐藏控件，不自动跳播**。
+         * 跳播只能点那个小播放按钮（显式操作）。
          */
         LaunchedEffect(dragging, pinnedIndex) {
             if (dragging && !list.isScrollInProgress) {
                 kotlinx.coroutines.delay(1_000)
                 dragging = false
                 pinnedIndex = -1
-                /** 回落到正在播放的那句（`activeIndex` 的跟随逻辑会自动滚过去）。 */
             }
         }
 
@@ -1286,13 +1288,7 @@ private fun SeekerLyrics(
                 }
             }
 
-            /**
-             * 用户口径（2026-11-27，#41）**定位线只在我手动滑动时才出现**。
-             *
-             * 用户原话：
-             *  「那条线和那个右边那个小播放按钮，这个是要在我手动滑动歌词的时候才出现，
-             *    平常的时候不让它出现，滑动歌词的时候出现」
-             */
+            /** 定位线只在手动滑动时出现（#41）。 */
             if (dragging) {
                 Box(
                     Modifier
@@ -1306,7 +1302,7 @@ private fun SeekerLyrics(
                 )
             }
 
-            /** 定位线右侧的「跳到这里播」按钮（滑动时才出现）。 */
+            /** 定位线右侧的「跳到这句播放」按钮（只在滑动时）。 */
             if (dragging && pinnedIndex >= 0) {
                 val target = lines.getOrNull(pinnedIndex)
                 if (target != null) {
@@ -1321,24 +1317,9 @@ private fun SeekerLyrics(
                             .padding(end = 12.dp)
                             .size(40.dp),
                     ) {
-                        Icon(
-                            Icons.Rounded.PlayArrow,
-                            "跳到这句播放",
-                            Modifier.size(22.dp),
-                        )
+                        Icon(Icons.Rounded.PlayArrow, "跳到这句播放", Modifier.size(22.dp))
                     }
-                }
-            }
-
-            /** 拖动时显示目标时间（参考主流播放器）。 */
-            if (dragging && pinnedIndex >= 0) {
-                val target = lines.getOrNull(pinnedIndex)
-                if (target != null) {
-                    Box(
-                        Modifier
-                            .align(Alignment.CenterStart)
-                            .padding(start = 12.dp),
-                    ) {
+                    Box(Modifier.align(Alignment.CenterStart).padding(start = 12.dp)) {
                         Text(
                             formatClock(target.timeMs),
                             style = MaterialTheme.typography.labelMedium,

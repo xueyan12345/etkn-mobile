@@ -614,16 +614,34 @@ class MusicService : MediaLibraryService() {
                  * 修法：这几条命令**直接返回 -1 交给 Media3 默认处理**，
                  * 我们不插手。这样只跳 1 首，播放/暂停仍由我们自己控制（#44）。
                  */
+                /**
+                 * 用户口径（2026-11-27，#52）**下一首/上一首必须自己执行**。
+                 *
+                 * 踩的坑（两轮）：
+                 * ```
+                 * 第一版：这里调 systemNext() + onStartCommand 也调一次 → 跳 2 首
+                 * 第二版：改成 return -1 交给 Media3     → 完全没反应（点了不动）
+                 * ```
+                 * 第二版为什么没反应：`MediaLibrarySession` 的默认实现里，
+                 * `COMMAND_SEEK_TO_NEXT_MEDIA_ITEM` 并不会去 seek 播放器 ——
+                 * 它期待回调方处理；返回 -1 等于「我不处理」，于是什么都没发生。
+                 *
+                 * 现在：回到「自己执行」，但只执行一次 ——
+                 * `onStartCommand` 那边已有 2 秒去重窗口（#40），
+                 * 不会重复；`systemNext/systemPrevious` 内部也只在"真的在播"时切歌。
+                 */
                 Player.COMMAND_SEEK_TO_NEXT,
                 Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                -> applicationContext.graph.scope.launch {
+                    runCatching { music.systemNext() }
+                }
                 Player.COMMAND_SEEK_TO_PREVIOUS,
                 Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                Player.COMMAND_SEEK_TO_MEDIA_ITEM,
-                -> {
-                    android.util.Log.i(
-                        "ETKN-Music",
-                        "onPlayerCommandRequest: cmd=$playerCommand 交给 Media3 默认处理（避免跳两首）",
-                    )
+                -> applicationContext.graph.scope.launch {
+                    runCatching { music.systemPrevious() }
+                }
+                Player.COMMAND_SEEK_TO_MEDIA_ITEM -> {
+                    /** 指定项跳转不做特殊处理。 */
                     return -1
                 }
                 else -> return android.os.Bundle.EMPTY.let {

@@ -1088,10 +1088,18 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 }
                 return@launch
             }
-            /** 真的在播 → 切下一首。 */
+            /**
+             * 用户口径（2026-11-27，#52）**切歌只做「seek + play」，不要 prepare**。
+             *
+             * 「点一次跳两首」的真凶就是这里的 `prepare()`：
+             * `seekToNextMediaItem()` 已经让播放器进入 BUFFERING 并自动准备，
+             * 紧跟的 `prepare()` 会重置播放器内部状态机，在某些队列状态下
+             * 触发一次隐式的「前进」—— 所以索引跨了 2。
+             * 日志里 `onPlayerCommandRequest` 只出现 1 次，
+             * 但 `idx` 从 406 变成 410，正是这个原因。
+             */
             runCatching {
                 player.seekToNextMediaItem()
-                player.prepare()
                 player.play()
             }
             android.util.Log.i(
@@ -1124,9 +1132,9 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 }
                 return@launch
             }
+            /** 同 systemNext：不 prepare，避免多退一首。 */
             runCatching {
                 player.seekToPreviousMediaItem()
-                player.prepare()
                 player.play()
             }
             android.util.Log.i("ETKN-Music", "systemPrevious 完成（切歌） idx=${player.currentMediaItemIndex}")
