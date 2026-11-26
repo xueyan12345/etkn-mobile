@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.gestures.animateScrollTo
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -1142,19 +1143,21 @@ private fun SeekerLyrics(
 
     /** 行高（固定，保证定位线判定准确）。 */
     val rowHeight = 34.dp
-    val rowPx = with(LocalDensity.current) { rowHeight.toPx() }
+    val density = LocalDensity.current
+    val rowPx = with(density) { rowHeight.toPx() }
 
     /**
      * 布局：上下各留 half 高度，这样第一行/最后一行也能滚到正中。
      */
     BoxWithConstraints(modifier) {
-        val halfPx = with(LocalDensity.current) { (maxHeight / 2).toPx() }
+        val halfPx = with(density) { (maxHeight / 2).toPx() }
         val paddingPx = (halfPx - rowPx / 2).coerceAtLeast(0f)
 
         /** 自动跟随：不拖动时，把当前行滚到中间。 */
         LaunchedEffect(activeIndex, dragging) {
             if (!dragging && activeIndex >= 0) {
-                val target = (activeIndex * rowPx + paddingPx - (maxHeight.toPx() - rowPx) / 2)
+                val boxPx = with(density) { maxHeight.toPx() }
+                val target = (activeIndex * rowPx + paddingPx - (boxPx - rowPx) / 2)
                     .coerceAtLeast(0f).toInt()
                 list.animateScrollTo(target)
             }
@@ -1165,8 +1168,9 @@ private fun SeekerLyrics(
             if (!list.isScrollInProgress) return@LaunchedEffect
             dragging = true
             /** 正中那一点落在第几行。 */
+            val boxPx = with(density) { maxHeight.toPx() }
             val centerInList = list.firstVisibleItemScrollOffset +
-                (maxHeight.toPx() - rowPx) / 2 + list.firstVisibleItemIndex * rowPx - paddingPx
+                (boxPx - rowPx) / 2 + list.firstVisibleItemIndex * rowPx - paddingPx
             val idx = (centerInList / rowPx).toInt().coerceIn(0, lines.lastIndex)
             pinnedIndex = idx
         }
