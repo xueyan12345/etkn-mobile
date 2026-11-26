@@ -848,7 +848,10 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
          * 现在用 `版本ID + 流ID` 组一个稳定 key，播放侧和预载侧共用。
          */
         val stableKey = "${entry.sourceId}|${id}"
-        return spec.withUri(Uri.parse(entry.url)).withKey(stableKey)
+        return spec.buildUpon()
+            .setUri(Uri.parse(entry.url))
+            .setKey(stableKey)
+            .build()
     }
 
     /**
