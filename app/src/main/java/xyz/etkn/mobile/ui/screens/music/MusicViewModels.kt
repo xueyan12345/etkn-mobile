@@ -169,8 +169,31 @@ private fun pinyinInitialOf(text: String): Char {
  *  ② 归到 `#` 的（数字/符号开头的）用 `~`(0x7E) 作 key，**排到 Z 后面**
  *     而不是排在 A 前面
  */
-private val LEADING_JUNK = "《》【】「」『』（）()<>[]{}\"'“”‘’·、，,。.:：;；!！?？-—_~`@#$%^&*+=|\\/ 　	
-"
+/**
+ * 会被剥掉的「前缀噪音字符」：书名号、引号、括号、标点、空白。
+ *
+ * 用 `charArrayOf` 显式列出，避免字符串转义踩坑（之前 `"` 和 `\` 混在一起导致语法错误）。
+ */
+/**
+ * 会被剥掉的「前缀噪音字符」：书名号、引号、括号、标点、空白。
+ *
+ * 用 Unicode 码位显式构造，避免 Kotlin 字符串里 `"` 和 `\` 的转义踩坑
+ * （之前写字符字面量时被 Python 二次转义，导致语法错误）。
+ */
+private val LEADING_JUNK: Set<Char> = buildSet {
+    // 中文书名号 / 引号 / 括号 / 间隔号 / 顿号
+    intArrayOf(0x300A, 0x300B, 0x3010, 0x3011, 0x300C, 0x300D, 0x300E, 0x300F,
+        0xFF08, 0xFF09, 0x3014, 0x3015, 0x3008, 0x3009, 0x00B7, 0x3001).forEach { add(it.toChar()) }
+    // 全角标点
+    intArrayOf(0xFF0C, 0x3002, 0xFF1A, 0xFF1B, 0xFF01, 0xFF1F, 0x2014, 0xFF5E).forEach { add(it.toChar()) } }
+    // ASCII 标点与空白（0x20-0x2F / 0x3A-0x40 / 0x5B-0x60 / 0x7B-0x7E）
+    (0x20..0x2F).forEach { add(it.toChar()) }
+    (0x3A..0x40).forEach { add(it.toChar()) }
+    (0x5B..0x60).forEach { add(it.toChar()) }
+    (0x7B..0x7E).forEach { add(it.toChar()) }
+    // 全角空格 / 制表 / 换行
+    intArrayOf(0x3000, 0x09, 0x0A, 0x0D).forEach { add(it.toChar()) }
+}
 
 private fun stripLeadingJunk(text: String): String {
     var i = 0
