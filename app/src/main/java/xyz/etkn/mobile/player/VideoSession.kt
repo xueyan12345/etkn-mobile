@@ -1328,11 +1328,57 @@ class VideoSession(
 
     private fun loadNext(itemId: String) {
         scope.launch {
-            val next = runCatching { api.nextEpisode(itemId) }.getOrNull()
+            /**
+             * 用户口径（2026-11-27）**家庭视频库（homevideos）的剧集也要能找到下一集**。
+             *
+             * 修的 bug（用户实测）：家庭视频库里的剧集播完不触发下一集预加载。
+             *
+             * 根因（服务端实测）：`/api/tv/Items/{id}/NextEpisode` 对这类条目返回 0 条 ——
+             * 它们的 `SeriesId` 是 null（item_type=episode 但挂在 season 下，
+             * 没有 series 层），服务端不知道「下一集」是谁。
+             * ```
+             * item-53236 390JAC-095 妄想酱 19  Type=Video  SeriesId=None → NextEpisode 0 条
+             * ```
+             *
+             * 兜底：拿当前集的**父容器（季/文件夹）**下的兄弟条目，
+             * 按服务端返回顺序找到当前集的下一个。这条路对 episode 和 Video 都成立。
+             */
+            var next = runCatching { api.nextEpisode(itemId) }.getOrNull()
+            if (next == null) {
+                next = runCatching { siblingNext(itemId) }.getOrNull()
+                if (next != null) {
+                    android.util.Log.i(TAG, "next 兜底命中（同父级兄弟集）: ${next.name}")
+                }
+            }
             if (item?.id != itemId) return@launch
             _ui.update { it.copy(next = next) }
             // 预加载不在这里触发：由 tickCache 在当前集缓存完成后串行推进（一环套一环）。
-            }
+        }
+    }
+
+    /**
+     * 用户口径（2026-11-27）**同父级兄弟集兜底**。
+     *
+     * `NextEpisode` 对「没有 series 层」的家庭视频剧集返回空，
+     * 这类条目挂在 season（或文件夹）下，直接列父容器的子项按顺序取下一个即可。
+     *
+     * 顺序口径：服务端 Items 默认按 SortName；这里用 `ParentIndexNumber/IndexNumber`
+     * 排序（取不到时退回服务端原顺序），避免 S01E10 排到 S01E9 前面。
+     */
+    private suspend fun siblingNext(itemId: String): Item? {
+        val current = item?.takeIf { it.id == itemId }
+            ?: runCatching { api.item(itemId) }.getOrNull()
+            ?: return null
+        /**
+         * 父容器优先级：season（episode 都挂季下）→ series（老结构）。
+         * 两个都拿不到就没法算兄弟集，直接返回 null（不会误播别的片子）。
+         */
+        val parentId = current.seasonId ?: current.seriesId ?: return null
+        val siblings = runCatching { api.children(parentId) }.getOrDefault(emptyList())
+        if (siblings.size < 2) return null
+        val idx = siblings.indexOfFirst { it.id == itemId }
+        if (idx < 0) return null
+        return siblings.getOrNull(idx + 1)
     }
 
     /**

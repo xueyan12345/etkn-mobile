@@ -75,15 +75,31 @@ fun HeroCarousel(
     onOpen: (Item) -> Unit,
     modifier: Modifier = Modifier,
     autoAdvance: Boolean = true,
+    /**
+     * 用户口径（2026-11-27）**页数固定，先占位后填充**（用户原话「曲线救国」）。
+     *
+     * 需求：打开首页的瞬间就要看到 10 个圆点，不能先 6 个再跳成 10 个；
+     * 但也绝不能为了凑数让首屏空着等 3 秒。
+     *
+     * 做法：pager 的总页数恒等于 [pageCount]（=10）。
+     *  · 数据够的页正常画
+     *  · 数据还没到的页画占位（同色深底，不出字）
+     *  · 后续 [items] 变长时，对应页自动变成真内容 —— 圆点数量自始至终不变
+     *
+     * 用户自己说了「我也不能马上就去滑动那个轮播图」，所以前几页先有内容、
+     * 后面几页稍后填上是完全可以接受的。
+     */
+    pageCount: Int = items.size,
 ) {
-    if (items.isEmpty()) return
-    val pager = rememberPagerState { items.size }
+    if (items.isEmpty() && pageCount <= 0) return
+    val totalPages = maxOf(pageCount, items.size)
+    val pager = rememberPagerState { totalPages }
     val dragged by pager.interactionSource.collectIsDraggedAsState()
-    LaunchedEffect(items.size, dragged, autoAdvance) {
-        if (!autoAdvance || dragged || items.size < 2) return@LaunchedEffect
+    LaunchedEffect(totalPages, dragged, autoAdvance) {
+        if (!autoAdvance || dragged || totalPages < 2) return@LaunchedEffect
         while (true) {
             delay(7_000)
-            pager.animateScrollToPage((pager.currentPage + 1) % items.size)
+            pager.animateScrollToPage((pager.currentPage + 1) % totalPages)
         }
     }
     val widthPx = LocalWindowInfo.current.containerSize.width
@@ -112,17 +128,29 @@ fun HeroCarousel(
                     else androidx.compose.ui.geometry.Offset.Zero
                 }
             }),
-            key = { items[it].id },
+            key = { page -> items.getOrNull(page)?.id ?: "hero-placeholder-$page" },
         ) { page ->
-            HeroPage(items[page], widthPx, scrollOffsetPx, onPlay, onOpen)
+            val item = items.getOrNull(page)
+            if (item != null) {
+                HeroPage(item, widthPx, scrollOffsetPx, onPlay, onOpen)
+            } else {
+                /**
+                 * 占位页：用页面底色铺满，不出图不出字。
+                 * 用户滑到这里看到的是纯色块（很快就填上了），
+                 * 但圆点数量从第一帧起就是 10 个，不会跳变。
+                 */
+                Box(
+                    Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow),
+                )
+            }
         }
-        if (items.size > 1) {
+        if (totalPages > 1) {
             Row(
                 Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                repeat(items.size) { index ->
+                repeat(totalPages) { index ->
                     val selected = index == pager.currentPage
                     val w by animateDpAsState(if (selected) 18.dp else 6.dp, label = "dot")
                     Box(

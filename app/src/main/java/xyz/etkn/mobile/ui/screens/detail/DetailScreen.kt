@@ -145,6 +145,8 @@ import androidx.compose.material.icons.rounded.Tune
 import xyz.etkn.mobile.data.model.MediaStream
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.graphics.graphicsLayer
 
 @Composable
 fun DetailScreen(id: String) {
@@ -190,19 +192,33 @@ fun DetailScreen(id: String) {
 private fun contentSwap() = fadeIn(tween(Motion.FADE_IN, delayMillis = Motion.FADE_OUT)) togetherWith fadeOut(tween(Motion.FADE_OUT))
 
 /**
- * 用户口径（2026-11-23）**切集不再做整块交叉淡化**。
+ * 用户口径（2026-11-27）**切集要柔和过渡，但只给"本来就该变"的地方加**。
  *
- * 原来是 AnimatedContent(contentKey = item.id)：每换一集，
- * 头部/操作行/简介/章节/演职人员**各自**做一次淡出淡入，
- * 视觉上就是「整页在闪、在重新加载」，而且每个 Swap 都是独立动画，很费。
+ * 历史两版：
+ *  · v1：`AnimatedContent(contentKey = item.id)` 给每个区块都做一遍交叉淡化
+ *    → 整页都在闪、在重新加载，太吵（11-23 被否）
+ *  · v2：直接透传 `content(data)` → 一点过渡都没有，切集生硬（今天被否）
  *
- * 参考视频里的应用是「就地更新」：只有真正变化的文字/封面换了，版面完全不动。
- * 所以这里直接透传 —— 内容仍会随 data 重组（本来就该变的地方会变），
- * 但没有额外动画、没有整体重建感。
+ * 现在取中间：**不做整块交叉淡化，只对头图做一次柔和淡入**。
+ * 用 `animateFloatAsState` 把 alpha 从 0.55 平滑推到 1，
+ * 时长用一个很短的值（180ms），观感是"内容就地换掉了，画面轻轻呼吸一下"，
+ * 而不是"整页重新加载"。
+ *
+ * 为什么不用 AnimatedContent：它会同时保留新旧两棵子树做交叉淡化，
+ * 在 LazyColumn 的 item 里开销大、还容易让整页跳动。
  */
 @Composable
 private fun Swap(data: DetailData, content: @Composable (DetailData) -> Unit) {
-    content(data)
+    val key = data.item.id
+    /**
+     * `key(key)` 让内容在切集时重建一次，配合上面的 alpha 起始值做淡入。
+     * 用 remember(key) 取一个随 key 变化而重置的初始值。
+     */
+    val appear = remember(key) { Animatable(0.55f) }
+    LaunchedEffect(key) { appear.animateTo(1f, tween(durationMillis = 180)) }
+    Box(Modifier.graphicsLayer { this.alpha = appear.value }) {
+        content(data)
+    }
 }
 
 /**

@@ -123,8 +123,19 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
         LazyColumn(state = list, modifier = Modifier.fillMaxSize().glassSource(haze)) {
             if (hasHero) {
                 item(key = "hero", contentType = "hero") {
+                    /**
+                     * 用户口径（2026-11-27）**页数固定 10，缺的页先占位后填充**。
+                     *
+                     * 用户原话：「我打开的瞬间，让它显示 10 个点……可以先显示前几个，
+                     * 然后后边那些点可以慢慢填充，因为我也不能马上就去滑动那个轮播图」
+                     * 「曲线救国」「在后台我也看不到」。
+                     *
+                     * 所以：圆点自始至终 10 个，前几页立刻有内容（快照/旧 hero），
+                     * 后面没数据的页显示占位色块，等主路径补齐时**只填后面，不动前面**。
+                     */
                     HeroCarousel(
                         items = data.hero,
+                        pageCount = 10,
                         height = heroHeight,
                         autoAdvance = heroMode == HeroMode.Auto,
                         scrollOffsetPx = { if (list.firstVisibleItemIndex == 0) list.firstVisibleItemScrollOffset else 0 },

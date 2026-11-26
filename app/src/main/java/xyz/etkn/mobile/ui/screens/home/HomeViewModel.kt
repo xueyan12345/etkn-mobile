@@ -160,18 +160,18 @@ class HomeViewModel(
              * 现在打点，方便下次直接定位到底是快照只有 3 个、还是池子只有 3 个。
              */
             /**
-             * 用户口径（2026-11-27，#2 第四版）**首屏也不许发半截**。
+             * 用户口径（2026-11-27，#2 第五版）**切账号必须立刻出图，不能等**。
              *
-             * 原来 `keepOld.ifEmpty { hero }` —— keepOld 为空时会把「只有 3~6 个的 hero」
-             * 发出去渲染，用户就看到 6 个圆点，等主路径算完再跳成 10 个。
-             * 现在：不足 HERO_SIZE 就发空列表，HomeScreen 那一帧不画轮播区
-             * （hasHero=false），等主路径一次给出满 10 个 —— 全程没有数量跳变。
+             * 上一版我让「不足 10 个就发空列表」，结果切账号要等 3 秒才看到轮播
+             * （用户实测）—— 为了不生硬地把数量跳变消掉，却把首屏响应速度搞坏了。
+             *
+             * 这两个诉求的正确平衡：
+             *  · 有快照 → 立刻显示（哪怕 6 个），先让用户看到东西
+             *  · 主路径随后补齐到 10 个（数量变化只在第一次进入时发生一次）
+             *
+             * 用户要的是「别等」，不是「宁可空着」。所以这里改回「有多少先给多少」。
              */
-            val useHero = when {
-                enough -> hero
-                keepOld.size >= HERO_SIZE -> keepOld
-                else -> emptyList()
-            }
+            val useHero = hero.ifEmpty { keepOld }
             android.util.Log.i(
                 "ETKN-Hero",
                 "showCached: snapshot=${fromSnapshot.size} hero=${hero.size} " +
@@ -225,8 +225,20 @@ class HomeViewModel(
                          * 空 hero 时 HomeScreen 的 `hasHero` 为 false，那一帧不画轮播，
                          * 也不会出现「6 个 → 10 个」的跳变。
                          */
+                        /**
+                         * 用户口径（2026-11-27，#2 第五版）**永远保留旧 hero 当占位**。
+                         *
+                         * 上一版我加了 `if (keep.size >= HERO_SIZE)`，结果切账号时
+                         * 旧 hero 只有 6 个 → 置空 → 首页空 3 秒（用户实测「切 h 不能瞬间看到」）。
+                         *
+                         * 权衡后这里退回「有多少先显示多少」：
+                         * 切账号时先看到上一批的图（很快，不空白），
+                         * 主路径算完再整体替换成新账号的 10 个。
+                         * 数量从 6→10 的那一次变化只发生一次，用户能接受；
+                         * 空 3 秒是完全不能接受的。
+                         */
                         val keep = (_state.value as? Load.Ready)?.value?.hero.orEmpty()
-                        fresh.copy(hero = if (keep.size >= HERO_SIZE) keep else emptyList())
+                        fresh.copy(hero = keep)
                     }
                 val fromCache = (_state.value as? Load.Ready) != null && lastLoad == 0L
                 lastLoad = System.currentTimeMillis()
@@ -258,7 +270,11 @@ class HomeViewModel(
                  */
                 val heroShort = data.hero.size < HERO_SIZE
                 if (heroShort || manual || fromCache) {
-                    awaitHero(data, quiet = !manual, manualHero = manual)
+                    /**
+                     * 用户口径（2026-11-27，#2 第五版）**改回后台补齐，不阻塞首屏**。
+                     * 上一版改 awaitHero 导致切账号要等算完才显示（实测 3 秒）。
+                     */
+                    loadHero(data, quiet = !manual, manualHero = manual)
                 }
             } catch (error: Exception) {
                 if (_state.value !is Load.Ready) _state.value = Load.Failed(error.userMessage())
@@ -324,26 +340,6 @@ class HomeViewModel(
      * 超过 12 小时才重抽。这样「一天开十次」看到的都是同一批，
      * 「两天没开」一进来就是新的一批。
      */
-    /**
-     * 用户口径（2026-11-27，#2 第四版）**同步等 hero 算完再往下走**。
-     *
-     * 和 [loadHero] 的区别只有一点：这个会挂起等到算完（首页就不会先渲染 6 个再跳）。
-     * 保留 loadHero 给「后台静默补齐」那些不需要等的场景用。
-     */
-    private suspend fun awaitHero(data: HomeData, quiet: Boolean, manualHero: Boolean) {
-        /**
-         * 直接在当前协程里算，不另起 job。
-         *
-         * 之前写成 `viewModelScope.launch { ... }.join()` —— 而 awaitHero 自己
-         * 就是在 viewModelScope.launch 里跑的，嵌套等待虽然不死锁（join 会等子协程），
-         * 但多一层调度、还多一次「取消前一个 job」的竞态。直接算最干净。
-         */
-        heroJob?.cancel()
-        heroJob = null
-        runCatching { computeHero(data, quiet, manualHero) }
-            .onFailure { android.util.Log.w("ETKN-Hero", "computeHero 失败", it) }
-    }
-
     private fun loadHero(data: HomeData, quiet: Boolean = false, manualHero: Boolean = false) {
         heroJob?.cancel()
         heroJob = viewModelScope.launch {
@@ -577,8 +573,46 @@ class HomeViewModel(
             .toList()
     }
 
+    /**
+     * 用户口径（2026-11-27）**填充只往后加，不动前面已经显示的**。
+     *
+     * 用户原话：「你填充的时候，前边已经显示的就不要再刷新填充了，
+     * 要不就会让我感觉到是在用原来的老缓存，然后刷新了一下新缓存」。
+     *
+     * 所以：新算出来的 [items] 只用来补「当前位置之后还空着的那几页」。
+     * 已经在显示的那几页原样保留 —— 用户看到的是一段内容慢慢变长，
+     * 而不是前几张图被换掉。
+     *
+     * 例外：当前 hero 为空（刚启动/刚切账号）时，整批都是新的，直接用它。
+     */
     private fun publishHero(items: List<Item>) {
-        _state.update { current -> if (current is Load.Ready) Load.Ready(current.value.copy(hero = items)) else current }
+        _state.update { current ->
+            if (current !is Load.Ready) return@update current
+            val shown = current.value.hero
+            val merged = if (shown.isEmpty()) {
+                items
+            } else {
+                /**
+                 * 保留前缀：shown 已有的（按 id 匹配上就保留原来的对象），
+                 * 不足的位置才从 items 里取新的。
+                 */
+                /**
+                 * 顺序规则：
+                 *  ① 先放 already-shown 里「新结果里也有」的那些（保持它们原来的先后顺序）
+                 *  ② 再追加新结果里剩下的（这些就是「后面还没填的那几页」）
+                 *  ③ 截到 HERO_SIZE
+                 *
+                 * 这样前几页的 id / 顺序完全不变（用户看不到被替换），
+                 * 只在尾部逐渐长出新的。
+                 */
+                val newById = items.associateBy { it.id }
+                val keptOrder = shown.mapNotNull { newById[it.id] ?: null }
+                val keptIds = keptOrder.map { it.id }.toHashSet()
+                val appended = items.filter { it.id !in keptIds }
+                (keptOrder + appended).take(HERO_SIZE)
+            }
+            Load.Ready(current.value.copy(hero = merged))
+        }
     }
 
     /**
