@@ -148,19 +148,30 @@ class MusicService : MediaLibraryService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         /**
-         * 用户口径（#42）**App 被划掉时不要再 clearMediaItems**。
+         * 用户口径（2026-11-27，#1 最终修复）**App 被划掉时绝对不能 stopSelf()**。
          *
-         * 原来这里调 `graph.music.stop()`，而 `stop()` 里有 `clearMediaItems()` ——
-         * 播放器被清空 → 系统卡片立刻变灰、时长归零、续播入口消失。
+         * 系统音乐为什么"不用点，播放键就是亮的"（用户原话）：
+         * 因为它的 Service 一直在跑，MediaSession 一直存在，
+         * ColorOS 的控制中心有对象可绑 → 按钮亮着、能点。
          *
-         * 现在只暂停、保留 MediaItem：
-         *  · 卡片继续显示封面/歌名/时长
-         *  · 点播放键能立刻接着播
-         *  · Service 由系统按需回收，回收后走 onPlaybackResumption 续播
+         * 我们原来这里 `stopSelf()` —— Service 一停，MediaSession 立刻销毁，
+         * 控制中心拿不到任何 session，日志就是：
+         * ```
+         * OplusQsMediaPanelViewController --> bindMediaCarouselController
+         *     historyList is empty
+         * ```
+         * 没有历史、没有 Session → 按钮是暗的，点也不发命令（所以点了完全没反应）。
+         *
+         * 现在的做法：
+         *  · 只把播放暂停，**保留 Session 和 MediaItem**
+         *  · 不 stopSelf，Service 靠前台服务状态常驻（有通知，ColorOS 不冻）
+         *  · 这样划掉 App 之后，控制中心依然能看到「雨一直下 / 张宇」，
+         *    播放键是亮的，点了就接着播
+         *
+         * 代价：会常驻一条通知。但这是系统音乐同样的行为，用户可接受。
          */
-        applicationContext.graph.music.pause()
-        if (session?.player?.playWhenReady == true) return
-        stopSelf()
+        runCatching { applicationContext.graph.music.pause() }
+        // 不调用 stopSelf()：让 Session 活着，控制中心才有对象可绑
     }
 
     override fun onDestroy() {
