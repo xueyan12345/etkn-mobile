@@ -277,8 +277,19 @@ class MusicService : MediaLibraryService() {
             "onStartCommand: action=$action keyCode=$keyCode isMediaBtn=$isMediaButtonAction " +
                 "extras=${intent?.extras?.keySet()?.joinToString()}",
         )
-        /** 只要收到 MEDIA_BUTTON（不管有没有 keyCode），就当作"用户要听歌"。 */
-        if (keyCode != null || isMediaButtonAction) {
+        /**
+         * 用户口径（2026-11-27，#32）**被媒体键拉起时直接开播**。
+         *
+         * 实测：`onStartCommand: action=null keyCode=null isMediaBtn=false extras=null`
+         * —— Media3 内部 `startService` 没带原始 Intent，读不到 keyCode。
+         *
+         * 解决办法：`MediaButtonReceiver` 收到广播时，**在转发给 Media3 之前**
+         * 先把 keycode 记到一个静态变量（见 [MediaButtonHint]）。
+         * Service 起来后直接读它 —— 同一个进程，静态变量肯定已经写好了。
+         */
+        val hintedKey = MediaButtonHint.consume()
+        android.util.Log.i("ETKN-Music", "onStartCommand: 拿到的媒体键提示=$hintedKey")
+        if (keyCode != null || isMediaButtonAction || hintedKey != null) {
             /**
              * 用户口径（#27）：没在播时，「播放」和「下一曲」都等于开始播放。
              * 所以这里统一走 `systemPlay()` —— 它会等会话就绪、解析真直链、真的出声。
@@ -544,4 +555,58 @@ class MusicService : MediaLibraryService() {
                 .build(),
         )
         .build()
+}
+
+/**
+ * 用户口径（2026-11-27，#32）**媒体键事件的中转站**。
+ *
+ * 为什么需要它：
+ * ```
+ * ColorOS 按媒体键 → 发 MediaButton 广播 → 拉起进程 → Media3 startService（不带 Intent）
+ *                                                        ↑ onStartCommand 拿不到 keyCode
+ * ```
+ * 我们在自己的 Receiver 里先把 keyCode 存进这个静态变量（同一进程），
+ * Service 起来后 `consume()` 读走，就知道「用户刚才按了媒体键」。
+ */
+object MediaButtonHint {
+    @Volatile private var keyCode: Int? = null
+    @Volatile private var at: Long = 0L
+
+    /** Receiver 收到广播时调用。 */
+    fun remember(code: Int) {
+        keyCode = code
+        at = System.currentTimeMillis()
+    }
+
+    /** Service 起来时调用；**只认 8 秒内**的事件，避免误判。 */
+    fun consume(): Int? {
+        val code = keyCode
+        val age = System.currentTimeMillis() - at
+        keyCode = null
+        return if (code != null && age in 0..8_000L) code else null
+    }
+}
+
+/**
+ * 用户口径（#32）**自己的 MediaButtonReceiver**。
+ *
+ * 照 QQ 音乐的做法（它用 `androidx.media.session.MediaButtonReceiver`），
+ * 我们在转发给 Media3 之前先记下 keyCode，解决「冷启动时拿不到按键」的问题。
+ */
+class EtknMediaButtonReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: android.content.Context, intent: android.content.Intent?) {
+        if (intent?.action != android.content.Intent.ACTION_MEDIA_BUTTON) return
+        val event = @Suppress("DEPRECATION")
+        intent.getParcelableExtra<android.view.KeyEvent>(android.content.Intent.EXTRA_KEY_EVENT)
+        event?.let {
+            MediaButtonHint.remember(it.keyCode)
+            android.util.Log.i("ETKN-Music", "Receiver: 记住媒体键 ${it.keyCode}")
+        }
+        /** 继续交给 Media3 的标准 Receiver 处理（它负责拉起 Service / 转发 Session）。 */
+        runCatching {
+            androidx.media3.session.MediaButtonReceiver.onReceive(context, intent)
+        }.onFailure {
+            android.util.Log.w("ETKN-Music", "转发给 Media3 MediaButtonReceiver 失败", it)
+        }
+    }
 }

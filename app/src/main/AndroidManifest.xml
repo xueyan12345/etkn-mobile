@@ -148,8 +148,19 @@
             Media3 的 MediaButtonReceiver 把系统媒体按键转发给正在播放的 MediaSession，
             没有这个声明，插着耳机的播放/暂停键按了没反应。
         -->
+        <!--
+            用户口径（2026-11-27，#32）**换成自己的 MediaButtonReceiver**。
+
+            原来直接用 `androidx.media3.session.MediaButtonReceiver`，
+            它只负责把广播转给 Session —— 但冷启动时 ColorOS 在进程起来前
+            就把命令丢了，Session 建好之后收不到按键，所以唤醒了不出声。
+
+            现在用 `EtknMediaButtonReceiver`：在转发给 Media3 之前，
+            先把 keyCode 记进静态变量 `MediaButtonHint`，
+            Service 的 `onStartCommand` 读它就知道"用户按了媒体键"，直接开播。
+        -->
         <receiver
-            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:name=".music.EtknMediaButtonReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
