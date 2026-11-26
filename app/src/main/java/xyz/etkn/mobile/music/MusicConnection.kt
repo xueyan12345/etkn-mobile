@@ -287,9 +287,6 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         artistImage = null,
         count = null,
         chapters = emptyList(),
-        progress = if (memory.durationMs > 0) {
-            (memory.positionMs.toFloat() / memory.durationMs).coerceIn(0f, 1f)
-        } else 0f,
     )
 
     /**
