@@ -185,7 +185,24 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val s = _state.value
         val item = s.current ?: return
         val pos = _player?.currentPosition ?: 0L
-        val dur = _player?.duration?.takeIf { it > 0 } ?: 0L
+        /**
+         * 用户口径（#1 终极根因）**duration 不能只信 player.duration**。
+         *
+         * 实测：恢复后 `dur=-9223372036854775807`（= `C.TIME_UNSET`），
+         * 系统据此判定"时长未知"→ 卡片显示 00:00 → 播放键不可用 → 变灰。
+         *
+         * 原因：`player.duration` 在「未真正解析直链」时是 TIME_UNSET，
+         * 而 `saveMemory()` 往往在这种时刻被调用（publish 很频繁）。
+         *
+         * 现在的取值优先级：
+         *  ① player.duration（真正 prepare 完才有）
+         *  ② item.runTimeTicks（服务端元数据，一直有）
+         *  ③ 上次记忆里的 duration（保底）
+         */
+        val dur = _player?.duration?.takeIf { it > 0 && it != androidx.media3.common.C.TIME_UNSET }
+            ?: item.runTimeTicks.takeIf { it > 0 }?.div(10_000L)
+            ?: _remembered.value?.durationMs?.takeIf { it > 0 }
+            ?: 0L
         prefs.edit()
             .putString("m_id", item.id)
             .putString("m_name", item.name)
@@ -321,7 +338,18 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
              */
             val ids = memory.queueIds
             if (ids.isEmpty()) {
-                // 老版本只存了一首：退化成单曲恢复
+                /**
+                 * 用户口径（#1）**队列为空时也要能恢复"当前这一首"**。
+                 *
+                 * 实测日志：`remembered=id=item-25699 queue=0` ——
+                 * 老版本（v1.16 之前）的 prefs 里没有 `m_q_ids` 字段，队列是空的。
+                 * 如果这时只 setMediaItem 而不填 `items` map，
+                 * `publish()` 里的 `mapNotNull { items[...] }` 会把它过滤掉 →
+                 * `state.queue` 依然是空 → 界面/系统卡片都显示"未在播放"。
+                 *
+                 * 所以这里必须同时把这一首填进 `items`。
+                 */
+                items[memory.itemId] = itemFromMemory(memory)
                 p.setMediaItem(resumeMediaItem(memory))
             } else {
                 val list = ids.mapIndexed { i, id ->
