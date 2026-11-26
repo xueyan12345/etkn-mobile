@@ -1147,12 +1147,24 @@ private fun SeekerLyrics(
      * 旧代码 `?: return` 直接跳过 → 歌词永远不加载。
      * 现在为空就调 `ensureSourceId()` 主动取一次。
      */
+    /**
+     * 用户口径（2026-11-27，#54）**歌词拉不到的真根因：PlaybackInfo 返回 Not Found**。
+     *
+     * 实测（直接打服务端接口）：
+     * ```
+     * GET /api/tv/Items/item-25511/PlaybackInfo?UserId=...  → {"detail":"Not Found"}
+     * GET /api/tv/Music/item-25511/Lyrics?MediaSourceId=item-25511
+     *     → {"text":"[ti:他一定很爱你]\n[00:31.81]我躲在车里 手握着香槟..."}   ✅ 有歌词
+     * ```
+     *
+     * 也就是说：**`MediaSourceId` 直接传曲目 ID 就能取到歌词**，
+     * 根本不需要先调 PlaybackInfo 拿真实 sourceId。
+     * 而旧代码卡在 `ensureSourceId()` → PlaybackInfo 404 → 返回 null → 不加载歌词。
+     *
+     * 现在：优先用已知 sourceId；拿不到就直接用 track.id 兜底，一次网络请求搞定。
+     */
     LaunchedEffect(track.id, music.sourceId) {
-        var sid = music.sourceId
-        if (sid.isNullOrBlank()) {
-            sid = runCatching { graph.music.ensureSourceId(track.id) }.getOrNull()
-        }
-        if (sid.isNullOrBlank()) return@LaunchedEffect
+        val sid = music.sourceId?.takeIf { it.isNotBlank() } ?: track.id
         val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
         parsed = if (text.isBlank()) null else Lyrics.parse(text)
         /** 供车机/CarLife 卡片显示当前行（#34/#50）。 */

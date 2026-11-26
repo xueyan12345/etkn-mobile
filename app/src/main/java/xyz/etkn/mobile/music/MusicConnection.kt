@@ -1383,11 +1383,14 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         lyricsLoaded[itemId] = true
         graph.scope.launch {
             runCatching {
-                val sid = ensureSourceId(itemId) ?: run {
-                    /** 拿不到 sourceId 就撤掉标记，下次切歌再试。 */
-                    lyricsLoaded.remove(itemId)
-                    return@launch
-                }
+                /**
+                 * 用户口径（#54）**直接拿曲目 ID 当 MediaSourceId**。
+                 *
+                 * 实测服务端：`/api/tv/Music/{id}/Lyrics?MediaSourceId={id}` 直接返回歌词，
+                 * 而 `/api/tv/Items/{id}/PlaybackInfo` 返 404 ——
+                 * 所以不要再依赖 `ensureSourceId()`，它必然失败。
+                 */
+                val sid = _state.value.sourceId?.takeIf { it.isNotBlank() } ?: itemId
                 val text = graph.api.lyrics(itemId, sid)
                 if (text.isBlank()) {
                     lyricsLoaded.remove(itemId)
