@@ -43,7 +43,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconToggleButton
-import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -98,6 +97,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material3.TextButton
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
@@ -238,8 +239,21 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                     Icon(Icons.AutoMirrored.Rounded.QueueMusic, "播放列表", modifier = Modifier.size(20.dp))
                 }
             }
-            LinearWavyProgressIndicator(
-                progress = { if (duration > 0) position.toFloat() / duration else 0f },
+            /**
+             * 用户口径（2026-11-27，#6）**迷你条进度改成直线**。
+             *
+             * 原话：「看你这个图，就是能看到最下边的那个进度条，它是波浪状的，
+             *        把它换成跟播放界面一样的直线形式，有缓存，
+             *        然后把头有个实心圆点的那种」
+             *
+             * 原来是 `LinearWavyProgressIndicator`（波浪），现在复用一个轻量直线条：
+             * 已播放（实色） / 已缓存（淡） / 未播放（底轨）+ 头部实心圆点。
+             * 和播放页那个 `MusicProgressBar` 同一套观感，只是更矮、不可拖。
+             */
+            MiniProgressLine(
+                position = position,
+                duration = duration,
+                cached = if (track != null) state.cachedPosition else position,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 6.dp),
             )
         }
@@ -411,9 +425,13 @@ fun NowPlayingScreen() {
                             .clickable { page = i }
                             .padding(horizontal = 20.dp, vertical = 8.dp),
                     ) {
+                        /**
+                         * 用户口径（2026-11-27，#4①）**顶部两个字加大到跟歌名一样大**。
+                         * 原话：「这个顶部和差这俩字可以稍微再大点，可以跟现在的播放界面的歌名一样大小」
+                         */
                         Text(
                             label,
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleLarge,
                             fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
                             color = if (active) MaterialTheme.colorScheme.onSurface
                             else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -445,8 +463,12 @@ fun NowPlayingScreen() {
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Spacer(Modifier.weight(0.15f))
+                        /**
+                         * 用户口径（2026-11-27，#4②）**封面缩到现在的一半**。
+                         * 原话：「中间的封面图缩小一点，封面图变成现在的一半那么大就行」
+                         */
                         Box(
-                            Modifier.fillMaxWidth().widthIn(max = 480.dp).aspectRatio(1f),
+                            Modifier.fillMaxWidth(0.62f).widthIn(max = 260.dp).aspectRatio(1f),
                         ) {
                             Artwork(
                                 urls.music(track, 1080),
@@ -457,9 +479,10 @@ fun NowPlayingScreen() {
                             if (state.buffering) LoadingIndicator(Modifier.align(Alignment.Center))
                         }
                         Spacer(Modifier.height(20.dp))
+                        /** 用户口径（#4③）歌名再大一点。 */
                         Text(
                             track.name,
-                            style = MaterialTheme.typography.titleLarge,
+                            style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
@@ -467,7 +490,8 @@ fun NowPlayingScreen() {
                         )
                         Text(
                             listOfNotNull(track.artistLine.ifEmpty { null }, track.album).joinToString(" · "),
-                            style = MaterialTheme.typography.bodyMedium,
+                            /** 用户口径（#4④）歌手名跟着歌名等比加大。 */
+                            style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -483,7 +507,8 @@ fun NowPlayingScreen() {
                         ) {
                             FiveLineLyrics(track, position)
                         }
-                        Spacer(Modifier.weight(0.15f))
+                        /** 用户口径（#4⑥）底部控件整体往上移 —— 压缩这里的弹性空白。 */
+                        Spacer(Modifier.height(6.dp))
                     }
                 } else {
                     /** 歌词页：整页滚动歌词。 */
@@ -531,20 +556,33 @@ fun NowPlayingScreen() {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceEvenly,
                 ) {
-                    /** 循环模式：OFF(顺序) → ALL(列表循环) → ONE(单曲循环) */
-                    IconButton(onClick = music::cycleRepeat) {
+                    /**
+                     * 用户口径（#4⑧）**一个按钮切 4 态**：顺序 → 列表循环 → 单曲循环 → 随机。
+                     *
+                     * 对比原实现：只有 repeatMode 的 3 态，缺「随机」，
+                     * 而「随机」是 shuffleModeEnabled 这个独立维度，现在合并成一条循环。
+                     */
+                    val mode = when {
+                        state.shuffle -> 3
+                        state.repeat == Player.REPEAT_MODE_ONE -> 2
+                        state.repeat == Player.REPEAT_MODE_ALL -> 1
+                        else -> 0
+                    }
+                    IconButton(onClick = music::cyclePlayMode) {
                         Icon(
-                            when (state.repeat) {
-                                Player.REPEAT_MODE_ONE -> Icons.Rounded.RepeatOne
-                                Player.REPEAT_MODE_ALL -> Icons.Rounded.Repeat
-                                else -> Icons.Rounded.RepeatOne  // 顺序播放也用 repeat 图标示意
+                            when (mode) {
+                                3 -> Icons.Rounded.Shuffle
+                                2 -> Icons.Rounded.RepeatOne
+                                1 -> Icons.Rounded.Repeat
+                                else -> Icons.Rounded.Repeat   // 顺序播放
                             },
-                            contentDescription = when (state.repeat) {
-                                Player.REPEAT_MODE_ONE -> "单曲循环"
-                                Player.REPEAT_MODE_ALL -> "列表循环"
+                            contentDescription = when (mode) {
+                                3 -> "随机播放"
+                                2 -> "单曲循环"
+                                1 -> "列表循环"
                                 else -> "顺序播放"
                             },
-                            tint = if (state.repeat == Player.REPEAT_MODE_OFF) {
+                            tint = if (mode == 0) {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             } else MaterialTheme.colorScheme.primary,
                         )
@@ -575,11 +613,17 @@ fun NowPlayingScreen() {
     }
 
     if (queueOpen) {
-        MusicQueueSheet(state.queue, state.index, onDismiss = { queueOpen = false }) { item ->
-            val i = state.queue.indexOfFirst { it.id == item.id }
-            if (i >= 0) music.skipTo(i)
-            queueOpen = false
-        }
+        MusicQueueSheet(
+            state.queue,
+            state.index,
+            onDismiss = { queueOpen = false },
+            onPick = { item ->
+                val i = state.queue.indexOfFirst { it.id == item.id }
+                if (i >= 0) music.skipTo(i)
+                queueOpen = false
+            },
+            onClear = { music.clearQueue(); queueOpen = false },
+        )
     }
 }
 
@@ -675,13 +719,35 @@ fun MusicQueueSheet(
     index: Int,
     onDismiss: () -> Unit,
     onPick: (Item) -> Unit,
+    onClear: () -> Unit,
 ) {
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
-        Text(
-            "播放列表 · ${queue.size} 首",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(horizontal = Etkn.space.screen, vertical = 10.dp),
-        )
+        /**
+         * 用户口径（2026-11-27，#7）**播放列表加一个「一键清空」按钮**。
+         *
+         * 原话：「播放列表加一个一键清空列表的功能按钮」
+         */
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "播放列表 · ${queue.size} 首",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (queue.isNotEmpty()) {
+                TextButton(onClick = onClear) {
+                    Icon(
+                        Icons.Rounded.DeleteSweep,
+                        null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("清空")
+                }
+            }
+        }
         if (queue.isEmpty()) {
             Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
                 Text("队列里还没有歌", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -760,8 +826,9 @@ private fun FiveLineLyrics(track: Item, positionMs: Long) {
             val isCenter = offset == 0
             Text(
                 text = line?.text.orEmpty(),
-                style = if (isCenter) MaterialTheme.typography.titleMedium
-                else MaterialTheme.typography.bodyMedium,
+                /** 用户口径（#4⑤）歌词字稍微大一点点（不要太大）。 */
+                style = if (isCenter) MaterialTheme.typography.titleLarge
+                else MaterialTheme.typography.bodyLarge,
                 fontWeight = if (isCenter) FontWeight.Bold else FontWeight.Normal,
                 color = base.copy(
                     alpha = when (offset) {
@@ -790,6 +857,14 @@ private fun FullLyrics(track: Item, positionMs: Long, sourceId: String?) {
         val sid = sourceId ?: return@LaunchedEffect
         val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
         parsed = if (text.isBlank()) null else Lyrics.parse(text)
+        /**
+         * 用户口径（#10）**把歌词喂给 MusicConnection**，
+         * 它会按播放进度把「当前这句」写进 MediaSession 的 subtitle，
+         * 车机 CarLife / OPPO Car+ 那个卡片就能跟着滚。
+         */
+        parsed?.lines?.let { ls ->
+            graph.music.publishLyrics(track.id, ls.map { it.timeMs to it.text })
+        }
     }
     val lines = parsed?.lines.orEmpty()
     val active = parsed?.indexAt(positionMs) ?: -1
@@ -899,11 +974,54 @@ private fun MusicProgressBar(
                 .height(barHeight),
             contentAlignment = Alignment.CenterEnd,
         ) {
+            /**
+             * 用户口径（#4⑦）**进度条头部要有实心圆点**，照视频播放器那个。
+             * 拖动时变大，静止时小一点（和视频那边手感一致）。
+             */
             Box(
                 Modifier
-                    .size(if (scrubbing) 14.dp else 10.dp)
+                    .size(if (scrubbing) 16.dp else 13.dp)
                     .background(accent, CircleShape),
             )
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-27，#6）**迷你条用的直线进度**（含缓存段 + 头部实心圆点）。
+ *
+ * 和播放页的 `MusicProgressBar` 观感一致，区别：
+ *  · 更矮（3dp）
+ *  · 不可拖动（迷你条只是状态展示，拖进度去播放页）
+ */
+@Composable
+private fun MiniProgressLine(
+    position: Long,
+    duration: Long,
+    cached: Long,
+    modifier: Modifier = Modifier,
+) {
+    val played = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    val cachedFraction = if (duration > 0) (cached.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    val accent = MaterialTheme.colorScheme.primary
+    val cachedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f)
+    val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    Box(modifier.height(10.dp), contentAlignment = Alignment.CenterStart) {
+        // 底轨
+        Box(Modifier.fillMaxWidth().height(3.dp).background(trackColor, Corner.pill))
+        // 缓存段
+        Box(
+            Modifier.fillMaxWidth(cachedFraction.coerceAtLeast(played))
+                .height(3.dp).background(cachedColor, Corner.pill),
+        )
+        // 已播放
+        Box(Modifier.fillMaxWidth(played).height(3.dp).background(accent, Corner.pill))
+        // 头部实心圆点
+        Box(
+            Modifier.fillMaxWidth(played).height(3.dp),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            Box(Modifier.size(7.dp).background(accent, CircleShape))
         }
     }
 }

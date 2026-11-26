@@ -149,6 +149,21 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 queueTags = prefs.getString("m_q_tags", "").orEmpty().splitToSeq(),
             )
         }.getOrNull()
+        /**
+         * 用户口径（2026-11-27，#2/#9）**重启后立刻把队列装回去**。
+         *
+         * 修的 bug（用户原话）：
+         *  「播一首，退出重开，点播放列表图标，图标里边没有队列，啥也没有，是空的，
+         *    我明明之前添加10多个歌曲，有队列里边」
+         *
+         * 根因：`restoreForResumption()` 原来只在 `MusicService.onCreate()` 里调用，
+         * 而 Service 只在 `play()` 时才 `startService` ——
+         * 重启 App 后光打开音乐页，Service 根本没起，恢复逻辑一次都没执行。
+         *
+         * 现在放到 init 里（App 启动就执行），不等 Service。
+         * 注意用 `runCatching` 兜住：恢复失败不能影响正常使用。
+         */
+        runCatching { restoreForResumption() }
     }
 
     /** 空串返回空列表（不是 [""]）。 */
@@ -433,7 +448,22 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             val url = PlaybackAddress.music(source, active.server, active.token, active.userId, info.playSessionId)
             Resolved(url, info.playSessionId, source.id, source.runTimeTicks)
         }.also { resolved[id] = it }
-        if (_state.value.current?.id == id) _state.value = _state.value.copy(sourceId = entry.sourceId)
+        /**
+         * 用户口径（2026-11-27，#2）**sourceId 一解析出来就立刻补存一次记忆**。
+         *
+         * 修的 bug：「重启后迷你条的三行歌词没了」。
+         *
+         * 根因：歌词接口必须要 `sourceId` 才能取到词。而 `sourceId` 是在这里
+         * （真正要播放时才 resolve 直链）才拿到的，`saveMemory()` 由 `publish()` 调用，
+         * 第一次 publish 时 resolve 往往还没跑完 → 存进磁盘的 `m_src` 是 null
+         * → 重启后 `remembered.sourceId == null` → 歌词接口直接 return，永远没词。
+         *
+         * 现在：resolve 成功的那一刻马上把最新的 sourceId 落盘。
+         */
+        if (_state.value.current?.id == id) {
+            _state.value = _state.value.copy(sourceId = entry.sourceId)
+            runCatching { saveMemory() }
+        }
         return spec.withUri(Uri.parse(entry.url))
     }
 
@@ -462,15 +492,111 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     fun seekTo(ms: Long) { _player?.seekTo(ms) }
     fun skipTo(index: Int) { _player?.seekTo(index, 0) }
     fun toggleShuffle() { _player?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled } }
-    fun cycleRepeat() {
-        _player?.let {
-            it.repeatMode = when (it.repeatMode) {
-                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                else -> Player.REPEAT_MODE_OFF
-            }
+
+    /**
+     * 用户口径（2026-11-27，#10）**车机卡片要显示歌词**。
+     *
+     * 场景：OPPO Car+ 通过 CarLife 连车机，车机那个音乐卡片能显示歌名但不显示歌词；
+     * 而系统自带音乐播放器在同一张卡片上能滚动显示「当前这句歌词」。
+     *
+     * 系统音乐是怎么做到的：它把**当前歌词行**写进 MediaSession 的
+     * `MediaMetadata.subtitle` 字段，车机读的就是这个字段。
+     *
+     * 所以这里也照做：歌词加载完 + 播放进度变化时，
+     * 把「当前这句」塞进 metadata 的 subtitle，车机卡片就会跟着滚。
+     *
+     * 限流：只在「换歌」或「换行」时才 `replaceMediaItem`，
+     * 不然每秒都改一次 metadata 会把 Session 刷爆。
+     */
+    private var lyricLines: List<Pair<Long, String>> = emptyList()
+    private var lastLyricIndex: Int = -1
+    private var lyricForItemId: String? = null
+
+    /** 歌词加载后调它（UI 侧取到歌词时喂进来）。 */
+    fun publishLyrics(itemId: String, lines: List<Pair<Long, String>>) {
+        if (lyricForItemId == itemId && lyricLines == lines) return
+        lyricForItemId = itemId
+        lyricLines = lines
+        lastLyricIndex = -1
+        refreshLyricMetadata()
+    }
+
+    /** 播放进度变化时调它：换到新的一句才更新 metadata。 */
+    fun refreshLyricMetadata() {
+        val p = _player ?: return
+        val idx = p.currentMediaItemIndex
+        if (idx < 0) return
+        val itemId = p.currentMediaItem?.mediaId ?: return
+        if (itemId != lyricForItemId) return
+        val pos = p.currentPosition
+        val lineIdx = lyricLines.indexOfLast { it.first <= pos }.takeIf { it >= 0 } ?: -1
+        if (lineIdx == lastLyricIndex) return
+        lastLyricIndex = lineIdx
+        val text = lyricLines.getOrNull(lineIdx)?.second.orEmpty()
+        runCatching {
+            val old = p.getMediaItemAt(idx)
+            val newMeta = old.mediaMetadata.buildUpon()
+                .setSubtitle(text.ifEmpty { null })
+                .build()
+            p.replaceMediaItem(idx, old.buildUpon().setMediaMetadata(newMeta).build())
         }
     }
+
+    /**
+     * 用户口径（2026-11-27，#7）**一键清空播放列表**。
+     *
+     * 清空播放器里的 MediaItem、`items` map、当前状态，
+     * 并**把磁盘上的队列记忆也一起清掉** ——
+     * 否则下次启动 `restoreForResumption()` 又会把队列装回来。
+     */
+    fun clearQueue() {
+        _player?.let {
+            it.stop()
+            it.clearMediaItems()
+        }
+        items.clear()
+        _state.value = MusicState()
+        runCatching { prefs.edit().clear().apply() }
+        _remembered.value = null
+    }
+    /**
+     * 用户口径（2026-11-27，#4⑧）**左下角按钮要能切 4 种状态**：
+     *
+     * ```
+     * 顺序播放 → 列表循环 → 单曲循环 → 随机播放 → 顺序播放 ...
+     * ```
+     *
+     * 原来只有 `repeatMode` 的 3 态（OFF/ALL/ONE），漏了「随机」——
+     * 而「随机」其实是 `shuffleModeEnabled` 的开关，是另一个维度。
+     * 这里把两个维度合并成一条循环，用户点一下走一格。
+     *
+     * `playMode` 取值：0=顺序 1=列表循环 2=单曲循环 3=随机
+     */
+    fun cyclePlayMode() {
+        val p = _player ?: return
+        val next = (currentPlayMode() + 1) % 4
+        when (next) {
+            0 -> { p.shuffleModeEnabled = false; p.repeatMode = Player.REPEAT_MODE_OFF }
+            1 -> { p.shuffleModeEnabled = false; p.repeatMode = Player.REPEAT_MODE_ALL }
+            2 -> { p.shuffleModeEnabled = false; p.repeatMode = Player.REPEAT_MODE_ONE }
+            3 -> { p.shuffleModeEnabled = true; p.repeatMode = Player.REPEAT_MODE_ALL }
+        }
+        publish()
+    }
+
+    /** 当前处于哪一种（0=顺序 1=列表循环 2=单曲循环 3=随机）。 */
+    fun currentPlayMode(): Int {
+        val p = _player ?: return 0
+        return when {
+            p.shuffleModeEnabled -> 3
+            p.repeatMode == Player.REPEAT_MODE_ONE -> 2
+            p.repeatMode == Player.REPEAT_MODE_ALL -> 1
+            else -> 0
+        }
+    }
+
+    /** 兼容旧调用：切到下一个循环模式。 */
+    fun cycleRepeat() = cyclePlayMode()
 
     fun removeAt(index: Int) { _player?.removeMediaItem(index) }
 
@@ -501,6 +627,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             /** #32⑤ 缓存进度：从当前播放位置往后，本地已落盘的毫秒数。 */
             cachedPosition = cachedAheadMs(current?.id, p.currentPosition, p.duration),
         )
+        /** 用户口径（#10）进度变化 → 同步车机卡片上的歌词行。 */
+        runCatching { refreshLyricMetadata() }
         // 用户口径（#29）：每次状态变化都把「上次播的歌 + 进度」落盘，供下次启动恢复。
         if (current != null) saveMemory()
     }

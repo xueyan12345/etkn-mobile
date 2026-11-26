@@ -344,7 +344,21 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
              * 注意「播放全部」不再是原来的 `vm.play(null)`（那只播已加载的 60 条），
              * 改成 `vm.playAll()` —— 会先把剩余分页拉完（601 首都进队列），再按当前排序播。
              */
-            if (header != null && hasTracks) {
+            /**
+             * 用户口径（2026-11-27，#3）**音乐 tab 主列表也要显示这一行**。
+             *
+             * 修的 bug（用户截图确认：跟原来一模一样，按钮根本没出现）。
+             *
+             * 根因：这里原来是 `if (header != null && hasTracks)`，
+             * 而音乐 tab 的主列表传的是 `header = null`：
+             * ```
+             * else -> MusicListBody(MusicListRoute(parent, tab.wire, "", tab.label), header = null)
+             * ```
+             * → 整块按钮一次都没渲染过。上一版只改了按钮内部，没动这个守卫条件。
+             *
+             * 现在：只要列表里有歌就显示（header 为空也显示）。
+             */
+            if (hasTracks) {
                 item(span = { GridItemSpan(maxLineSpan) }, key = "play-all") {
                     var menu by remember { mutableStateOf(false) }
                     var count by remember { mutableStateOf<Int?>(null) }

@@ -23,6 +23,34 @@ class EtknApp : Application(), SingletonImageLoader.Factory {
         graph = AppGraph(this)
         graph.sessions.restore()
         /**
+         * 用户口径（2026-11-27，#9）**App 一启动就把音乐服务拉起来**。
+         *
+         * 这一条同时修三个问题（都是 adb dumpsys 实测出来的）：
+         *
+         * ```
+         * dumpsys media_session   → Sessions Stack - have 0 sessions
+         * dumpsys activity services → (nothing)
+         * ps -A | grep etkn        → 进程 11366 在，但 MusicService 不存在
+         * dumpsys package          → manifest 登记的 action 完全正确
+         * ```
+         *
+         * 结论：manifest 没错、ColorOS 没拦，是 **MusicService 从来没被创建过** ——
+         * 它原来只在 `play()` 里 `startService`，所以「从没播过歌」时它压根不存在，
+         * MediaLibrarySession 也就从未创建，系统状态栏卡片无 Session 可控 → 灰的、点不了。
+         *
+         * 现在启动即触达，Session 立刻存在：
+         *  · 状态栏卡片能显示封面/歌名/总时长/可点的播放键
+         *  · 车机 CarLife / OPPO Car+ 能通过 MediaBrowserService 发现 ETKN
+         *  · 系统点播放时能直接走 Session，不用先冷启动一轮
+         *
+         * 用 runCatching 包住：任何异常都不该让 App 起不来。
+         */
+        runCatching {
+            startService(
+                android.content.Intent(this, xyz.etkn.mobile.music.MusicService::class.java),
+            )
+        }
+        /**
          * 用户口径（2026-11-26）**日志默认不记录，由开关控制**。
          *
          * 这里只做「如果上次开着，就继续开着」的恢复；默认值是关。
