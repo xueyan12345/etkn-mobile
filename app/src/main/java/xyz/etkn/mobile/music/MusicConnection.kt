@@ -343,8 +343,18 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         if (memory.itemId.isBlank()) return
         val p = player
         android.util.Log.i("ETKN-Music", "restore: mediaItemCount=${p.mediaItemCount} q=${memory.queueIds.size}")
-        if (p.mediaItemCount > 0) {
-            android.util.Log.i("ETKN-Music", "restore: 已有内容，跳过")
+        /**
+         * 用户口径（#1）**即使已有占位 item，也必须解析真直链并 prepare**。
+         *
+         * 上一版这里 `if (p.mediaItemCount > 0) return` ——
+         * 而 init 阶段 player 里已经塞了占位 item，于是这段永远早退，
+         * 真直链解析一次都没执行过，Session 一直停在 NONE。
+         *
+         * 现在：只有在「已经处于 BUFFERING/READY/PAUSED」时才跳过
+         * （说明之前真的 prepare 成功过），否则一律走一次真直链解析。
+         */
+        if (p.mediaItemCount > 0 && p.playbackState != Player.STATE_IDLE) {
+            android.util.Log.i("ETKN-Music", "restore: 已有内容且状态=${p.playbackState}，跳过")
             return
         }
         runCatching {
