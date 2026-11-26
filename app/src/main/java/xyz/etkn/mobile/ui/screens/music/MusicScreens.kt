@@ -106,6 +106,9 @@ import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Search
 import xyz.etkn.mobile.ui.nav.MusicSearchRoute
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 
 @Composable
 fun MusicHomeScreen() {
@@ -124,7 +127,23 @@ fun MusicHomeScreen() {
      *          「再右边加个搜索功能。这个功能专门用来搜索音乐的，不要搜索其他库，
      *            就搜索音乐。搜专辑/歌手/歌名都可以」
      */
-    Column(Modifier.fillMaxSize()) {
+    /**
+     * 用户口径（2026-11-27，#36）**顶部补状态栏间距，对齐探索页**。
+     *
+     * 修的 bug（用户原话）：「界面提的太高了，你可以参考探索界面的那个最上边的高度是到哪？
+     *                        现在提的有点太高了，都已经压住状态栏了」
+     *
+     * 根因：删掉 `LargeTitle("音乐")` 时，它内部带的 `windowInsetsPadding(statusBars)`
+     * 也一起没了 → 整个 Column 从屏幕最顶端开始画 → 压住状态栏。
+     *
+     * 探索页的写法（对齐参考）：`statusBars` 内边距 + 一点呼吸空间。
+     */
+    Column(
+        Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(top = 4.dp),
+    ) {
         when (val s = libraries) {
             Load.Loading -> LoadingState()
             is Load.Failed -> ErrorState(s.message, vm::load)

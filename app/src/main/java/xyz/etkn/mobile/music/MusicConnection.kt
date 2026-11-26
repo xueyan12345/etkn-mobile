@@ -70,6 +70,19 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         get() = _player ?: create().also { _player = it }
 
     init {
+        /**
+         * 用户口径（#39）启动时把「音乐缓存大小」从设置同步进 MusicCache。
+         *
+         * 播放器可能在用户进设置页之前就创建了，所以这里主动读一次，
+         * 否则第一次播放会用默认 2048MB，跟用户设的不一致。
+         */
+        graph.scope.launch {
+            runCatching {
+                graph.settings.flow.collect { st ->
+                    MusicCache.setLimit(st.musicCacheMb)
+                }
+            }
+        }
         graph.scope.launch {
             graph.sessions.state.collect { s ->
                 val next = (s as? SessionState.SignedIn)?.session
@@ -153,6 +166,37 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     }
 
     /**
+     * 用户口径（2026-11-27，#35）**给系统 MediaSession 用的「续播 MediaItem」**。
+     *
+     * `onPlaybackResumption` 只能同步返回，拿不到网络，
+     * 所以这里用记忆里存的名字/歌手/封面构造一个 MediaItem（不带直链 ——
+     * 真正的地址在 `resolve()` 里按 itemId 现取）。
+     *
+     * 这样系统拉起播放时通知栏立刻有歌名封面，不会先空一格。
+     */
+    fun resumeMediaItem(memory: MusicMemory): MediaItem {
+        val urls = graph.sessions.current?.let(graph::images)
+        val artwork = memory.primaryTag?.takeIf { it.isNotBlank() }?.let { tag ->
+            runCatching { urls?.image(memory.itemId, "Primary", 512, tag) }.getOrNull()
+        }
+        val metadata = MediaMetadata.Builder()
+            .setTitle(memory.name)
+            .setArtist(memory.artist.ifEmpty { null })
+            .setAlbumTitle(memory.album.ifEmpty { null })
+            .setArtworkUri(artwork?.let(Uri::parse))
+            .setDurationMs(memory.durationMs.takeIf { it > 0 })
+            .setIsPlayable(true)
+            .setIsBrowsable(false)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+            .build()
+        return MediaItem.Builder()
+            .setMediaId(memory.itemId)
+            .setUri(Uri.Builder().scheme("etkn-music").authority(memory.itemId).build())
+            .setMediaMetadata(metadata)
+            .build()
+    }
+
+    /**
      * 用户口径（2026-11-27，#29）**点「记忆里的那首歌」→ 从上次进度续播**。
      *
      * 先按 id 重新取一次详情（拿到 MediaSources 才能解析直链），
@@ -170,7 +214,24 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
     private fun create(): ExoPlayer {
         val upstream = PlayerFactory.dataSource(graph.http.media, graph.identity.userAgent)
-        val factory = ResolvingDataSource.Factory(upstream) { spec -> resolve(spec) }
+        val resolving = ResolvingDataSource.Factory(upstream) { spec -> resolve(spec) }
+        /**
+         * 用户口径（2026-11-27，#39）**音乐走自己的独立缓存**。
+         *
+         * 接在 ResolvingDataSource 之后：直链由它解析出真实 URL，
+         * MusicCache 用解析后的地址做 cache key（`spec.key ?: uri`），
+         * 播过的歌落到 `filesDir/musiccache`，下次直接读本地 → 秒播。
+         */
+        /**
+         * 配额取「我的 → 播放 → 音乐缓存」，和视频磁盘缓存完全分开（#39）。
+         *
+         * AppSettings 只暴露 `flow`（异步），这里在创建播放器时要同步拿值，
+         * 所以直接读同一个 DataStore 生效后的 SharedPreferences 快捷方式：
+         * 用 `runBlocking` 太重，改成 MusicCache 内部自己缓存配额，
+         * 设置变更后由 `MusicCache.setLimit()` 更新。
+         */
+        val musicCacheMb = MusicCache.limitMb
+        val factory = MusicCache.dataSource(context, resolving, musicCacheMb)
         val player = PlayerFactory.music(context, factory)
         player.addListener(object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) = publish()

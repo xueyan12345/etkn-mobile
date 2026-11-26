@@ -161,13 +161,35 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                     label = "angle",
                 )
                 Box(Modifier.size(44.dp).clip(CircleShape)) {
+                    /**
+                     * 用户口径（2026-11-27，#38）**重启后也要显示封面**。
+                     *
+                     * 修的 bug：「退出 app 之后再打开……没有专辑图也没有歌词」。
+                     *
+                     * 根因：原来直接用 `track?.let { images().music(it, 96) }`，
+                     * 而重启后 `state.current` 是 null（还没播），`track` 就是 null → 传 null → 占位图。
+                     * 但 `remembered` 里存了 `itemId` / `primaryTag`，足够拼出封面地址。
+                     */
+                    val coverUrl = track?.let { images().music(it, 96) }
+                        ?: remembered?.let { memory ->
+                            /**
+                             * 用记忆里的 itemId + primaryTag 拼封面。
+                             *
+                             * 走 `ImageUrls.image()` —— 和正常播放时 `music()` 内部
+                             * 最后回退到的那个方法完全同一套 URL 规则（maxWidth 分桶 + quality=90），
+                             * 不自己手拼字符串，避免参数写错导致 404。
+                             */
+                            memory.primaryTag?.takeIf { it.isNotBlank() }?.let { tag ->
+                                runCatching { images().image(memory.itemId, "Primary", 96, tag) }.getOrNull()
+                            }
+                        }
                     Artwork(
-                        track?.let { images().music(it, 96) },
+                        coverUrl,
                         Modifier.fillMaxSize().graphicsLayer {
                             // 只在播放时转；暂停时角度保持不动（用户能看到停在哪）
                             rotationZ = if (state.isPlaying) angle else 0f
                         },
-                        track?.name,
+                        track?.name ?: remembered?.name,
                         placeholder = Icons.Rounded.MusicNote,
                     )
                 }
@@ -177,7 +199,8 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                  * 没有歌词/没有歌时显示歌名+歌手（保证这条永远有内容，不会空成一条）。
                  */
                 Box(Modifier.weight(1f).height(52.dp).padding(horizontal = 10.dp)) {
-                    MiniLyrics(track, position)
+                    /** 用户口径（#38）：把 remembered 也传进去，重启后仍能取歌词。 */
+                    MiniLyrics(track, remembered, position)
                 }
                 /** 播放键：**环形进度**（外圈走一圈=一首歌）。 */
                 Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
@@ -226,14 +249,24 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
  * 用 `Brush.verticalGradient` 做遮罩实现「往上往下渐隐」的效果。
  */
 @Composable
-private fun MiniLyrics(track: Item?, positionMs: Long) {
+private fun MiniLyrics(track: Item?, remembered: xyz.etkn.mobile.music.MusicMemory?, positionMs: Long) {
     val graph = LocalContext.current.graph
     val music by graph.music.state.collectAsStateWithLifecycle()
-    var parsed by remember(track?.id) { mutableStateOf<Lyrics?>(null) }
-    LaunchedEffect(track?.id, music.sourceId) {
-        val t = track ?: return@LaunchedEffect
-        val sid = music.sourceId ?: return@LaunchedEffect
-        val text = runCatching { graph.api.lyrics(t.id, sid) }.getOrDefault("")
+    /**
+     * 用户口径（2026-11-27，#38）**重启后歌词也要在**。
+     *
+     * 修的 bug：原来 `val t = track ?: return@LaunchedEffect` ——
+     * 重启后 `track` 是 null 就直接退出，永远不取歌词。
+     *
+     * 现在：优先用当前歌（itemId + sourceId），没有就用记忆里的。
+     * `sourceId` 是关键 —— 歌词接口要它才能定位到具体那个版本的音频。
+     */
+    val itemId = track?.id ?: remembered?.itemId
+    val sourceId = music.sourceId ?: remembered?.sourceId
+    var parsed by remember(itemId) { mutableStateOf<Lyrics?>(null) }
+    LaunchedEffect(itemId, sourceId) {
+        if (itemId == null || sourceId == null) return@LaunchedEffect
+        val text = runCatching { graph.api.lyrics(itemId, sourceId) }.getOrDefault("")
         parsed = if (text.isBlank()) null else Lyrics.parse(text)
     }
     val lines = parsed?.lines.orEmpty()

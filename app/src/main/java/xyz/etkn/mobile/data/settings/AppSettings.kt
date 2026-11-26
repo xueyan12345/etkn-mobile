@@ -140,6 +140,17 @@ data class Settings(
     val cacheMemorySeconds: Int = 1200,
     /** 磁盘缓存上限（GB）。 */
     val cacheDiskGb: Int = 10,
+    /**
+     * 用户口径（2026-11-27，#39）**音乐缓存单独设一个大小**（MB）。
+     *
+     * 用户原话：
+     *  「音乐单独缓存，那个你要在我的，播放那个设置里，加一个选项，
+     *    就是专门给音乐设置一个大小区间，可以选择的，类似于视频那个」
+     *
+     * 和视频的 [cacheDiskGb] 完全分开：音乐不参与视频配额，视频淘汰也不影响音乐。
+     * 默认 2048MB（2GB）—— 一首无损 30-50MB，够放 40-60 首，覆盖「最近在听」足够。
+     */
+    val musicCacheMb: Int = 2048,
     /** 播放结束后自动清空该集磁盘缓存。 */
     val cacheClearOnFinish: Boolean = false,
     val heroMode: HeroMode = HeroMode.Auto,
@@ -268,6 +279,7 @@ class AppSettings(private val context: Context) {
         val cacheMemoryMb = intPreferencesKey("cache_memory_mb")
         val cacheMemorySeconds = intPreferencesKey("cache_memory_seconds")
         val cacheDiskGb = intPreferencesKey("cache_disk_gb")
+        val musicCacheMb = intPreferencesKey("music_cache_mb")
         val cacheClearOnFinish = booleanPreferencesKey("cache_clear_on_finish")
         val tabs = stringSetPreferencesKey("nav_tabs")
         val navPosition = stringPreferencesKey("nav_position")
@@ -307,6 +319,7 @@ class AppSettings(private val context: Context) {
         cacheMemoryMb = this[Keys.cacheMemoryMb] ?: 400,
         cacheMemorySeconds = this[Keys.cacheMemorySeconds] ?: 1200,
         cacheDiskGb = this[Keys.cacheDiskGb] ?: 10,
+            musicCacheMb = this[Keys.musicCacheMb] ?: 2048,
         cacheClearOnFinish = this[Keys.cacheClearOnFinish] ?: false,
         tabs = this[Keys.tabs],
         navPosition = enumOr(this[Keys.navPosition], NavPosition.Side),
@@ -334,6 +347,9 @@ class AppSettings(private val context: Context) {
     suspend fun setCacheMemoryMb(value: Int) = context.settingsDataStore.edit { it[Keys.cacheMemoryMb] = value }
     suspend fun setCacheMemorySeconds(value: Int) = context.settingsDataStore.edit { it[Keys.cacheMemorySeconds] = value }
     suspend fun setCacheDiskGb(value: Int) = context.settingsDataStore.edit { it[Keys.cacheDiskGb] = value }
+
+    /** 用户口径（#39）音乐缓存大小（MB），与视频缓存完全独立。 */
+    suspend fun setMusicCacheMb(value: Int) = context.settingsDataStore.edit { it[Keys.musicCacheMb] = value }
     suspend fun setCacheClearOnFinish(value: Boolean) = context.settingsDataStore.edit { it[Keys.cacheClearOnFinish] = value }
 
     suspend fun setAutoUpdate(value: Boolean) = context.settingsDataStore.edit { it[Keys.autoUpdate] = value }

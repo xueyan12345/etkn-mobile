@@ -78,6 +78,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
 import xyz.etkn.mobile.data.settings.HiddenLibrariesPerAccount
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.background
 
 enum class SettingsPage(val title: String) {
     Appearance("外观"),
@@ -392,6 +393,63 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
         Spacer(Modifier.weight(1f))
         Text(
             formatBytes(usage),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    /**
+     * 用户口径（2026-11-27，#39）**音乐缓存单独一项**。
+     *
+     * 用户原话：
+     *  「音乐单独缓存，那个你要在我的，播放那个设置里，加一个选项，
+     *    就是专门给音乐设置一个大小区间，可以选择的，类似于视频那个」
+     *
+     * 和上面那几个视频缓存项完全独立：
+     *  · 音乐有自己的目录 `filesDir/musiccache`
+     *  · 音乐有自己的配额（这里选）
+     *  · 视频的「最大磁盘缓存大小 / 播放完清空」不会碰到音乐
+     */
+    Spacer(Modifier.height(1.dp).fillMaxWidth().background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)))
+    Text(
+        "音乐缓存",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = ROW_INSET, top = 14.dp, bottom = 2.dp),
+    )
+    Text(
+        "与视频缓存分开存放。播过的歌留在本地，重启 App 后封面/歌词/进度都能立刻显示，点播放直接本地起播。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = ROW_INSET),
+    )
+    NumberRow("音乐缓存大小", settings.musicCacheMb, "MB", listOf(512, 1024, 2048, 4096, 8192, 16384)) {
+        /** 同时写进 MusicCache 的内存配额，播放器下次创建就用新值（#39）。 */
+        xyz.etkn.mobile.music.MusicCache.setLimit(it)
+        scope.launch { graph.settings.setMusicCacheMb(it) }
+    }
+    var musicUsage by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(settings.musicCacheMb) {
+        withContext(kotlinx.coroutines.Dispatchers.IO) {
+            /** 启动时把设置里的配额同步给 MusicCache，保证播放器读到的值是对的。 */
+            xyz.etkn.mobile.music.MusicCache.setLimit(settings.musicCacheMb)
+            xyz.etkn.mobile.music.MusicCache.get(context.applicationContext, settings.musicCacheMb)
+            musicUsage = xyz.etkn.mobile.music.MusicCache.sizeBytes()
+        }
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = ROW_INSET, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(
+            onClick = {
+                xyz.etkn.mobile.music.MusicCache.clear()
+                musicUsage = xyz.etkn.mobile.music.MusicCache.sizeBytes()
+            },
+        ) { Text("清空音乐缓存") }
+        Spacer(Modifier.weight(1f))
+        Text(
+            formatBytes(musicUsage),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

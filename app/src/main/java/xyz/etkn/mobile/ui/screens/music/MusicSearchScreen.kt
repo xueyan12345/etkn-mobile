@@ -256,15 +256,52 @@ class MusicSearchViewModel(
         }
     }
 
+    /**
+     * 用户口径（2026-11-27，#37）**搜索必须真的按关键字过滤**。
+     *
+     * 修的 bug：搜什么都返回同一批结果。
+     *
+     * 根因：原先把搜索词传给了 `musicList` 的 `Key` 参数，
+     * 但那个 Key 是「分组过滤键」（专辑名/歌手名，精确匹配某个分组），
+     * 不是搜索词 —— 传进去服务端当"没有过滤"处理，直接返整张列表。
+     *
+     * 实测证据（音乐库 20，601 首）：
+     * ```
+     * Key=邓紫棋        → 601 条（全部，搜索词被忽略）
+     * SearchTerm=邓紫棋 → 14 条（正确）
+     * ```
+     *
+     * 现在改用 Items 接口的 SearchTerm，并限定 ParentId 只在这个音乐库里搜。
+     */
     private suspend fun fetchTracks(term: String): List<Item> = runCatching {
-        api.musicList(parentId, "songs", term, 0, 120, tracksOnly = true).items
+        api.searchMusicInLibrary(parentId, term, "Audio", 0, 120).first
             .filter { it.isAudio && !it.isMusicGroup }
     }.getOrDefault(emptyList())
 
-    private suspend fun fetchGroups(term: String, tab: String): List<Item> = runCatching {
-        api.musicList(parentId, tab, term, 0, 60).items
-            .filter { it.isMusicGroup }
-    }.getOrDefault(emptyList())
+    /**
+     * 用户口径（2026-11-27，#37）**专辑 / 歌手从歌曲结果派生**。
+     *
+     * 实测：ETKN 音乐库里 `Items` 只有 `Type=Audio`，没有 `MusicAlbum`/`MusicArtist` 条目
+     *（`Music?Tab=albums` 返回的也是 Audio，只是把名字换成了专辑名）。
+     * 所以专辑/歌手直接从命中的歌曲上取 `album` / `artistLine` 去重，
+     * 用 `copy()` 造一个分组条目（不手写几十个字段，避免漏字段编译失败）。
+     */
+    private suspend fun fetchGroups(term: String, tab: String): List<Item> {
+        val tracks = fetchTracks(term)
+        val byAlbum = tab == "albums"
+        val seen = LinkedHashMap<String, Item>()
+        tracks.forEach { track ->
+            val key = if (byAlbum) track.album.orEmpty().trim() else track.artistLine.trim()
+            if (key.isEmpty() || key in seen) return@forEach
+            seen[key] = track.copy(
+                id = (if (byAlbum) "album:" else "artist:") + key,
+                name = key,
+                type = if (byAlbum) "MusicAlbum" else "MusicArtist",
+                isFolder = true,
+            )
+        }
+        return seen.values.toList()
+    }
 }
 
 /**

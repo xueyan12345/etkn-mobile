@@ -316,6 +316,40 @@ class EtknApi(
      * Music videos matching [term]: the server files them as `Video` items flagged `MusicVideo`, and
      * no query narrows to that flag, so one generous page of videos is filtered here.
      */
+    /**
+     * 用户口径（2026-11-27，#37）**在指定音乐库内按关键字搜索**。
+     *
+     * 与全局 `searchMusic()` 的区别：
+     *  · 传 `ParentId` —— 只搜这一个库，不会把别的音乐库/影视库扫进来
+     *  · 支持 `includeTypes` 指定 Audio / MusicAlbum / MusicArtist
+     *
+     * 参数用 `SearchTerm`（**不是** `Music` 接口的 `Key`）——
+     * 实测 `Key=邓紫棋` 返回全部 601 条，`SearchTerm=邓紫棋` 才返回正确的 14 条。
+     */
+    suspend fun searchMusicInLibrary(
+        parentId: String,
+        term: String,
+        includeTypes: String,
+        start: Int,
+        limit: Int,
+    ): Pair<List<Item>, Int> {
+        val result = get(
+            query(
+                "${u()}/Items",
+                "ParentId" to parentId,
+                "Recursive" to true,
+                "IncludeItemTypes" to includeTypes,
+                "SearchTerm" to term,
+                "SortBy" to "SortName",
+                "StartIndex" to start,
+                "Limit" to limit,
+                "Fields" to "PrimaryImageAspectRatio,ProductionYear,UserData,DateCreated,Artists,Album",
+            ),
+        )
+        val items = result.items()
+        return items to result.int("TotalRecordCount", items.size)
+    }
+
     suspend fun searchMusicVideos(term: String): ItemsPage {
         val result = get(
             query(
