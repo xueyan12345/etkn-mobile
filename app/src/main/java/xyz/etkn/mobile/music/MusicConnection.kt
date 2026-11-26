@@ -151,11 +151,6 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         }.getOrNull()
     }
 
-    /** 单元分隔符：歌曲名里不会出现，用来拼多条记录。 */
-    private companion object {
-        const val SEP = "\u001F"
-    }
-
     /** 空串返回空列表（不是 [""]）。 */
     private fun String.splitToSeq(): List<String> =
         if (isEmpty()) emptyList() else split(SEP)
@@ -574,6 +569,9 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
     companion object {
         const val SCHEME = "etkn-music"
+
+        /** 用户口径（#43）队列序列化用的单元分隔符（歌曲名里不会出现）。 */
+        private const val SEP = "\u001F"
     }
 }
 

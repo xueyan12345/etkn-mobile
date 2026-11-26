@@ -304,6 +304,14 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
     val overview by vm.overview.collectAsStateWithLifecycle()
     val nav = LocalNav.current
     val grid = rememberLazyGridState()
+    /**
+     * 用户口径（#47）**必须在 Composable 作用域订阅排序结果**。
+     *
+     * `collectAsStateWithLifecycle` 是 @Composable，不能写在 LazyVerticalGrid 的
+     * item 作用域里（那里不是 Composable 上下文，会报
+     * 「@Composable invocations can only happen from the context of a @Composable function」）。
+     */
+    val sortedList by vm.sortedTracks.collectAsStateWithLifecycle()
     val shouldLoad by remember(paged) {
         derivedStateOf { paged.canLoadMore && (grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= paged.items.size - 12 }
     }
@@ -399,11 +407,7 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
                 }
             }
             items(folders, key = { "f-" + (it.key ?: it.id) }) { folder -> SquareCard(folder, onClick = { nav.open(folder) }, width = null) }
-            /**
-             * 用户口径（#47）列表按当前排序显示。
-             * `sortedTracks` 现在是 StateFlow，配合 collectAsStateWithLifecycle 才能真正触发重组。
-             */
-            val sortedList by vm.sortedTracks.collectAsStateWithLifecycle()
+            /** 用户口径（#47）列表按当前排序显示（`sortedList` 在 Composable 顶层订阅）。 */
             val ordered = if (route.tab == "songs" || route.tracksOnly) sortedList else paged.items
             ordered.forEach { entry ->
                 if (entry.isAudio && !entry.isMusicGroup) {

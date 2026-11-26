@@ -333,7 +333,6 @@ private fun MiniLyrics(track: Item?, remembered: xyz.etkn.mobile.music.MusicMemo
 private enum class Pane { Lyrics, Queue }
 
 @Composable
-@Composable
 fun NowPlayingScreen() {
     val nav = LocalNav.current
     val graph = LocalContext.current.graph
