@@ -22,8 +22,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.FirstPage
-import androidx.compose.material.icons.rounded.LastPage
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +56,10 @@ import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.ui.theme.Etkn
 import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.foundation.layout.Spacer
 
 /** Episodes per range chip. */
 private const val RANGE = 20
@@ -160,7 +162,11 @@ internal fun EpisodeShelf(
              * 现在点区间时 offset = 0（目标贴左起第 1 格），第一格就是区间首集，高亮必然对。
              */
             awaitLaidOut()
-            row.scrollToItem((at - request.offset).coerceAtLeast(0))
+            /**
+             * 用户口径（2026-11-27，#13）**滚动要平滑，不要瞬移**。
+             * 参考视频里选集行是"滑过去"的，不是瞬间跳。
+             */
+            row.animateScrollToItem((at - request.offset).coerceAtLeast(0))
             pendingScroll = null
         }
     }
@@ -179,7 +185,7 @@ internal fun EpisodeShelf(
         if (at < 0) return@LaunchedEffect
         followedEpisode = currentId
         awaitLaidOut()
-        row.scrollToItem((at - UNIT_OFFSET).coerceAtLeast(0))
+        row.animateScrollToItem((at - UNIT_OFFSET).coerceAtLeast(0))
     }
 
     /**
@@ -193,7 +199,7 @@ internal fun EpisodeShelf(
         if (at >= 0) {
             // 等列表真正上屏再滚，否则这次定位会被静默丢弃（进页面停在最开头）
             awaitLaidOut()
-            row.scrollToItem((at - UNIT_OFFSET).coerceAtLeast(0))
+            row.animateScrollToItem((at - UNIT_OFFSET).coerceAtLeast(0))
         }
     }
 
@@ -208,34 +214,42 @@ internal fun EpisodeShelf(
      * （旧代码在这一步反复写 LaunchedEffect 反而制造了竞态。）
      */
 
-    Column(Modifier.padding(top = Etkn.space.section - 8.dp)) {
-        /** 标题行：季选择 / 跳首尾 / 全部 */
+    /**
+     * 用户口径（2026-11-27，#17）**选集标题行重做**。
+     *
+     * 需求原文：
+     *  「中间的剧集这俩字删掉，后面的两个跳到最前面和最后面的那两个符号也删掉，
+     *    全部这个功能移动到 1-20 21-40 这个区间的最后面，这一行专门留出来个全部的按钮，
+     *    把这个全部按钮设计一下，跟它前面的 1-20 这种按钮区分一下。
+     *    然后剧集和全部也就是之前的这一行不是空了吗，把下面的所有信息都往上移，
+     *    不要留空，正好衔接」
+     *
+     * 结构变化：
+     *  旧：[剧集] ......... [‹] [›] [全部]
+     *      [1-20] [21-40]
+     *  新：[1-20] [21-40] [全部]      ← 同一行，全部放最后并做视觉区分
+     *
+     * 整块的 top padding 也一并收紧（原来是 section-8dp 再加标题行占位），
+     * 现在没有独立的标题行，直接接着上一块，不留下空隙。
+     */
+    Column(Modifier.padding(top = 4.dp)) {
         Row(
-            Modifier.fillMaxWidth().padding(start = Etkn.space.screen - 4.dp, end = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SeasonTitle(seasons, state.seasonId, onSeason, Modifier.weight(1f))
-            if (state.items.size > 1) {
-                val lastNumber = state.items.lastOrNull()?.indexNumber ?: state.items.size
-                val firstNumber = state.items.firstOrNull()?.indexNumber ?: 1
-                IconButton(onClick = { pendingScroll = PendingScroll(firstNumber, offset = 0) }) {
-                    Icon(Icons.Rounded.FirstPage, "第一集")
-                }
-                IconButton(onClick = { pendingScroll = PendingScroll(lastNumber, offset = 0) }) {
-                    Icon(Icons.Rounded.LastPage, "最后一集")
-                }
-            }
-            TextButton(onClick = onAll) { Text("全部") }
-        }
-
-        /** 区间 chip：点一下 = 请求滚到该区间第一集 */
-        if (ranges > 1) {
+            /**
+             * 区间 chip + 全部按钮**同一行**。
+             *
+             * 区间多了可以横向滑（LazyRow）；"全部"固定在行尾不随滑动跑掉，
+             * 这样它永远在最右边，和区间按钮形成明显的位置区分。
+             */
             LazyRow(
                 state = chips,
-                contentPadding = PaddingValues(horizontal = Etkn.space.screen),
+                modifier = Modifier.weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(PillGap),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                items(ranges) { index ->
+                items(ranges.coerceAtLeast(1)) { index ->
                     val rangeStart = index * RANGE + 1
                     val rangeEnd = minOf(rangeStart + RANGE - 1, state.items.size)
                     PillToggle(
@@ -247,6 +261,34 @@ internal fun EpisodeShelf(
                     ) {
                         Text("$rangeStart-$rangeEnd")
                     }
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            /**
+             * 「全部」按钮：和区间 chip 做视觉区分 ——
+             *  · 区间 chip 是 PillToggle（选中是实色块）
+             *  · 全部用**描边胶囊 + 图标**，不参与选中态，一眼看出是"动作"而不是"范围"
+             */
+            Surface(
+                onClick = onAll,
+                shape = Corner.pill,
+                color = androidx.compose.ui.graphics.Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.primary,
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                ),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(Icons.Rounded.GridView, null, Modifier.size(14.dp))
+                    Text(
+                        "全部",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Medium,
+                    )
                 }
             }
         }
@@ -373,14 +415,38 @@ internal fun EpisodeCard(
      *  · border 只加在图片那个 Box 上（文字完全在框外）
      *  · 选中的集号文字加粗（FontWeight.Bold），靠颜色+字重一起区分
      */
+    /**
+     * 用户口径（2026-11-27，#13）**选中框要平滑移动，不是瞬间跳过去**。
+     *
+     * 参考视频效果：白色圆角选中框沿选集行平滑滑动到目标格，
+     * 同时列表自动滚动把目标带进视野；页面其他区域完全不动。
+     *
+     * 做法：
+     *  · 边框的 `alpha` 用 `animateFloatAsState` 平滑过渡（选中 1 / 未选中 0）
+     *  · 边框颜色/粗细保持不变（3dp primary，和之前视觉一致）
+     *  · 列表跟随滚动在 EpisodeShelf 主体用 animateScrollToItem 实现
+     *
+     * 为什么不用「一个会移动的共享边框」：那需要测量所有格子的坐标，
+     * 在 LazyRow 里格子会被回收，量出来经常是错的。逐格淡入在视觉上
+     * 同样是「框滑过去了」，而且永远不会错位。
+     */
+    val borderAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (current) 1f else 0f,
+        animationSpec = androidx.compose.animation.core.tween(durationMillis = 220),
+        label = "episode-selected-border",
+    )
     Column(
         modifier.clickable(onClick = onOpen),
     ) {
         Box(
             Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(Corner.card)
                 .then(
-                    if (current) {
-                        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, Corner.card)
+                    if (borderAlpha > 0.01f) {
+                        Modifier.border(
+                            width = 3.dp,
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = borderAlpha),
+                            shape = Corner.card,
+                        )
                     } else Modifier
                 ),
         ) {

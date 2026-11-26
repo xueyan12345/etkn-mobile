@@ -145,8 +145,6 @@ import androidx.compose.material.icons.rounded.Tune
 import xyz.etkn.mobile.data.model.MediaStream
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.animation.core.Animatable
-import androidx.compose.ui.graphics.graphicsLayer
 
 @Composable
 fun DetailScreen(id: String) {
@@ -192,33 +190,18 @@ fun DetailScreen(id: String) {
 private fun contentSwap() = fadeIn(tween(Motion.FADE_IN, delayMillis = Motion.FADE_OUT)) togetherWith fadeOut(tween(Motion.FADE_OUT))
 
 /**
- * 用户口径（2026-11-27）**切集要柔和过渡，但只给"本来就该变"的地方加**。
+ * 用户口径（2026-11-27，#13）**整页不做动画，动画只给选集行**。
  *
- * 历史两版：
- *  · v1：`AnimatedContent(contentKey = item.id)` 给每个区块都做一遍交叉淡化
- *    → 整页都在闪、在重新加载，太吵（11-23 被否）
- *  · v2：直接透传 `content(data)` → 一点过渡都没有，切集生硬（今天被否）
+ * 我上一版给这里加了 180ms 整页淡入，用户明确要求撤掉：
+ * 「你做选中集的动画不是我想要的，你先把这个恢复成上一版的样子」
+ * 「我不是要加整个详情界面的动画，我只是要在切集的那个一行，也就是选集的那个板块加移动的那个动画」
  *
- * 现在取中间：**不做整块交叉淡化，只对头图做一次柔和淡入**。
- * 用 `animateFloatAsState` 把 alpha 从 0.55 平滑推到 1，
- * 时长用一个很短的值（180ms），观感是"内容就地换掉了，画面轻轻呼吸一下"，
- * 而不是"整页重新加载"。
- *
- * 为什么不用 AnimatedContent：它会同时保留新旧两棵子树做交叉淡化，
- * 在 LazyColumn 的 item 里开销大、还容易让整页跳动。
+ * 所以这里恢复成直接透传（上一版的样子）。
+ * 切集时的过渡由 EpisodeShelf 里的选中框平滑移动实现，见 EpisodeShelf。
  */
 @Composable
 private fun Swap(data: DetailData, content: @Composable (DetailData) -> Unit) {
-    val key = data.item.id
-    /**
-     * `key(key)` 让内容在切集时重建一次，配合上面的 alpha 起始值做淡入。
-     * 用 remember(key) 取一个随 key 变化而重置的初始值。
-     */
-    val appear = remember(key) { Animatable(0.55f) }
-    LaunchedEffect(key) { appear.animateTo(1f, tween(durationMillis = 180)) }
-    Box(Modifier.graphicsLayer { this.alpha = appear.value }) {
-        content(data)
-    }
+    content(data)
 }
 
 /**
@@ -319,7 +302,14 @@ private fun DetailContent(
                  * 因为剧集层现在会自动跳到具体某一集（见 DetailViewModel.load），
                  * 若不加这条，进到单集页后季卡就没了，用户也就没法换季。
                  */
-                if ((item.isSeries || item.isSeason || item.isEpisode) && data.seasons.size > 1) {
+                /**
+                 * 用户口径（2026-11-27，#15）**只有一季也要显示这个区域**。
+                 *
+                 * 原来条件是 `data.seasons.size > 1` —— 单季剧永远看不到季卡区，
+                 * 用户也就没法确认「这部片有几个季、现在在看哪一季」。
+                 * 现在只要拿得到季列表（>=1）就显示，单季时就一张卡。
+                 */
+                if ((item.isSeries || item.isSeason || item.isEpisode) && data.seasons.isNotEmpty()) {
                     item(key = "seasons", contentType = "seasons") {
                         Column(Modifier.padding(top = Etkn.space.section)) {
                             SectionHeader("季", showChevron = false)
@@ -545,8 +535,34 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
              * 这里 `data.seriesItem` 存的就是同一个请求的结果。
              * 对它调 backdrop/landscape/poster，拿到的必然和原来剧集页顶部一模一样。
              */
+            /**
+             * 用户口径（2026-11-27，#18）**顶部大图按季区分**。
+             *
+             * 服务端实测（《极限挑战》）：
+             * ```
+             * Series  Backdrop: 4-2751-backdrop-...   ← 整部剧只有这 1 张
+             * 第1季   Primary:  4-2764-primary-...    ← 各季不同
+             * 第2季   Primary:  4-2760-primary-...
+             * 第3季   Primary:  4-2770-primary-...
+             * 第4季   Primary:  4-2752-primary-...
+             * 但四季的 BackdropImageTags 全是 4-2751-backdrop-...（共用）
+             * ```
+             * 所以只看 backdrop 的话，切季头顶这张永远不变。
+             *
+             * 取值顺序（用户已确认这个方案）：
+             *  ① 当前季自己的 Backdrop（季有独立横图时最好）
+             *  ② 当前季自己的 Primary 海报（竖版，裁成横幅）—— 各季一定不同
+             *  ③ 全剧 Backdrop（兜底，只有一步）
+             */
+            val currentSeason = data.seasons.firstOrNull { it.id == item.seasonId }
+                ?: data.seasons.firstOrNull { it.id == data.target?.seasonId }
+            val seasonArt = currentSeason.let { season ->
+                if (season == null) null
+                else urls.backdrop(season, widthPx) ?: urls.poster(season, widthPx)
+            }
             val artFor = data.seriesItem ?: item
-            val headerArt = urls.backdrop(artFor, widthPx)
+            val headerArt = seasonArt
+                ?: urls.backdrop(artFor, widthPx)
                 ?: urls.landscape(artFor, widthPx)
                 ?: urls.poster(artFor, widthPx)
             Artwork(
@@ -738,7 +754,10 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                                 sourceCount = item.mediaSources.size,
                                 selectedIndex = data.selectedSource,
                                 onSelectSource = { vm.selectSource(it) },
-                                onSelected = { },
+                                selectedAudioIndex = data.selectedAudioIndex,
+                                selectedSubtitleIndex = data.selectedSubtitleIndex,
+                                onSelectAudio = { vm.selectAudio(it) },
+                                onSelectSubtitle = { vm.selectSubtitle(it) },
                                 compact = true,
                             )
                         }
@@ -878,7 +897,15 @@ private fun ActionRow(
         resumable -> "继续播放"
         else -> "播放"
     }
-    fun play(resume: Boolean) = target?.let { nav.play(it, resume, sourceId = if (it.id == item.id) source else null) }
+    fun play(resume: Boolean) = target?.let {
+        nav.play(
+            it, resume,
+            sourceId = if (it.id == item.id) source else null,
+            /** 用户口径（2026-11-27，#16）把选中的音轨/字幕带进播放器。 */
+            audioIndex = data.selectedAudioIndex,
+            subtitleIndex = data.selectedSubtitleIndex,
+        )
+    }
 
     /**
      * 用户口径（2026-11-26）**三条信息常驻，并放在播放按钮行的上方**。
@@ -1375,7 +1402,17 @@ private fun MediaTechRows(
     sourceCount: Int,
     selectedIndex: Int,
     onSelectSource: (Int) -> Unit,
-    onSelected: () -> Unit,
+    /**
+     * 用户口径（2026-11-27，#16）**音轨/字幕选择要真的生效**。
+     *
+     * 原来是 `onSelected: () -> Unit` —— 详情页传的是 `{ }` 空函数，
+     * 点了只是收起菜单，什么都不会发生。
+     * 现在拆成两个带索引的回调，传给 ViewModel 存起来，播放时优先使用。
+     */
+    selectedAudioIndex: Int? = null,
+    selectedSubtitleIndex: Int? = null,
+    onSelectAudio: (Int) -> Unit = {},
+    onSelectSubtitle: (Int?) -> Unit = {},
     /** 右栏紧凑样式：字号更小、行距更紧、图标更小。 */
     compact: Boolean = false,
 ) {
@@ -1393,9 +1430,18 @@ private fun MediaTechRows(
     val resLabel = video?.let { resolutionLabel(it.width, it.height) }
     val codecLabel = video?.codec?.takeIf { it.isNotEmpty() }?.uppercase()
     val videoMain = listOfNotNull(resLabel, codecLabel).joinToString(" ").ifBlank { "视频" }
+    /**
+     * 用户口径（2026-11-27，#16）**副标题不要重复主标题的内容**。
+     *
+     * 用户原话：「第一行视频信息的好像标题是 4k HEVC，下面又重复了一次 4k/HEVC，
+     * 下面的这个 4k/HEVC 可以去掉吗，因为跟上面显示的重复了，
+     * 这样就能把后面的信息都漏出来」。
+     *
+     * 原来这里把 resLabel 和 codecLabel 又加了一遍（主标题已经有了），
+     * 手机窄屏时前半截全是重复内容，把大小/码率挤出去了。
+     * 现在副标题只放主标题里没有的信息：文件大小、码率。
+     */
     val videoSub = buildList {
-        if (resLabel != null) add(resLabel)
-        if (codecLabel != null) add(codecLabel)
         source.size.takeIf { it > 0 }?.let { add(formatBytes(it)) }
         source.bitrate.takeIf { it > 0 }?.let { add("${it / 1_000_000} Mbps") }
     }.joinToString(" / ")
@@ -1446,9 +1492,9 @@ private fun MediaTechRows(
             audios.forEach { a ->
                 MediaTechOption(
                     label = a.cleanTitle(),
-                    selected = a.isDefault,
+                    selected = (selectedAudioIndex ?: currentAudio?.index) == a.index,
                     onPanel = onPanel,
-                    onClick = { expanded = 0; onSelected() },
+                    onClick = { expanded = 0; onSelectAudio(a.index) },
                 )
             }
         }
@@ -1471,13 +1517,19 @@ private fun MediaTechRows(
             compact = compact,
         )
         if (expanded == 3) {
-            MediaTechOption(label = "关闭", selected = currentSub == null, onPanel = onPanel, onClick = { expanded = 0; onSelected() })
+            /** -1 = 明确关闭字幕（和「没选过」的 null 区分开）。 */
+            MediaTechOption(
+                label = "关闭",
+                selected = selectedSubtitleIndex == -1 || (selectedSubtitleIndex == null && currentSub == null),
+                onPanel = onPanel,
+                onClick = { expanded = 0; onSelectSubtitle(-1) },
+            )
             subs.forEach { sub ->
                 MediaTechOption(
                     label = sub.cleanTitle(),
-                    selected = sub.isDefault,
+                    selected = (selectedSubtitleIndex ?: currentSub?.index) == sub.index,
                     onPanel = onPanel,
-                    onClick = { expanded = 0; onSelected() },
+                    onClick = { expanded = 0; onSelectSubtitle(sub.index) },
                 )
             }
         }

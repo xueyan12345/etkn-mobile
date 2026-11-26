@@ -107,6 +107,19 @@ class PlayerActivity : ComponentActivity() {
         graph.music.pause()
         val video = VideoSession(this, graph, lifecycleScope)
         session = video
+        /**
+         * 用户口径（2026-11-27，#16）**把详情页选的音轨/字幕传给播放器**。
+         *
+         * 约定：-99 = 没选过（按服务端默认）；-1 = 关闭字幕；>=0 = 指定流的 Index。
+         * 用 -99 而不是"不传"，是因为 Intent 的 getIntExtra 默认值也会是 0，
+         * 无法区分"用户选了第 0 条"和"用户没选"。
+         */
+        val audioIdx = intent.getIntExtra(PlayerLauncher.EXTRA_AUDIO_INDEX, -99)
+        val subIdx = intent.getIntExtra(PlayerLauncher.EXTRA_SUBTITLE_INDEX, -99)
+        video.setTrackPreference(
+            audioIndex = audioIdx.takeIf { it != -99 },
+            subtitleIndex = subIdx.takeIf { it != -99 },
+        )
         val download = intent.getLongExtra(PlayerLauncher.EXTRA_DOWNLOAD, -1L).takeIf { it >= 0 }
             ?.let { id -> graph.downloads.entries.value.firstOrNull { it.downloadId == id } }
         if (download != null) video.startOffline(download) else video.start(

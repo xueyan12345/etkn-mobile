@@ -92,7 +92,23 @@ fun HeroCarousel(
     pageCount: Int = items.size,
 ) {
     if (items.isEmpty() && pageCount <= 0) return
-    val totalPages = maxOf(pageCount, items.size)
+    /**
+     * 用户口径（2026-11-27，#12）**不许出现空白页**。
+     *
+     * 用户实测：「轮播图最后一个是空白，没有影片」。
+     *
+     * 上一版把页数写死 10，数据只有 9 个时最后一页就是纯色块，滑过去什么都没有。
+     *
+     * 现在的规则：**页数 = 实际条数**（最多 10）。
+     *  · 有 9 条 → 9 个圆点，全部有内容，没有空白页
+     *  · 补齐到 10 条 → 变成 10 个圆点
+     *
+     * 为什么不坚持「先显示 10 个等填充」：
+     * 那必然出现空白页；而用户对"空白"的容忍度远低于"圆点数量变化一次"。
+     * 真正避免跳变靠的是 HomeViewModel 那边的「只往后追加、不动前面」，
+     * 用户看到的是圆点从 9 变 10（尾部多一个），而不是前面的内容被替换。
+     */
+    val totalPages = items.size.coerceAtMost(pageCount).coerceAtLeast(0)
     val pager = rememberPagerState { totalPages }
     val dragged by pager.interactionSource.collectIsDraggedAsState()
     LaunchedEffect(totalPages, dragged, autoAdvance) {

@@ -101,8 +101,11 @@ class AppNav(
         resume: Boolean = true,
         sourceId: String? = null,
         startMs: Long? = null,
+        /** 用户口径（2026-11-27，#16）详情页选的音轨/字幕，播放时优先使用。 */
+        audioIndex: Int? = null,
+        subtitleIndex: Int? = null,
     ) {
-        PlayerLauncher.play(context, item, resume, sourceId, startMs)
+        PlayerLauncher.play(context, item, resume, sourceId, startMs, audioIndex, subtitleIndex)
     }
 
     private fun musicParent(): String = context.graph.music.libraryId.value ?: ""

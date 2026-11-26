@@ -266,6 +266,21 @@ class VideoSession(
     private var nextLength: Long = -1L
     /** 下一集的 (episodeId, url)，用于流水线预加载。 */
     private var nextUrl: Pair<String, String>? = null
+
+    /**
+     * 用户口径（2026-11-27，#16）**详情页选中的音轨/字幕索引**。
+     *
+     * null = 没选过，按服务端默认；-1 = 明确关闭字幕；>=0 = 指定那条流的 Index。
+     * 由 PlayerActivity 从详情页透传进来，起播时优先于服务端默认值。
+     */
+    private var audioPreference: Int? = null
+    private var subtitlePreference: Int? = null
+
+    /** 供详情页/播放器 Activity 设置：播放时按用户选的音轨、字幕走。 */
+    fun setTrackPreference(audioIndex: Int?, subtitleIndex: Int?) {
+        audioPreference = audioIndex
+        subtitlePreference = subtitleIndex
+    }
     /**
      * 用户口径（2026-11-24）：下一集的片头结束位置与总时长。
      * 预加载量要用「片头结束 + 1 分钟」做下限（不受配额限制），
@@ -2132,8 +2147,24 @@ class VideoSession(
             params.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index)).setTrackTypeDisabled(type, false)
             changed = true
         }
-        settle(C.TRACK_TYPE_AUDIO, src.audio.firstOrNull { it.index == src.defaultAudioIndex }, src.audio)
-        val subtitle = src.defaultSubtitleIndex ?: src.subtitles.firstOrNull { it.isDefault }?.index
+        /**
+         * 用户口径（2026-11-27，#16）**详情页选过的音轨/字幕优先，其次才用服务端默认**。
+         *
+         * 修的 bug：详情页的音轨/字幕选项点了只是收起菜单（`onSelected = { }` 空函数），
+         * 播放时也完全不看用户选了什么 —— 永远按服务端的 `DefaultAudioStreamIndex` 走。
+         *
+         * 现在取值优先级：
+         *  ① 用户在详情页明确选的索引（`audioPreference` / `subtitlePreference`）
+         *  ② 服务端 DefaultAudioStreamIndex / DefaultSubtitleStreamIndex
+         *  ③ 第一条 / 标了 isDefault 的那条
+         * `subtitlePreference == -1` 表示用户选了「关闭字幕」。
+         */
+        val wantedAudioIndex = audioPreference ?: src.defaultAudioIndex
+        settle(C.TRACK_TYPE_AUDIO, src.audio.firstOrNull { it.index == wantedAudioIndex }
+            ?: src.audio.firstOrNull(), src.audio)
+        val subtitle = subtitlePreference
+            ?: src.defaultSubtitleIndex
+            ?: src.subtitles.firstOrNull { it.isDefault }?.index
         if (subtitle == -1 && C.TRACK_TYPE_TEXT in pendingDefaults) {
             pendingDefaults -= C.TRACK_TYPE_TEXT
             params.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)

@@ -31,6 +31,12 @@ data class DetailData(
      * item 是 Episode 时这里放 `api.item(seriesId)` 的结果；其他情况为 null。
      */
     val seriesItem: Item? = null,
+    /**
+     * 用户口径（2026-11-27，#16）**详情页选中的音轨/字幕**。
+     * null = 没选过（按服务端默认）；-1 = 关闭字幕；>=0 = 指定流的 Index。
+     */
+    val selectedAudioIndex: Int? = null,
+    val selectedSubtitleIndex: Int? = null,
     val similar: List<Item> = emptyList(),
     /** TMDb collections a movie belongs to. */
     val collections: List<Item> = emptyList(),
@@ -71,6 +77,17 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
     /** Shows another episode of the same series on this page. */
     /** 剧集层只自动落到具体集一次，之后用户自己选集不再被拽回。 */
     private var jumpOnce = false
+
+    /**
+     * 用户口径（2026-11-27，#14）**切集提速用的同剧缓存**。
+     *
+     * 同一部剧内切集时，季列表和剧集那条（头图）完全不变，
+     * 没必要每切一集都重新请求并等待它们 —— 这是切集慢的主要原因。
+     * 切到别的剧时 `cachedSeriesId` 不匹配，自动失效重取。
+     */
+    private var cachedSeriesId: String? = null
+    private var cacheSeasons: List<Item> = emptyList()
+    private var cacheSeriesItem: Item? = null
 
     fun show(episodeId: String) {
         if (episodeId == id) return
@@ -116,10 +133,30 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                      * 现在单集页虽然 item 是 Episode，但 `seriesId` 已经拿得到，
                      * 所以这里直接把剧集那条也请求一次，喂给头部用（不用自己猜父级字段）。
                      */
+                    /**
+                     * 用户口径（2026-11-27，#14）**切集要快：同剧的季列表和剧集图不再重复请求**。
+                     *
+                     * 用户实测：「人家这个切集速度也比咱们的快」。
+                     *
+                     * 慢的根因：每切一集，下面这些都重新走一遍网络并全部 await 完才出画面：
+                     *  · `api.seasons(sid)`      —— 季列表，同一部剧永远不变
+                     *  · `api.item(seriesId)`    —— 剧集那条（头图用），也是同一部剧不变
+                     *  · `api.playbackTarget`    —— 只有剧集层/季层才需要
+                     *
+                     * 现在：同剧复用上一次的结果（内存缓存，切剧时自动失效），
+                     * 只有真正的"这一集自己的数据"才重新请求。
+                     */
+                    val sameSeries = cachedSeriesId == seriesId && seriesId != null
+                    val cachedSeriesItem = cacheSeriesItem
+                    val cachedSeasons = cacheSeasons
                     val seriesItem = if (base.isEpisode && base.seriesId != null) {
-                        async { runCatching { api.item(base.seriesId) }.getOrNull() }
+                        if (sameSeries && cachedSeriesItem != null) null
+                        else async { runCatching { api.item(base.seriesId) }.getOrNull() }
                     } else null
-                    val seasons = seriesId?.let { sid -> async { runCatching { api.seasons(sid) }.getOrDefault(emptyList()) } }
+                    val seasons = seriesId?.let { sid ->
+                        if (sameSeries && cachedSeasons.isNotEmpty()) null
+                        else async { runCatching { api.seasons(sid) }.getOrDefault(emptyList()) }
+                    }
                     val target = seriesId?.let { sid ->
                         async { runCatching { api.playbackTarget(sid, if (item.isSeason) item.id else null) }.getOrNull() }
                     }
@@ -128,12 +165,16 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                     val full = detailed?.await()
                     DetailData(
                         item = if (full != null) base.copy(mediaSources = full.mediaSources, chapters = full.chapters.ifEmpty { base.chapters }) else base,
-                        seasons = seasons?.await().orEmpty(),
+                        seasons = if (seasons != null) {
+                            seasons.await().also { cacheSeasons = it; cachedSeriesId = seriesId }
+                        } else cachedSeasons,
                         target = target?.await(),
                         similar = similar?.await().orEmpty(),
                         collections = collections?.await().orEmpty(),
                         /** 剧集那条数据：单集页头部大图/艺术字用它，切集时保持不变。 */
-                        seriesItem = seriesItem?.await(),
+                        seriesItem = if (seriesItem != null) {
+                            seriesItem.await().also { cacheSeriesItem = it }
+                        } else cachedSeriesItem,
                     )
                 }
                 // A newer episode was picked while this one loaded.
@@ -186,7 +227,58 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
         }
     }
 
-    fun selectSeason(seriesId: String, seasonId: String) = episodes.select(seriesId, seasonId)
+    /**
+     * 用户口径（2026-11-27，#19）**切季要跟着定位到该季的集**。
+     *
+     * 修的 bug（用户实测）：
+     * 「比如我现在选中第 3 季，上面的剧集按理来说应该显示第 3 季的第一集
+     *   （因为第 3 季现在没有播放记录）；如果第 3 季有播放记录，就定位到播放的那一集。
+     *   现在无论切换哪一季，显示的都是之前选中的那一集。」
+     *
+     * 根因：这里原来只调 `episodes.select(seriesId, seasonId)` —— 那只换"选集行显示哪一季"，
+     * **完全没有更新当前正在看的是哪一集**，所以上方头图/标题/简介还是上一季那一集。
+     *
+     * 现在的顺序：
+     *  ① 先让选集行切到新季（快，用户立刻看到那一季的缩略图）
+     *  ② 再在这一季里找「有进度且没看完」的集
+     *     · 找到 → show(那一集)
+     *     · 没有 → show(这一季第一集)
+     */
+    fun selectSeason(seriesId: String, seasonId: String) {
+        episodes.select(seriesId, seasonId)
+        viewModelScope.launch {
+            /**
+             * 直接调 episodePage 取该季前若干集找进度，比等 episodes 状态回填更快也更准
+             *（episodes 的 state 是异步的，这里读它可能还是上一季的数据）。
+             */
+            val page = runCatching {
+                api.episodePage(seriesId, seasonId, start = 0, limit = 200)
+            }.getOrNull() ?: return@launch
+            val list = page.items
+            if (list.isEmpty()) return@launch
+            val resumable = list.firstOrNull { it.positionMs > 0 && !it.userData.played }
+            val target = resumable ?: list.first()
+            if (target.id != id) show(target.id)
+        }
+    }
+
+    /**
+     * 用户口径（2026-11-27，#16）**记下用户选的音轨/字幕，播放时优先使用**。
+     *
+     * 以前这两个选项点了只收起菜单（详情页传的是空函数），播放永远按服务端默认走。
+     * 现在存进 DetailData，由 PlayerActivity 读出来传给 VideoSession。
+     */
+    fun selectAudio(index: Int) {
+        _state.update { s ->
+            if (s is Load.Ready) Load.Ready(s.value.copy(selectedAudioIndex = index)) else s
+        }
+    }
+
+    fun selectSubtitle(index: Int?) {
+        _state.update { s ->
+            if (s is Load.Ready) Load.Ready(s.value.copy(selectedSubtitleIndex = index)) else s
+        }
+    }
 
     fun selectSource(index: Int) {
         _state.update { s -> if (s is Load.Ready) Load.Ready(s.value.copy(selectedSource = index)) else s }
