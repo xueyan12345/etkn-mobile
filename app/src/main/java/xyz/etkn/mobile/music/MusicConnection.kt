@@ -326,6 +326,21 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             android.util.Log.w("ETKN-Music", "restore: 没有记忆，跳过")
             return
         }
+        /**
+         * 用户口径（#1 终极修法）**恢复必须用真实直链，不能用占位 scheme**。
+         *
+         * Media3 的机制（实测确认）：
+         *  · `setMediaItems` 只是往 player 里塞数据，**不会**让 MediaSession
+         *    把 metadata / queue 同步给系统 —— 系统拿到的是 `state=NONE(0), size=0`
+         *  · 只有当 player 真正进入 BUFFERING / READY / PAUSED，
+         *    Session 才会有完整状态（metadata size=11, queueTitle size=1）
+         *  · 而 `etkn-music://track/<id>` 是占位 scheme，prepare 必然失败落到 IDLE
+         *
+         * 所以这里改成：**异步 resolve 出真实直链，再 setMediaItems + prepare**。
+         * 这样即使不播放，player 也会到 PAUSED + metadata 完整，
+         * 系统控制中心/车机就能看到「一万次悲伤 / 逃跑计划」并点亮播放键。
+         */
+        if (memory.itemId.isBlank()) return
         val p = player
         android.util.Log.i("ETKN-Music", "restore: mediaItemCount=${p.mediaItemCount} q=${memory.queueIds.size}")
         if (p.mediaItemCount > 0) {
@@ -348,6 +363,29 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
              * 现在：按记忆里的队列 id 逐个还原成 MediaItem，一起装进播放器，
              * 并**同时填回 `items` map** —— 否则 `mapNotNull` 依然会把它们过滤掉。
              */
+            /**
+             * 先解析当前这首的真实直链（网络请求，放在协程里做）。
+             * 拿到后 setMediaItems 用的就是真 URL，prepare 能走到 BUFFERING。
+             */
+            graph.scope.launch {
+                runCatching {
+                    val info = graph.api.playbackInfo(memory.itemId, audio = true)
+                    val source = info.sources.firstOrNull() ?: return@runCatching
+                    val active = session ?: return@runCatching
+                    val url = PlaybackAddress.music(
+                        source, active.server, active.token, active.userId, info.playSessionId,
+                    )
+                    resolved[memory.itemId] = Resolved(url, info.playSessionId, source.id, source.runTimeTicks)
+                    /** 用真 URL 重建 MediaItem，替换掉占位那条。 */
+                    val real = resumeMediaItem(memory).buildUpon().setUri(Uri.parse(url)).build()
+                    val idx = p.currentMediaItemIndex.coerceAtLeast(0)
+                    p.replaceMediaItem(idx, real)
+                    p.prepare()
+                    android.util.Log.i("ETKN-Music", "restore: 真直链已装入，prepare 开始")
+                }.onFailure {
+                    android.util.Log.w("ETKN-Music", "restore 解析直链失败", it)
+                }
+            }
             val ids = memory.queueIds
             if (ids.isEmpty()) {
                 /**
