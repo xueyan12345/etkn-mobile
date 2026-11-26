@@ -758,6 +758,19 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         )
         /** 用户口径（#10）进度变化 → 同步车机卡片上的歌词行。 */
         runCatching { refreshLyricMetadata() }
+        /**
+         * 用户口径（#1）**publish 时把队列状态显式推给 Session**。
+         *
+         * 实测问题：player 里 mediaItemCount=1、state=PAUSED，
+         * 但 `dumpsys media_session` 报 `state=NONE(0), size=0`。
+         * ColorOS 的 `createActionsFromState: curState = 0` 据此判定无内容 → 播放键灰。
+         *
+         * 这里在每次 publish 时用一个无害的状态变更触发 Media3 重算 PlaybackState：
+         * 只在「播放器有内容但状态是 IDLE」时补一次 prepare。
+         */
+        if (p.mediaItemCount > 0 && p.playbackState == Player.STATE_IDLE) {
+            runCatching { p.prepare() }
+        }
         // 用户口径（#29）：每次状态变化都把「上次播的歌 + 进度」落盘，供下次启动恢复。
         if (current != null) saveMemory()
     }

@@ -130,10 +130,18 @@ class MusicService : MediaLibraryService() {
                 "count=${player.mediaItemCount} state=${player.playbackState}",
         )
         /**
-         * `setMediaItem`（单项替换）会触发 Session 重新读取 metadata，
-         * 且不改变播放位置，比 prepare 安全（不会因占位 URL 失败落到 IDLE）。
+         * 关键：`replaceMediaItem` 不会让 Media3 重算 PlaybackState，
+         * 所以 Session 依旧报 NONE。必须调 `prepare()` ——
+         * 它会把状态推成 BUFFERING，Session 才会把 metadata/queue 同步给系统。
+         *
+         * 实测依据：
+         * ```
+         * syncSession: count=1 state=2   ← player 内部状态是 PAUSED（对）
+         * dumpsys:     state=NONE(0)     ← Session 报给系统的还是 NONE（错）
+         * ```
+         * 说明 Session 没收到 player 的状态通知，需要主动触发一次。
          */
-        runCatching { player.replaceMediaItem(player.currentMediaItemIndex, item) }
+        runCatching { player.prepare() }
     }
 
     /**
