@@ -267,25 +267,42 @@ class MusicService : MediaLibraryService() {
      * 这里读 intent 的 `EXTRA_KEY_EVENT` 拿到 keycode。
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val keyCode = intent
-            ?.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT)
-            ?.keyCode
+        val keyEvent = intent?.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT)
+        val keyCode = keyEvent?.keyCode
         val action = intent?.action
+        /** 有些 ROM 只传 action 不传 EXTRA_KEY_EVENT，两种都要认。 */
+        val isMediaButtonAction = action == Intent.ACTION_MEDIA_BUTTON
         android.util.Log.i(
             "ETKN-Music",
-            "onStartCommand: action=$action keyCode=$keyCode",
+            "onStartCommand: action=$action keyCode=$keyCode isMediaBtn=$isMediaButtonAction " +
+                "extras=${intent?.extras?.keySet()?.joinToString()}",
         )
-        if (keyCode != null) {
+        /** 只要收到 MEDIA_BUTTON（不管有没有 keyCode），就当作"用户要听歌"。 */
+        if (keyCode != null || isMediaButtonAction) {
             /**
              * 用户口径（#27）：没在播时，「播放」和「下一曲」都等于开始播放。
              * 所以这里统一走 `systemPlay()` —— 它会等会话就绪、解析真直链、真的出声。
              */
             applicationContext.graph.scope.launch {
                 runCatching {
-                    /** 等 Session 建好 + 会话就绪（构造里已经等过，这里再兜一次）。 */
-                    kotlinx.coroutines.delay(300)
+                    /**
+                     * 等两个前提都就绪再播，缺一个都会「进程起来了但没声音」：
+                     *  ① 登录态 SignedIn（否则直链解析失败）
+                     *  ② remembered 读到（否则不知道播哪首）
+                     */
+                    kotlinx.coroutines.withTimeoutOrNull(15_000L) {
+                        applicationContext.graph.sessions.state.first {
+                            it is xyz.etkn.mobile.data.session.SessionState.SignedIn
+                        }
+                    }
+                    kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                        applicationContext.graph.music.remembered.first { it != null }
+                    }
                     applicationContext.graph.music.systemPlay()
-                    android.util.Log.i("ETKN-Music", "onStartCommand: 已触发播放（keyCode=$keyCode）")
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "onStartCommand: 已触发播放 keyCode=$keyCode state=${applicationContext.graph.music.state.value.isPlaying}",
+                    )
                 }
             }
         }

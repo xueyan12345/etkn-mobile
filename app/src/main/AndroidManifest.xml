@@ -177,6 +177,33 @@
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
+                <!--
+                    用户口径（2026-11-27，#31）**照 QQ 音乐的做法，Service 自己也注册 MEDIA_BUTTON**。
+
+                    adb 实测对比（QQ 音乐 com.tencent.qqmusic）：
+                    ```
+                    Receiver: androidx.media.session.MediaButtonReceiver
+                    Service:  QQPlayerServiceNew   Action: "android.intent.action.MEDIA_BUTTON"   ← 关键
+                    ```
+                    QQ 音乐的播放 Service **自己**也挂了 MEDIA_BUTTON，所以系统按下媒体键时
+                    有一个「静态注册、进程一启动就能收到」的入口。
+
+                    我们的差距（同一台机器实测）：
+                    ```
+                    Receiver: androidx.media3.session.MediaButtonReceiver  ✅
+                    Service:  只有 MediaLibraryService + MediaBrowserService  ❌ 没有 MEDIA_BUTTON
+                    ```
+
+                    ColorOS 的时序问题（实测）：
+                    ```
+                    22:02:45.978  进程启动
+                    22:02:46.069  ColorOS 判定 controller size = 0 → not add to stack   （91ms）
+                    ```
+                    只靠 Receiver 转发时，那条命令在进程起来前就被丢了，
+                    所以「能唤醒但不出声」。加上这个 action 后，进程启动时能直接
+                    通过 onStartCommand 收到原始 Intent（含 keyCode），自己开播。
+                -->
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
             <!-- #28A：告诉系统这个 Service 处理媒体按键 -->
             <meta-data
