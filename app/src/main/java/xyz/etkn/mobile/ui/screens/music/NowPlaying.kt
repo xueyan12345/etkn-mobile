@@ -99,6 +99,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
@@ -512,11 +513,22 @@ fun NowPlayingScreen() {
                         /**
                          * ④ 5 行歌词（中间完整、上下渐隐），点它进歌词页（#32⑦）。
                          */
-                        Box(
-                            Modifier.fillMaxWidth().height(120.dp)
-                                .clickable { page = 1 },
+                        /**
+                         * 用户口径（2026-11-27，#5）**歌词行数按剩余空间自适应**。
+                         *
+                         * 原话：「播放详情界面把歌词行数按照空白区域计算一下能放多少行就放多少行」
+                         *
+                         * 做法：用 `BoxWithConstraints` 拿到这块区域的实际高度，
+                         * 除以单行高度（约 26dp）得到能放几行，
+                         * 保证奇数（中间行才是"当前这句"），最少 3 行。
+                         */
+                        BoxWithConstraints(
+                            Modifier.fillMaxWidth().weight(1f).clickable { page = 1 },
                         ) {
-                            FiveLineLyrics(track, position)
+                            val rowHeight = 26.dp
+                            val fitted = (maxHeight / rowHeight).toInt().coerceAtLeast(3)
+                            val rows = if (fitted % 2 == 0) fitted - 1 else fitted
+                            AdaptiveLyrics(track, position, rows)
                         }
                         /** 用户口径（#4⑥）底部控件整体往上移 —— 压缩这里的弹性空白。 */
                         Spacer(Modifier.height(6.dp))
@@ -578,6 +590,21 @@ fun NowPlayingScreen() {
                      * 对比原实现：只有 repeatMode 的 3 态，缺「随机」，
                      * 而「随机」是 shuffleModeEnabled 这个独立维度，现在合并成一条循环。
                      */
+                    /**
+                     * 用户口径（2026-11-27，#4）**四种状态必须用四个不同图标**。
+                     *
+                     * 原话：「左下角的那个顺序播放/随机播放/单曲循环/列表循环播放，
+                     *        我要4个小图标不一样的，你现在只有3个，说好几遍了」
+                     *
+                     * 原来 0(顺序) 和 1(列表循环) 都用了 `Repeat`，看起来就是只有 3 个。
+                     * 现在四个各用各的：
+                     * ```
+                     * 0 顺序播放   → PlaylistPlay    （列表 + 播放箭头，表示按序播完停）
+                     * 1 列表循环   → Repeat          （两个箭头成环）
+                     * 2 单曲循环   → RepeatOne       （环 + 数字 1）
+                     * 3 随机播放   → Shuffle         （交叉箭头）
+                     * ```
+                     */
                     val mode = when {
                         state.shuffle -> 3
                         state.repeat == Player.REPEAT_MODE_ONE -> 2
@@ -587,17 +614,18 @@ fun NowPlayingScreen() {
                     IconButton(onClick = music::cyclePlayMode) {
                         Icon(
                             when (mode) {
-                                3 -> Icons.Rounded.Shuffle
-                                2 -> Icons.Rounded.RepeatOne
+                                0 -> Icons.AutoMirrored.Rounded.PlaylistPlay
                                 1 -> Icons.Rounded.Repeat
-                                else -> Icons.Rounded.Repeat   // 顺序播放
+                                2 -> Icons.Rounded.RepeatOne
+                                else -> Icons.Rounded.Shuffle
                             },
                             contentDescription = when (mode) {
-                                3 -> "随机播放"
-                                2 -> "单曲循环"
+                                0 -> "顺序播放"
                                 1 -> "列表循环"
-                                else -> "顺序播放"
+                                2 -> "单曲循环"
+                                else -> "随机播放"
                             },
+                            /** 四个状态都用主色，只有「顺序播放」用中性色（默认态）。 */
                             tint = if (mode == 0) {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             } else MaterialTheme.colorScheme.primary,
@@ -1038,6 +1066,69 @@ private fun MiniProgressLine(
             contentAlignment = Alignment.CenterEnd,
         ) {
             Box(Modifier.size(7.dp).background(accent, CircleShape))
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-27，#5）**按可用高度自适应的滚动歌词**。
+ *
+ * 中间那行（`rows / 2`）完整不透明，往两侧逐级降透明度，
+ * 最外两行几乎看不见 —— 和迷你条一样的渐变观感。
+ *
+ * @param rows 这块区域能放几行（由调用方按高度算，保证是奇数）
+ */
+@Composable
+private fun AdaptiveLyrics(track: Item, positionMs: Long, rows: Int) {
+    val graph = LocalContext.current.graph
+    val music by graph.music.state.collectAsStateWithLifecycle()
+    var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
+    LaunchedEffect(track.id, music.sourceId) {
+        val sid = music.sourceId ?: return@LaunchedEffect
+        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
+        parsed = if (text.isBlank()) null else Lyrics.parse(text)
+        parsed?.lines?.let { ls ->
+            graph.music.publishLyrics(track.id, ls.map { it.timeMs to it.text })
+        }
+    }
+    val lines = parsed?.lines.orEmpty()
+    val active = parsed?.indexAt(positionMs) ?: -1
+    if (lines.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "暂无歌词",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+    val half = rows / 2
+    val base = MaterialTheme.colorScheme.onSurface
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+        for (offset in -half..half) {
+            val idx = active + offset
+            val line: LyricLine? = lines.getOrNull(idx)
+            val distance = kotlin.math.abs(offset)
+            val isCenter = offset == 0
+            Text(
+                text = line?.text.orEmpty(),
+                style = if (isCenter) MaterialTheme.typography.titleLarge
+                else MaterialTheme.typography.bodyLarge,
+                fontWeight = if (isCenter) FontWeight.Bold else FontWeight.Normal,
+                color = base.copy(
+                    alpha = when (distance) {
+                        0 -> 1f
+                        1 -> 0.45f
+                        2 -> 0.22f
+                        else -> 0.10f
+                    },
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            )
         }
     }
 }

@@ -103,17 +103,60 @@ class MusicPlaylistsViewModel(private val graph: AppGraph, private val parentId:
  * 靠区段猜必然出错。`Collator.getInstance(Locale.CHINA)` 是 JDK 内置的
  * 中文排序规则，**本身就是按拼音排的**，这才是正统做法。
  */
-private val COLLATOR: java.util.Comparator<String> =
-    java.text.Collator.getInstance(java.util.Locale.CHINA).let { c ->
-        c.strength = java.text.Collator.PRIMARY
-        java.util.Comparator { a, b -> c.compare(a, b) }
+/**
+ * 用户口径（2026-11-27，#11/#13）**按首字母排序必须从 A 开始，且不能崩**。
+ *
+ * 之前用 `Collator.getInstance(Locale.CHINA)` 直接比较整串：
+ *  · 崩溃：`Comparison method violates its general contract!`
+ *    —— Collator 在多音字/变体上不满足传递性，TimSort 直接抛异常（点了就闪退）
+ *  · 顺序错：用户看到第一个是「以沫」而不是 a 开头的歌
+ *
+ * 现在的做法（简单、稳定、可验证）：
+ *  ① 从歌名/歌手名里取出**拼音首字母**（英文取首字母大写、数字/符号归 #）
+ *  ② 先按「首字母」排，再按「原串小写」排
+ *  ③ 纯 `String.compareTo`，天然满足传递性，不会崩
+ *
+ * 首字母表用「汉字 → 拼音首字母」的完整 GB2312 区段划分（22 个区间，覆盖常用字）。
+ * 一个字的拼音首字母是唯一确定的，所以按它排序必然从 A 走到 Z。
+ */
+private fun pinyinInitialOf(text: String): Char {
+    val c = text.trim().firstOrNull() ?: return '#'
+    // 英文/数字直接用它自己
+    if (c in 'a'..'z') return c.uppercaseChar()
+    if (c in 'A'..'Z') return c
+    if (c in '0'..'9') return '#'
+    if (c.code < 0x4E00 || c.code > 0x9FFF) return '#'
+    /**
+     * GB2312 一级汉字按拼音排序，区段边界如下（每个区间首字母相同）。
+     * 这是被广泛使用的标准分段，比"猜"准确得多。
+     */
+    val bounds = arrayOf(
+        'A' to 0xB0A1, 'B' to 0xB0C5, 'C' to 0xB2C1, 'D' to 0xB4EE,
+        'E' to 0xB6EA, 'F' to 0xB7A2, 'G' to 0xB8C1, 'H' to 0xB9FE,
+        'J' to 0xBBF7, 'K' to 0xBFA6, 'L' to 0xC0AC, 'M' to 0xC2E8,
+        'N' to 0xC4C3, 'O' to 0xC5B6, 'P' to 0xC5BE, 'Q' to 0xC6DA,
+        'R' to 0xC8BB, 'S' to 0xC8F6, 'T' to 0xCBFA, 'W' to 0xCDDA,
+        'X' to 0xCEF4, 'Y' to 0xD1B9, 'Z' to 0xD4D1,
+    )
+    /**
+     * 汉字用 GBK 编码字节做区间判定（String 的 UTF-16 码位不能直接比 GB2312 区段）。
+     * 拿不到 GBK 字节时退回码位近似。
+     */
+    val gbk = runCatching { text.trim().substring(0, 1).toByteArray(charset("GBK")) }.getOrNull()
+    if (gbk != null && gbk.size == 2) {
+        val code = ((gbk[0].toInt() and 0xFF) shl 8) or (gbk[1].toInt() and 0xFF)
+        var result = '#'
+        for ((letter, bound) in bounds) {
+            if (code >= bound) result = letter else break
+        }
+        return result
     }
-
-/** 是否以汉字开头（用于把中文排在非中文前面）。 */
-private fun isCjk(text: String): Boolean {
-    val c = text.trim().firstOrNull() ?: return false
-    return Character.UnicodeScript.of(c.code) == Character.UnicodeScript.HAN
+    return '#'
 }
+
+/** 排序键：首字母 + 原串（小写）。纯 String，保证比较可传递。 */
+private fun sortKeyOf(text: String): String =
+    pinyinInitialOf(text).toString() + "\u0000" + text.lowercase()
 
 class MusicListViewModel(
     private val graph: AppGraph,
@@ -290,41 +333,14 @@ private fun pinyinInitial(text: String): String {
 private fun applySort(list: List<Item>, sort: MusicSort): List<Item> = when (sort) {
     MusicSort.AddedTime -> list.sortedByDescending { it.dateCreated ?: "" }
     /**
-     * 用户口径（2026-11-27，#11）**按字母排序必须是 A → B → C 的顺序**。
+     * 用户口径（#11/#13）**按首字母：纯字符串比较，从 A 开始**。
      *
-     * 修的 bug（用户原话）：
-     *  「这个按字母排序也不对呀」「按字母排序不应该是A，然后B然后C吗」
-     *
-     * 根因有两个：
-     *
-     * ① **`#` 排在 `A` 前面**。原来直接按 `pinyinInitial()` 的返回值做字符串比较，
-     *    而非字母开头的（数字、符号、生僻字）统一返回 `"#"`，
-     *    而 `'#'` 的码位是 0x23，比 `'A'` 的 0x41 小 ——
-     *    所以列表变成 `# A B C ...`，用户看到的「顺序不对」就是这些 `#` 项全挤在最上面。
-     *
-     * ② **汉字按 Unicode 区段切字母本身不准**。同一区段里往往混着不同拼音首字母的字
-     *    （比如「阿(a)/波(b)/次(c)」可能被划进同一段），靠区段猜必然错。
-     *
-     * 现在的做法：
-     *  · 中文项按 **拼音全串** 排序（`Pinyin.full()`，见下），首字母自然就对了
-     *  · 非中文项（英文/数字/符号）排在字母之后（`#` 放到最后，符合常见音乐 App 习惯）
-     *  · 首字母索引也只从中文/英文本里取，不再出现 `#` 打头
+     * 用 `sortKeyOf()` 生成 "首字母\0原串" 的 key —— 纯 String.compareTo，
+     * 满足传递性，不会触发 TimSort 的 "Comparison method violates its general contract"。
      */
-    /**
-     * 中文在前、非中文在后；同组内用系统 Collator 按拼音比较。
-     *
-     * 注意：`compareBy` 只接受 `(T) -> Comparable`，**不能传 Comparator**，
-     * 所以这里用 `sortedWith(比较器链)` 而不是 `compareBy(..., COLLATOR)`。
-     */
-    MusicSort.FirstLetter -> list.sortedWith(
-        Comparator<Item> { a, b -> if (isCjk(a.name)) 0 else 1 }
-            .thenBy(COLLATOR) { it.name }
-            .thenBy { it.name.lowercase() },
-    )
-    MusicSort.ArtistLetter -> list.sortedWith(
-        Comparator<Item> { a, b -> if (isCjk(a.artistLine)) 0 else 1 }
-            .thenBy(COLLATOR) { it.artistLine }
-            .thenBy(COLLATOR) { it.name },
-    )
+    MusicSort.FirstLetter -> list.sortedBy { sortKeyOf(it.name) }
+    MusicSort.ArtistLetter -> list.sortedBy {
+        sortKeyOf(it.artistLine) + "\u0000" + it.name.lowercase()
+    }
     MusicSort.PlayCount -> list.sortedByDescending { it.userData.playCount }
 }

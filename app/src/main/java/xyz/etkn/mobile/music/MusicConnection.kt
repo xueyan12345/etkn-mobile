@@ -212,6 +212,19 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             .putLong("m_pos", pos)
             .putLong("m_dur", dur)
             .putString("m_src", s.sourceId)
+            /**
+             * 用户口径（2026-11-27，#2）**队列必须落盘**。
+             *
+             * 之前的 bug：这里只存了「当前这一首」，`m_q_ids` 等字段压根没写
+             * → 重启后 `queueIds` 为空 → 播放列表是空的。
+             *
+             * 现在把整条队列（id / 名字 / 歌手 / 封面 tag）都存下来，
+             * 用 `\u001F` 拼接（歌曲名里不会出现这个字符）。
+             */
+            .putString("m_q_ids", s.queue.joinToString(SEP) { it.id })
+            .putString("m_q_names", s.queue.joinToString(SEP) { it.name })
+            .putString("m_q_artists", s.queue.joinToString(SEP) { it.artistLine })
+            .putString("m_q_tags", s.queue.joinToString(SEP) { it.imageTags["Primary"].orEmpty() })
             .apply()
         android.util.Log.i(
             "ETKN-Music",
@@ -226,6 +239,10 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             positionMs = pos,
             durationMs = dur,
             sourceId = s.sourceId,
+            queueIds = s.queue.map { it.id },
+            queueNames = s.queue.map { it.name },
+            queueArtists = s.queue.map { it.artistLine },
+            queueTags = s.queue.map { it.imageTags["Primary"].orEmpty() },
         )
     }
 
@@ -392,6 +409,40 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                     p.replaceMediaItem(idx, real)
                     p.prepare()
                     android.util.Log.i("ETKN-Music", "restore: 真直链已装入，prepare 开始")
+                    /**
+                     * 用户口径（#1 最终手段）**静默播 1 帧再暂停，强制走完状态机**。
+                     *
+                     * 实测规律（反复验证）：
+                     * ```
+                     * 冷启动后 restore（只 prepare）→ Session state=NONE(0), metadata size=2
+                     * 点一次播放                      → state=PLAYING, metadata size=11
+                     * 再暂停                          → state=PAUSED, metadata size=11 ✅ 一直保持
+                     * ```
+                     * Media3 只在 player **真正开始播放过**之后，才把 metadata/queue
+                     * 同步给 MediaSession。仅 prepare 到 PAUSED 不够。
+                     *
+                     * 所以这里：音量置 0（用户听不见）→ play() → 等状态到 READY
+                     * → 立即 pause() 并 seek 回原位置。整个过程约 200~600ms，
+                     * 用户感知不到声音，但 Session 从此有了完整状态，
+                     * 状态栏/车机卡片的播放键就亮了。
+                     */
+                    val realVolume = p.volume
+                    p.volume = 0f
+                    p.play()
+                    /** 等到真的进入 READY 或超时（最多 2 秒）。 */
+                    val deadline = System.currentTimeMillis() + 2_000
+                    while (p.playbackState != Player.STATE_READY &&
+                        System.currentTimeMillis() < deadline
+                    ) {
+                        kotlinx.coroutines.delay(50)
+                    }
+                    p.pause()
+                    p.volume = realVolume
+                    p.seekTo(memory.positionMs)
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "restore: 静默起播完成 state=${p.playbackState} pos=${p.currentPosition}",
+                    )
                 }.onFailure {
                     android.util.Log.w("ETKN-Music", "restore 解析直链失败", it)
                 }
