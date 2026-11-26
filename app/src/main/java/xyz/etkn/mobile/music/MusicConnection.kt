@@ -74,6 +74,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     private var reportedId: String? = null
     private var startedId: String? = null
     private var progressJob: Job? = null
+    /** 用户口径（#39）已经为哪首歌预载过下一首（防止重复下好几首）。 */
+    private var prefetchedFor: String? = null
     @Volatile private var session: ActiveSession? = null
 
     private var _player: ExoPlayer? = null
@@ -830,7 +832,23 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             _state.value = _state.value.copy(sourceId = entry.sourceId)
             runCatching { saveMemory() }
         }
-        return spec.withUri(Uri.parse(entry.url))
+        /**
+         * 用户口径（2026-11-27，#39 修正）**必须给 DataSpec 设一个稳定 key**。
+         *
+         * 根因（实测）：
+         * ```
+         * 播放侧  resolve() 只做了 withUri(url)，没设 key
+         *         → MusicCache 退回用 spec.key ?: uri  → key = 带签名的直链 URL
+         * 预载侧  用 source.id|sessionId 或 url        → key 完全不同
+         * 结果    预载下完了，播放时永远命中不了
+         * ```
+         * 而且直链 URL 每次刷新签名都不一样 —— 同一首歌每次 key 都变，
+         * 连"播过的下次复用"都做不到。
+         *
+         * 现在用 `版本ID + 流ID` 组一个稳定 key，播放侧和预载侧共用。
+         */
+        val stableKey = "${entry.sourceId}|${id}"
+        return spec.withUri(Uri.parse(entry.url)).withKey(stableKey)
     }
 
     /**
@@ -1259,10 +1277,23 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val cur = p.currentPosition
         val dur = p.duration
         if (dur <= 0) return
+        /**
+         * 用户口径（#39 修正）**只预载下一首，不要一次下好几首**。
+         *
+         * 实测问题：条件里带了 `cur > dur * 7/10`（已播 70%），
+         * 而 `publish()` 每次进度变化都会调用本方法 → 70% 之后每 500ms 触发一次，
+         * 加上 `musicPrefetch` 的去重是按 key（每首 key 不同）→ 连下了 5 首。
+         *
+         * 现在：
+         *  · 只保留「缓存追上播放位置」这一个条件（说明当前这首已经稳了）
+         *  · 用 `prefetchedFor` 记住「已经为哪首歌预载过下一首」，同一首只做一次
+         */
         val cached = _state.value.cachedPosition
-        val cacheFull = cached > 0 && (cached - cur) < 20_000L
-        val nearlyDone = cur > dur * 7 / 10
-        if (!cacheFull && !nearlyDone) return
+        if (cached <= 0 || (cached - cur) > 20_000L) return
+        /** 当前这首已经为它预载过了，就不再重复。 */
+        val curId = p.currentMediaItem?.mediaId ?: return
+        if (prefetchedFor == curId) return
+        prefetchedFor = curId
 
         val nextId = p.getMediaItemAt(nextIndex).mediaId
         graph.scope.launch {
@@ -1275,8 +1306,14 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 val url = PlaybackAddress.music(
                     source, active.server, active.token, active.userId, info.playSessionId,
                 )
-                /** 缓存 key 用 source.id + session，和播放侧保持一致才能命中。 */
-                val key = "${source.id}|${info.playSessionId}"
+                /**
+                 * 用户口径（#39）**cache key 必须与播放侧 resolve() 完全一致**：
+                 * `"${source.id}|${曲目ID}"`。
+                 *
+                 * 曾用 URL 当 key —— 但直链带签名，每次刷新都不同，
+                 * 同一首歌的 key 都稳定不了，缓存等于白存。
+                 */
+                val key = "${source.id}|${nextId}"
                 val upstream = androidx.media3.datasource.DefaultHttpDataSource.Factory()
                     .setUserAgent("ETKN-Mobile")
                 MusicPrefetch.prefetch(
