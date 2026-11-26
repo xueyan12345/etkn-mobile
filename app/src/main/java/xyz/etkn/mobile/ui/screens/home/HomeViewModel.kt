@@ -159,7 +159,19 @@ class HomeViewModel(
              * 之前这里是静默兜底，导致「只有 3 个」这种问题在日志里完全看不见。
              * 现在打点，方便下次直接定位到底是快照只有 3 个、还是池子只有 3 个。
              */
-            val useHero = if (enough) hero else keepOld.ifEmpty { hero }
+            /**
+             * 用户口径（2026-11-27，#2 第四版）**首屏也不许发半截**。
+             *
+             * 原来 `keepOld.ifEmpty { hero }` —— keepOld 为空时会把「只有 3~6 个的 hero」
+             * 发出去渲染，用户就看到 6 个圆点，等主路径算完再跳成 10 个。
+             * 现在：不足 HERO_SIZE 就发空列表，HomeScreen 那一帧不画轮播区
+             * （hasHero=false），等主路径一次给出满 10 个 —— 全程没有数量跳变。
+             */
+            val useHero = when {
+                enough -> hero
+                keepOld.size >= HERO_SIZE -> keepOld
+                else -> emptyList()
+            }
             android.util.Log.i(
                 "ETKN-Hero",
                 "showCached: snapshot=${fromSnapshot.size} hero=${hero.size} " +
@@ -199,8 +211,22 @@ class HomeViewModel(
                  */
                 val data = withContext(graph.cacheUse(ResponseCache.Mode.Store)) { fetch() }
                     .let { fresh ->
+                        /**
+                         * 用户口径（2026-11-27，#2 第四版）**旧 hero 不满 10 个就别拿它顶着了**。
+                         *
+                         * 现象（用户实测）：进首页先是 6 个圆点，过一会儿跳成 10 个。
+                         *
+                         * 根因就在这行 `fresh.copy(hero = keep)`：
+                         * 它把上一次的 hero（可能是 6 个、甚至 3 个）先塞进新数据发出去，
+                         * 首页那一帧就按 6 个渲染；等 loadHero 算完再发一次 → 跳成 10 个。
+                         *
+                         * 现在：旧 hero 满 10 个才沿用（避免白闪）；
+                         * 不满就置空，让首页等 loadHero 一次发出满 10 个。
+                         * 空 hero 时 HomeScreen 的 `hasHero` 为 false，那一帧不画轮播，
+                         * 也不会出现「6 个 → 10 个」的跳变。
+                         */
                         val keep = (_state.value as? Load.Ready)?.value?.hero.orEmpty()
-                        fresh.copy(hero = keep)
+                        fresh.copy(hero = if (keep.size >= HERO_SIZE) keep else emptyList())
                     }
                 val fromCache = (_state.value as? Load.Ready) != null && lastLoad == 0L
                 lastLoad = System.currentTimeMillis()
@@ -220,9 +246,19 @@ class HomeViewModel(
                  * 现在：只要少于 HERO_SIZE 就补齐。
                  * 补齐过程是「算好整体替换」，不会中间清空 → 不会闪。
                  */
+                /**
+                 * 用户口径（2026-11-27，#2 第四版）**先算好 hero 再一次发出，别发两次**。
+                 *
+                 * 现象：进首页先看到 6 个圆点，过一会儿跳成 10 个。
+                 * 根因：这里 `_state.value = Load.Ready(data)` 先把「旧 hero / 空 hero」
+                 * 发出去渲染一帧，紧接着 loadHero 才异步算完再发一次 → 数量跳变。
+                 *
+                 * 现在改成：需要重新算 hero 时，**先 await 算完**（内部会 publishHero，
+                 * 直接改 _state），不再先发一帧半成品。
+                 */
                 val heroShort = data.hero.size < HERO_SIZE
                 if (heroShort || manual || fromCache) {
-                    loadHero(data, quiet = !manual, manualHero = manual)
+                    awaitHero(data, quiet = !manual, manualHero = manual)
                 }
             } catch (error: Exception) {
                 if (_state.value !is Load.Ready) _state.value = Load.Failed(error.userMessage())
@@ -288,9 +324,34 @@ class HomeViewModel(
      * 超过 12 小时才重抽。这样「一天开十次」看到的都是同一批，
      * 「两天没开」一进来就是新的一批。
      */
+    /**
+     * 用户口径（2026-11-27，#2 第四版）**同步等 hero 算完再往下走**。
+     *
+     * 和 [loadHero] 的区别只有一点：这个会挂起等到算完（首页就不会先渲染 6 个再跳）。
+     * 保留 loadHero 给「后台静默补齐」那些不需要等的场景用。
+     */
+    private suspend fun awaitHero(data: HomeData, quiet: Boolean, manualHero: Boolean) {
+        /**
+         * 直接在当前协程里算，不另起 job。
+         *
+         * 之前写成 `viewModelScope.launch { ... }.join()` —— 而 awaitHero 自己
+         * 就是在 viewModelScope.launch 里跑的，嵌套等待虽然不死锁（join 会等子协程），
+         * 但多一层调度、还多一次「取消前一个 job」的竞态。直接算最干净。
+         */
+        heroJob?.cancel()
+        heroJob = null
+        runCatching { computeHero(data, quiet, manualHero) }
+            .onFailure { android.util.Log.w("ETKN-Hero", "computeHero 失败", it) }
+    }
+
     private fun loadHero(data: HomeData, quiet: Boolean = false, manualHero: Boolean = false) {
         heroJob?.cancel()
         heroJob = viewModelScope.launch {
+            computeHero(data, quiet, manualHero)
+        }
+    }
+
+    private suspend fun computeHero(data: HomeData, quiet: Boolean, manualHero: Boolean) {
             val accountKey = sessionKey()
             lastHeroAccountKey = accountKey
             val shown = HeroSnapshot.read(context, accountKey)
@@ -353,7 +414,7 @@ class HomeViewModel(
                         publishHero(withResume.take(HERO_SIZE))
                         // 快照内容变了（第1位换了）→ 刷新时间戳，避免下次又算一遍
                         HeroSnapshot.write(context, accountKey, withResume.map { it.id })
-                        return@launch
+                        return
                     }
                 }
                 // 掉的太多（看完了/删了）→ 重抽并刷新时间戳
@@ -459,7 +520,7 @@ class HomeViewModel(
                 }
                 publishHero(finalPicked)
                 HeroSnapshot.write(context, accountKey, finalPicked.map { it.id })
-                return@launch
+                return
             }
             // 连库列表都还没到（首屏缓存路径）时退回旧的兜底，别让轮播空着
             if (!quiet) {
@@ -467,11 +528,24 @@ class HomeViewModel(
                 if (fallback.isNotEmpty()) {
                     val randomNine = fallback.shuffled(Random(seed)).take(HERO_RANDOM_SIZE)
                     val picked = pickResumeFirst(data, randomNine, seed)
-                    publishHero(picked)
-                    HeroSnapshot.write(context, accountKey, picked.map { it.id })
+                    /**
+                     * 用户口径（2026-11-27，#2 第四版）**兜底分支也不许发半截**。
+                     *
+                     * 这里是「连库列表都还没到」的极端情况，池子可能只有几个。
+                     * 与其先发 3~6 个让用户看到跳变，不如不发 —— 等 loadHero 的
+                     * 主路径（会现场从服务端补拉）一次性给出满 10 个。
+                     */
+                    if (picked.size >= HERO_SIZE) {
+                        publishHero(picked)
+                        HeroSnapshot.write(context, accountKey, picked.map { it.id })
+                    } else {
+                        android.util.Log.i(
+                            "ETKN-Hero",
+                            "兜底分支不足 ${HERO_SIZE} 个（${picked.size}），跳过不发布",
+                        )
+                    }
                 }
             }
-        }
     }
 
     /** 账号 key（serverId|userId），轮播按账号独立。 */
