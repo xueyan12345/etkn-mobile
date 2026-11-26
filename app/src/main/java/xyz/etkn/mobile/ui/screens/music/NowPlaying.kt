@@ -100,6 +100,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.foundation.layout.BoxWithConstraints
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
