@@ -87,6 +87,87 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         _library.value = id
     }
 
+    /**
+     * 用户口径（2026-11-27，#29）**记住上次播放的歌和进度**。
+     *
+     * 用户原话：
+     *  「我想把这个变成记忆状态，也就是上次播放的歌曲是啥，它就是啥，包括播放进度也要保存，
+     *    上次播放一半，我彻底关闭 app 重新打开音乐界面，还是要显示上次播放的那个音乐，
+     *    进度啥的都在，点播放就能继续播放」
+     *
+     * 存储只放**够画界面 + 够续播**的字段（不序列化整个 Item，因为 Item 不是 @Serializable）：
+     *  · id / name / artist / album —— 迷你条要显示的
+     *  · imageTag —— 封面（没有就显示占位图）
+     *  · positionMs / durationMs —— 进度
+     *  · sourceId —— 歌词用
+     *  · queueJson 不需要：点播放时重新按 id 取直链即可
+     */
+    private val prefs by lazy { context.getSharedPreferences("etkn_music_memory", Context.MODE_PRIVATE) }
+
+    private val _remembered = MutableStateFlow<MusicMemory?>(null)
+    val remembered: StateFlow<MusicMemory?> = _remembered.asStateFlow()
+
+    /** 启动时读一次；没有记录就是 null（界面显示占位图）。 */
+    init {
+        _remembered.value = runCatching {
+            val id = prefs.getString("m_id", null) ?: return@runCatching null
+            MusicMemory(
+                itemId = id,
+                name = prefs.getString("m_name", "") ?: "",
+                artist = prefs.getString("m_artist", "") ?: "",
+                album = prefs.getString("m_album", "") ?: "",
+                primaryTag = prefs.getString("m_tag", null),
+                positionMs = prefs.getLong("m_pos", 0L),
+                durationMs = prefs.getLong("m_dur", 0L),
+                sourceId = prefs.getString("m_src", null),
+            )
+        }.getOrNull()
+    }
+
+    /** 每次状态变化时写盘（`publish()` 里调用，见下方）。 */
+    private fun saveMemory() {
+        val s = _state.value
+        val item = s.current ?: return
+        val pos = _player?.currentPosition ?: s.positionMs
+        val dur = _player?.duration?.takeIf { it > 0 } ?: s.durationMs
+        prefs.edit()
+            .putString("m_id", item.id)
+            .putString("m_name", item.name)
+            .putString("m_artist", item.artistLine)
+            .putString("m_album", item.album)
+            .putString("m_tag", item.imageTags["Primary"])
+            .putLong("m_pos", pos)
+            .putLong("m_dur", dur)
+            .putString("m_src", s.sourceId)
+            .apply()
+        _remembered.value = MusicMemory(
+            itemId = item.id,
+            name = item.name,
+            artist = item.artistLine,
+            album = item.album,
+            primaryTag = item.imageTags["Primary"],
+            positionMs = pos,
+            durationMs = dur,
+            sourceId = s.sourceId,
+        )
+    }
+
+    /**
+     * 用户口径（2026-11-27，#29）**点「记忆里的那首歌」→ 从上次进度续播**。
+     *
+     * 先按 id 重新取一次详情（拿到 MediaSources 才能解析直链），
+     * 拿到后 setMediaItems + seekTo(上次进度) + play。
+     */
+    fun resumeRemembered() {
+        val memory = _remembered.value ?: return
+        graph.scope.launch {
+            val item = runCatching { graph.api.item(memory.itemId) }.getOrNull() ?: return@launch
+            play(listOf(item), 0, memory.sourceId ?: "remembered")
+            // play() 里把位置置 0，这里再补一次续播位置
+            _player?.seekTo(memory.positionMs)
+        }
+    }
+
     private fun create(): ExoPlayer {
         val upstream = PlayerFactory.dataSource(graph.http.media, graph.identity.userAgent)
         val factory = ResolvingDataSource.Factory(upstream) { spec -> resolve(spec) }
@@ -194,6 +275,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             error = if (p.playerError == null) null else _state.value.error,
             sourceId = current?.id?.let { resolved[it]?.sourceId },
         )
+        // 用户口径（#29）：每次状态变化都把「上次播的歌 + 进度」落盘，供下次启动恢复。
+        if (current != null) saveMemory()
     }
 
     // ---------- Reporting (TV contract: Playing → Progress → Stopped with PlayedToCompletion) ----------
@@ -262,3 +345,20 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         const val SCHEME = "etkn-music"
     }
 }
+
+/**
+ * 用户口径（2026-11-27，#29）**音乐记忆状态**：上次播的歌（够画界面的字段）+ 进度。
+ *
+ * 不存整个 `Item`：它不是 @Serializable，序列化会带来一大堆字段兼容问题。
+ * 这里只留迷你条要显示的 + 续播要用的。
+ */
+data class MusicMemory(
+    val itemId: String,
+    val name: String,
+    val artist: String,
+    val album: String,
+    val primaryTag: String?,
+    val positionMs: Long,
+    val durationMs: Long,
+    val sourceId: String?,
+)

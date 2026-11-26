@@ -40,6 +40,28 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!--
+                用户口径（2026-11-27，#28A）**让系统把 ETKN 认成音乐播放器**。
+
+                这两个 intent-filter 缺一个，系统就不会把 App 列进对应的入口：
+                ① APP_MUSIC —— 系统「音乐」默认应用列表、数字助理的音乐源里能看到 ETKN
+                ② VIEW + audio/* —— 文件管理器/聊天工具里点一个音频文件，「打开方式」里能选 ETKN
+
+                注意 APP_MUSIC 是独立 filter，不能和 LAUNCHER 合并：
+                合并会让桌面图标和音乐入口绑死，部分 ROM 会重复显示两个图标。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.APP_MUSIC" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
 
@@ -117,6 +139,20 @@
             </intent-filter>
         </service>
 
+        <!--
+            用户口径（2026-11-27，#28A）**耳机/蓝牙线控按键**。
+
+            Media3 的 MediaButtonReceiver 把系统媒体按键转发给正在播放的 MediaSession，
+            没有这个声明，插着耳机的播放/暂停键按了没反应。
+        -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".music.MusicService"
             android:exported="true"
@@ -124,6 +160,10 @@
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
+            <!-- #28A：告诉系统这个 Service 处理媒体按键 -->
+            <meta-data
+                android:name="androidx.media3.session.MediaButtonReceiver"
+                android:value="true" />
         </service>
     </application>
 </manifest>

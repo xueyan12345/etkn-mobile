@@ -90,7 +90,6 @@ fun MainShell(session: ActiveSession) {
     val isNowPlaying = destination?.hasRoute<NowPlayingRoute>() == true
     val music = context.graph.music
     val nowPlaying by music.state.collectAsStateWithLifecycle()
-    val showMini = nowPlaying.current != null && !isNowPlaying
     val layout = currentWindowLayout()
     /**
      * 用户口径（2026-11-26）：**手机横屏不再被当成宽屏**。
@@ -114,6 +113,23 @@ fun MainShell(session: ActiveSession) {
     // On the pager the highlight follows the page being swiped to; over pages, a pushed tab route.
     val current = if (onTabs) tabs.getOrNull(pager.targetPage)
     else TopLevel.entries.firstOrNull { tab -> destination?.hierarchy?.any { tab.matches(it) } == true }
+
+    /**
+     * 用户口径（2026-11-27，#29）**迷你播放条只常驻音乐页**。
+     *
+     * 用户原话：
+     *  「音乐播放时候，下面的这个播放条常驻，关不掉，改一下逻辑，
+     *    这个播放条无论是否播放，都让它常住在音乐菜单界面，
+     *    也就是关掉 app 重新打开，切换到菜单界面，也直接就能看到这个播放条，
+     *    但是其他界面啥时候都不要显示」
+     *
+     * 旧判据 `nowPlaying.current != null && !isNowPlaying` 有两个问题：
+     *  · 依赖「有没有正在播的歌」→ 没播时就没了
+     *  · 没限定标签页 → 首页/探索/我的 都能看到
+     *
+     * 现在只看「当前是不是音乐标签页」，和播放状态无关。
+     */
+    val showMini = current == TopLevel.Music && !isNowPlaying
 
     LaunchedEffect(session.key) {
         val discover = context.graph.discover

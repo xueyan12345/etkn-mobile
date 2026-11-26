@@ -99,6 +99,12 @@ import xyz.etkn.mobile.ui.nav.MusicListRoute
 import xyz.etkn.mobile.ui.screens.library.LargeTitle
 import xyz.etkn.mobile.ui.theme.Etkn
 import xyz.etkn.mobile.ui.theme.Corner
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material.icons.rounded.Sort
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Search
 
 @Composable
 fun MusicHomeScreen() {
@@ -106,11 +112,18 @@ fun MusicHomeScreen() {
     val vm = graphViewModel { MusicLibrariesViewModel(it) }
     val libraries by vm.libraries.collectAsStateWithLifecycle()
     val selected by graph.music.libraryId.collectAsStateWithLifecycle()
+    val nav = LocalNav.current
     var tab by rememberSaveable { mutableStateOf(MusicTab.Recommended) }
     RequestNotificationsOnce()
 
+    /**
+     * 用户口径（2026-11-27，#33）**去掉「音乐」大标题，整体上移，右侧加音乐专用搜索**。
+     *
+     * 用户原话：「音乐界面把最上方的音乐俩字去掉，不要留空，整体上移」
+     *          「再右边加个搜索功能。这个功能专门用来搜索音乐的，不要搜索其他库，
+     *            就搜索音乐。搜专辑/歌手/歌名都可以」
+     */
     Column(Modifier.fillMaxSize()) {
-        LargeTitle("音乐")
         when (val s = libraries) {
             Load.Loading -> LoadingState()
             is Load.Failed -> ErrorState(s.message, vm::load)
@@ -126,12 +139,28 @@ fun MusicHomeScreen() {
                         }
                     }
                 }
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = Etkn.space.screen, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(PillGap),
+                /**
+                 * 分类胶囊 + 最右侧音乐搜索按钮（#33）。
+                 *
+                 * 搜索按钮固定在行尾不随胶囊滚动，位置稳定可见。
+                 * 点击进入 `MusicSearchRoute(parentId)` —— 只搜当前音乐库，
+                 * 不会像全局搜索那样把影视库也扫进来。
+                 */
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    items(MusicTab.entries.toList()) { t ->
-                        PillToggle(checked = t == tab, onClick = { tab = t }) { Text(t.label) }
+                    LazyRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(PillGap),
+                    ) {
+                        items(MusicTab.entries.toList()) { t ->
+                            PillToggle(checked = t == tab, onClick = { tab = t }) { Text(t.label) }
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = { selected?.let { nav.to(MusicSearchRoute(it)) } }) {
+                        Icon(Icons.Rounded.Search, "搜索音乐")
                     }
                 }
                 val parent = selected ?: return@Column
@@ -168,16 +197,10 @@ private fun Recommended(parentId: String) {
         Load.Loading -> LoadingState()
         is Load.Failed -> ErrorState(s.message, vm::load)
         is Load.Ready -> LazyColumn(contentPadding = PaddingValues(bottom = LocalBottomInset.current)) {
-            if (s.value.latest.isNotEmpty()) {
-                item(key = "latest") {
-                    Column {
-                        SectionHeader("最新专辑")
-                        LazyRow(contentPadding = PaddingValues(horizontal = Etkn.space.screen), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            items(s.value.latest, key = { it.key ?: it.id }) { album -> SquareCard(album, onClick = { nav.open(album) }) }
-                        }
-                    }
-                }
-            }
+            /**
+             * 用户口径（2026-11-27，#33）**删掉「最新专辑」模块**（用户圈掉的那块）。
+             * 推荐页只保留「最近听的」和「最近常听」两个歌曲列表。
+             */
             trackSection("recent", "最近听的", s.value.recent) { graph.music.play(s.value.recent, s.value.recent.indexOf(it), "recent") }
             trackSection("frequent", "最近常听", s.value.frequent) { graph.music.play(s.value.frequent, s.value.frequent.indexOf(it), "frequent") }
         }
@@ -282,18 +305,57 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
                 item(span = { GridItemSpan(maxLineSpan) }, key = "bio") { ArtistBio(bio) }
             }
             val hasTracks = paged.items.any { it.isAudio && !it.isMusicGroup }
+            /**
+             * 用户口径（2026-11-27，#34）**列表顶部：播放全部 + 排序菜单**。
+             *
+             * 用户原话：
+             *  「首先就是播放全部按钮，然后右边有个排序菜单，可以点开之后按照选择的方式排序，
+             *    点这个播放全部就会把这些歌曲全部加入播放列表，
+             *    并且顺序就按照排序的顺序添加到播放列表」
+             *
+             * 注意「播放全部」不再是原来的 `vm.play(null)`（那只播已加载的 60 条），
+             * 改成 `vm.playAll()` —— 会先把剩余分页拉完（601 首都进队列），再按当前排序播。
+             */
             if (header != null && hasTracks) {
                 item(span = { GridItemSpan(maxLineSpan) }, key = "play-all") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(vertical = 4.dp)) {
-                        Button(onClick = { vm.play(null) }, modifier = Modifier.height(ButtonDefaults.MediumContainerHeight)) {
+                    var menu by remember { mutableStateOf(false) }
+                    var count by remember { mutableStateOf<Int?>(null) }
+                    val sort by vm.sort.collectAsStateWithLifecycle()
+                    Row(
+                        modifier = Modifier.padding(vertical = 4.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { vm.playAll { count = it } },
+                            modifier = Modifier.height(ButtonDefaults.MediumContainerHeight),
+                        ) {
                             Icon(Icons.Rounded.PlayArrow, null)
                             Spacer(Modifier.width(6.dp))
-                            Text("播放全部")
+                            Text(count?.let { "播放全部 $it 首" } ?: "播放全部")
                         }
+                        Spacer(Modifier.width(10.dp))
                         FilledTonalButton(onClick = vm::shuffle, modifier = Modifier.height(ButtonDefaults.MediumContainerHeight)) {
                             Icon(Icons.Rounded.Shuffle, null)
                             Spacer(Modifier.width(6.dp))
                             Text("随机")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        /** 排序菜单：点开选一种，列表立刻按它重排；「播放全部」也照这个顺序进队列。 */
+                        Box {
+                            FilledTonalIconButton(onClick = { menu = true }) {
+                                Icon(Icons.Rounded.Sort, "排序")
+                            }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                MusicSort.entries.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option.label) },
+                                        onClick = { vm.setSort(option); menu = false },
+                                        trailingIcon = {
+                                            if (option == sort) Icon(Icons.Rounded.Check, null)
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -304,7 +366,9 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
                 }
             }
             items(folders, key = { "f-" + (it.key ?: it.id) }) { folder -> SquareCard(folder, onClick = { nav.open(folder) }, width = null) }
-            paged.items.forEach { entry ->
+            /** 用户口径（#34）列表按当前排序显示（`sortedTracks` 是排序后的音频列表）。 */
+            val ordered = if (route.tab == "songs" || route.tracksOnly) vm.sortedTracks else paged.items
+            ordered.forEach { entry ->
                 if (entry.isAudio && !entry.isMusicGroup) {
                     item(span = { GridItemSpan(maxLineSpan) }, key = "t-" + entry.id, contentType = "track") {
                         TrackRow(entry, onClick = { vm.play(entry) }, horizontalPadding = 0.dp)

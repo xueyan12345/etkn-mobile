@@ -57,6 +57,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import kotlin.math.abs
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.LaunchedEffect
+import xyz.etkn.mobile.ui.screens.music.MusicSearchScreen
 
 /**
  * False while a tab sits in the pager without being the page shown: the neighbours are composed
@@ -98,6 +99,8 @@ internal fun AppNavHost(controller: NavHostController, tabs: List<TopLevel>, pag
             page<FavoritesRoute> { FavoritesScreen() }
             page<MusicListRoute> { MusicListScreen(it.toRoute()) }
             page<NowPlayingRoute> { NowPlayingScreen() }
+            /** 用户口径（2026-11-27，#33）音乐专用搜索页。 */
+            page<MusicSearchRoute> { MusicSearchScreen(it.toRoute()) }
             page<AccountsRoute> { AccountsScreen() }
             page<DownloadsRoute> { DownloadsScreen() }
             page<DiscoverRoute> { DiscoverScreen() }

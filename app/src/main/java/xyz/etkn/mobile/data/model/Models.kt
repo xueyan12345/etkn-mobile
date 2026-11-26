@@ -225,6 +225,8 @@ data class Item(
     val taglines: List<String>,
     val productionYear: Int?,
     val premiereDate: String?,
+    /** 用户口径（2026-11-27，#34）服务端 `DateCreated`，音乐按添加时间排序要用。 */
+    val dateCreated: String?,
     val endDate: String?,
     val officialRating: String?,
     val communityRating: Double?,
@@ -368,6 +370,7 @@ data class Item(
             taglines = o.strList("Taglines"),
             productionYear = o.intOrNull("ProductionYear"),
             premiereDate = o.strOrNull("PremiereDate"),
+            dateCreated = o.strOrNull("DateCreated"),
             endDate = o.strOrNull("EndDate"),
             officialRating = o.strOrNull("OfficialRating"),
             communityRating = o.double("CommunityRating"),

@@ -42,6 +42,16 @@ import kotlinx.serialization.Serializable
     val title: String,
     val tracksOnly: Boolean = false,
 )
+/**
+ * 用户口径（2026-11-27，#33）**音乐专用搜索**。
+ *
+ * 用户原话：「再右边加个搜索功能。这个功能专门用来搜索音乐的，
+ *            不要搜索其他库，就搜索音乐。搜专辑/歌手/歌名都可以」
+ *
+ * [parentId] 是当前选中的音乐库 —— 搜索范围限定在这个库内，
+ * 不会像全局搜索那样把影视库也扫进来。
+ */
+@Serializable data class MusicSearchRoute(val parentId: String)
 @Serializable data object NowPlayingRoute
 @Serializable data object AccountsRoute
 @Serializable data object DownloadsRoute
