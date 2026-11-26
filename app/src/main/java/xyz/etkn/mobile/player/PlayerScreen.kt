@@ -903,13 +903,16 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
          * Level（亮度/音量）保持居中不变 —— 它是进度条形状，放顶部不合适。
          */
         gesture?.let { feedback ->
-            val place = when (feedback) {
-                is GestureFeedback.Text,
-                is GestureFeedback.Speed,
-                is GestureFeedback.Seek,
-                -> Modifier.align(Alignment.TopCenter).padding(top = 56.dp)
-                else -> Modifier.align(Alignment.Center)
-            }
+            /**
+             * 用户口径（2026-11-27，#24）**亮度/音量也移到上方，和快进提示同一个位置**。
+             *
+             * 用户原话：「在播放的界面，左边上滑和右边上下滑动是调节屏幕亮暗和音量大小的，
+             *            现在这个位置是在正中间，你把它调节到跟刚才你要修改的那个
+             *            快进显示时间的位置那块」。
+             *
+             * 所以四类浮层现在全部 TopCenter + 56dp，位置统一。
+             */
+            val place = Modifier.align(Alignment.TopCenter).padding(top = 56.dp)
             GestureBadge(feedback, place)
         }
         // 用户口径（2026-11-22）：倍速徽标持续 5 秒后自动隐藏。

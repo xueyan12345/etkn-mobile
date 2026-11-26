@@ -135,7 +135,7 @@ private fun HomeContent(data: HomeData, vm: HomeViewModel) {
                      */
                     HeroCarousel(
                         items = data.hero,
-                        pageCount = 10,
+                        pageCount = 8,
                         height = heroHeight,
                         autoAdvance = heroMode == HeroMode.Auto,
                         scrollOffsetPx = { if (list.firstVisibleItemIndex == 0) list.firstVisibleItemScrollOffset else 0 },

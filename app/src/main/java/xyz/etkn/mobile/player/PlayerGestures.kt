@@ -1,4 +1,14 @@
-package xyz.etkn.mobile.player
+p
+/**
+ * 用户口径（2026-11-27，#23）**快进增量用两位补零的 mm:ss**。
+ *
+ * 参考图是 `[+00:31]`（分钟也补零），和左边 `13:58` 的大字区分开。
+ */
+private fun twoPartClock(ms: Long): String {
+    val totalSec = (abs(ms) / 1000).toInt()
+    return "%02d:%02d".format(totalSec / 60, totalSec % 60)
+}
+ackage xyz.etkn.mobile.player
 
 import android.app.Activity
 import android.content.Context
@@ -41,9 +51,28 @@ import kotlin.math.abs
 import xyz.etkn.mobile.ui.components.formatClock
 import xyz.etkn.mobile.ui.theme.Corner
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.fillMaxWidth
 
 internal sealed interface GestureFeedback {
-    data class Seek(val targetMs: Long, val deltaMs: Long) : GestureFeedback
+    /**
+     * 用户口径（2026-11-27，#23）**快进提示按参考图重做**。
+     *
+     * 参考格式：`13:58 / 40:04 [+00:31]`
+     *  · 左边 = 快进将要到达的时间
+     *  · 斜杠后 = 整个视频的总时长
+     *  · 方括号里 = 本次快进增减多少
+     * 下面配一条缩略进度条（深色底 + 已播 + 缓存 + 未播）。
+     *
+     * [totalMs] / [cachedMs] 是新加的两个字段，用来画那条缩略进度条。
+     */
+    data class Seek(
+        val targetMs: Long,
+        val deltaMs: Long,
+        val totalMs: Long = 0L,
+        val cachedMs: Long = 0L,
+    ) : GestureFeedback
     data class Level(val icon: ImageVector, val fraction: Float) : GestureFeedback
     data class Text(val text: String) : GestureFeedback
     /** 长按调速时的当前倍速；[hideAfterMs] 到点后自动消失，不挡画面。 */
@@ -106,9 +135,17 @@ internal fun GestureLayer(
                         if (delta == 0L) {
                             if (player.isPlaying) player.pause() else player.play()
                         } else {
-                            val target = (player.currentPosition + delta).coerceAtLeast(0)
+                            val duration = player.duration.takeIf { it > 0 } ?: 0L
+                            val target = (player.currentPosition + delta).coerceIn(0, if (duration > 0) duration else Long.MAX_VALUE)
                             player.seekTo(target)
-                            onFeedback(GestureFeedback.Seek(target, delta))
+                            onFeedback(
+                                GestureFeedback.Seek(
+                                    targetMs = target,
+                                    deltaMs = delta,
+                                    totalMs = duration,
+                                    cachedMs = session.ui.value.cachedPosition,
+                                ),
+                            )
                         }
                     },
                 )
@@ -204,7 +241,14 @@ internal fun GestureLayer(
                                 val span = minOf(duration, 10 * 60_000L)
                                 val delta = (accumulated.x / size.width * span).toLong()
                                 seekTarget = (startPosition + delta).coerceIn(0, duration)
-                                onFeedback(GestureFeedback.Seek(seekTarget, seekTarget - startPosition))
+                                onFeedback(
+                                    GestureFeedback.Seek(
+                                        targetMs = seekTarget,
+                                        deltaMs = seekTarget - startPosition,
+                                        totalMs = duration,
+                                        cachedMs = session.ui.value.cachedPosition,
+                                    ),
+                                )
                             }
                             2 -> {
                                 level = (level - drag.y / (size.height * 0.8f)).coerceIn(0.01f, 1f)
@@ -250,8 +294,20 @@ internal fun GestureBadge(feedback: GestureFeedback, modifier: Modifier) {
         )
         return
     }
+    /**
+     * 用户口径（2026-11-27，#23 #24）**浮层底色统一成半透明深灰**。
+     *
+     * 用户原话：「那个黑框有点太黑了，把那个黑框的颜色透明度调整到
+     *            跟刚才要调整的那个快进提示那个黑底一样」。
+     * 参考图里的底是**能透出画面的深灰**，不是纯黑实心。
+     * 0.6 → 0.42，再叠一层很淡的白描边把边缘勾出来。
+     */
     Box(
-        modifier.clip(Corner.card).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 20.dp, vertical = 14.dp),
+        modifier
+            .clip(Corner.card)
+            .background(Color.Black.copy(alpha = 0.42f))
+            .border(0.5.dp, Color.White.copy(alpha = 0.12f), Corner.card)
+            .padding(horizontal = 18.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
         when (feedback) {
@@ -266,27 +322,94 @@ internal fun GestureBadge(feedback: GestureFeedback, modifier: Modifier) {
              * 实现：Row + verticalAlignment = Alignment.Bottom（底部对齐）
              * 各自字号不变（headlineSmall / labelLarge）。
              */
-            is GestureFeedback.Seek -> Row(
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    formatClock(feedback.targetMs),
-                    color = Color.White,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                val sign = if (feedback.deltaMs >= 0) "+" else "-"
-                Text(
-                    "$sign${formatClock(abs(feedback.deltaMs))}",
-                    color = Color.White.copy(alpha = 0.75f),
-                    style = MaterialTheme.typography.labelLarge,
-                )
+            /**
+             * 用户口径（2026-11-27，#23）**快进提示完全照参考图**。
+             *
+             * 参考图文字：`13:58 / 40:04 [+00:31]`
+             *  · 左边大字 = 快进将要到达的时间
+             *  · ` / ` 后面 = 整个视频的总时长
+             *  · 方括号内 = 本次快进增减（两位补零）
+             * 下面一条缩略进度条：已播白 / 缓存浅灰 / 未播更深，等于底部进度条的缩小版。
+             */
+            is GestureFeedback.Seek -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        formatClock(feedback.targetMs),
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "/ ${formatClock(feedback.totalMs)}",
+                        color = Color.White.copy(alpha = 0.68f),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    val sign = if (feedback.deltaMs >= 0) "+" else "-"
+                    Text(
+                        "[$sign${twoPartClock(abs(feedback.deltaMs))}]",
+                        color = Color.White.copy(alpha = 0.68f),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
+                if (feedback.totalMs > 0) {
+                    Spacer(Modifier.height(8.dp))
+                    /** 缩略进度条：宽 200dp、高 3dp，和底部那条比例一致。 */
+                    Box(
+                        Modifier.width(200.dp).height(3.dp)
+                            .clip(Corner.pill)
+                            .background(Color.White.copy(alpha = 0.22f)),
+                    ) {
+                        val total = feedback.totalMs.toFloat().coerceAtLeast(1f)
+                        /** 缓存段（更亮一点的灰）。 */
+                        Box(
+                            Modifier
+                                .fillMaxWidth((feedback.cachedMs / total).coerceIn(0f, 1f))
+                                .fillMaxHeight()
+                                .background(Color.White.copy(alpha = 0.34f)),
+                        )
+                        /** 已播放（含快进目标）段：纯白。 */
+                        Box(
+                            Modifier
+                                .fillMaxWidth((feedback.targetMs / total).coerceIn(0f, 1f))
+                                .fillMaxHeight()
+                                .background(Color.White),
+                        )
+                    }
+                }
             }
-            is GestureFeedback.Level -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(feedback.icon, null, tint = Color.White)
-                Spacer(Modifier.width(12.dp))
-                LinearProgressIndicator(progress = { feedback.fraction }, modifier = Modifier.width(140.dp).height(6.dp), drawStopIndicator = {})
+            /**
+             * 用户口径（2026-11-27，#24）**亮度/音量加百分比**。
+             *
+             * 用户原话：「它这个调节的亮暗和音量大小没有百分比，
+             *            你给我把百分比加上，就加在那个提示的区域后面就行，
+             *            然后要保证字体比例啥的差不太多就行，别太夸张，就是匀称一点」。
+             */
+            is GestureFeedback.Level -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(feedback.icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                Box(
+                    Modifier.width(140.dp).height(4.dp)
+                        .clip(Corner.pill)
+                        .background(Color.White.copy(alpha = 0.22f)),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(feedback.fraction.coerceIn(0f, 1f))
+                            .fillMaxHeight()
+                            .background(Color.White),
+                    )
+                }
+                Text(
+                    "${(feedback.fraction * 100).toInt()}%",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                )
             }
             is GestureFeedback.Text -> Unit
             is GestureFeedback.Speed -> Unit

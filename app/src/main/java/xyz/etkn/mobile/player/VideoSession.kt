@@ -1572,17 +1572,27 @@ class VideoSession(
          * 现在：duration 未知时，用「已播放时长」兜底 ——
          * 播到 20 分钟以上就认为「够久了，该铺下一集了」。
          */
-        val nearEnd = when {
-            effDurMs > 0 -> (effDurMs - positionMs) <= PRELOAD_LEAD_MS
-            // 时长未知：播够 20 分钟就当接近尾声（短剧也不至于太早）
-            else -> positionMs >= 20 * 60 * 1000L
-        }
-        val shouldPreload = settings.preloadNext && (PlaybackCache.currentCompleteFlag() || nearEnd)
+        /**
+         * 用户口径（2026-11-27，#25）**只按「当前集缓冲到底」触发，不再用 nearEnd 提前放行**。
+         *
+         * 需求原文：
+         *  「我要的是缓冲条要到头，也就是这一集从当前播放位置到最后，
+         *    没有再需要缓存的了……按照咱们设定的那个两个缓存规则来讲，
+         *    已经没有可以缓存的余地了，这个时候才触发下一集的预加载」
+         *
+         * 原来这里有 `|| nearEnd`（剩余不足 5 分钟就算），会导致：
+         * 缓冲条离片尾还差一大截，但时间上「快播完了」，于是提前开始铺下一集。
+         * 用户的感受就是「缓存条还没到头呢，它就把预加载亮起来了」。
+         *
+         * 现在只有一条路径：`currentComplete`（tickCache 按真实落盘位置算出来的
+         * 「从播放点往后到片尾全部在本地」）为真，才开始铺下一集。
+         */
+        val shouldPreload = settings.preloadNext && PlaybackCache.currentCompleteFlag()
         if (settings.preloadNext && !shouldPreload) {
             android.util.Log.i(
                 TAG,
                 "preload wait: pos=${positionMs / 1000}s dur=${effDurMs / 1000}s " +
-                    "nearEnd=$nearEnd complete=${PlaybackCache.currentCompleteFlag()}",
+                    "complete=${PlaybackCache.currentCompleteFlag()}（缓冲未到片尾，不铺下一集）",
             )
         }
 

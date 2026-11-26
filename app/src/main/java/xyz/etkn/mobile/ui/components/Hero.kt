@@ -93,22 +93,21 @@ fun HeroCarousel(
 ) {
     if (items.isEmpty() && pageCount <= 0) return
     /**
-     * 用户口径（2026-11-27，#12）**不许出现空白页**。
+     * 用户口径（2026-11-27，#26）**轮播逻辑回到 v1.9.6，只把数量 10 改成 8**。
      *
-     * 用户实测：「轮播图最后一个是空白，没有影片」。
+     * 历史：
+     *  · v1.9.6 —— 页数写死 `pageCount`（10），数据不足时最后一页是空白（用户报的问题）
+     *  · v1.10.0 —— 改成「按实际条数 + 先占位后填充」，结果变成「先几个、然后跳出来好多」
+     *  · 现在 —— **回到 v1.9.6 的写法，只把 10 改成 8**
      *
-     * 上一版把页数写死 10，数据只有 9 个时最后一页就是纯色块，滑过去什么都没有。
+     * 用户原话：「就是把轮播图的逻辑改成 1.9.6 那版的，1.9.6 那版的第 10 个不是空白吗，
+     *            你直接在 1.9.6 那版的基础上，把轮播图 10 个改成 8 个，
+     *            舍掉现在最新版本 1.10.0 的轮播图逻辑」
      *
-     * 现在的规则：**页数 = 实际条数**（最多 10）。
-     *  · 有 9 条 → 9 个圆点，全部有内容，没有空白页
-     *  · 补齐到 10 条 → 变成 10 个圆点
-     *
-     * 为什么不坚持「先显示 10 个等填充」：
-     * 那必然出现空白页；而用户对"空白"的容忍度远低于"圆点数量变化一次"。
-     * 真正避免跳变靠的是 HomeViewModel 那边的「只往后追加、不动前面」，
-     * 用户看到的是圆点从 9 变 10（尾部多一个），而不是前面的内容被替换。
+     * 空白页的问题靠 HomeViewModel 保证「一定凑满 8 个才发布」来解决，
+     * 而不是靠这里动态缩页数 —— 那会带来「数量跳变」的新问题。
      */
-    val totalPages = items.size.coerceAtMost(pageCount).coerceAtLeast(0)
+    val totalPages = maxOf(pageCount, items.size)
     val pager = rememberPagerState { totalPages }
     val dragged by pager.interactionSource.collectIsDraggedAsState()
     LaunchedEffect(totalPages, dragged, autoAdvance) {

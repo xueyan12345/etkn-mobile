@@ -54,6 +54,15 @@ object PlaybackCache {
     private const val UA = "ETKN-Mobile"
 
     /**
+     * 用户口径（2026-11-27，#25）**「下一集真的能秒播」的最小字节门槛**。
+     *
+     * 40MB 大致等于 1080p 约 40 秒、4K 约 12 秒的内容 ——
+     * 足够让点「下一集」时立刻出画面，而不是转圈。
+     * 比这个少就不点亮气泡（用户明确要「确定有本地缓存才亮」）。
+     */
+    private const val PRELOAD_MIN_BYTES = 40L * 1024 * 1024
+
+    /**
      * 用户口径（2026-11-24）缓存下载专用 OkHttp client。
      *
      * 必须和播放器用同一套连接池/UA —— 裸 DefaultHttpDataSource 不带任何
@@ -106,7 +115,24 @@ object PlaybackCache {
          * 现在：只看 nextComplete（下一集是否真的铺到能秒播），
          * 因为「下一集能不能秒播」和「当前集缓冲完没完」是两件独立的事。
          */
-        val ready = nextComplete
+        /**
+         * 用户口径（2026-11-27，#25）**气泡必须「当前集缓冲到头 + 下一集真的铺好了」才亮**。
+         *
+         * 用户实测（截图）：「你看现在明显是缓存条还没到头呢，它就把预加载亮起来了，
+         * 我不知道这个预加载是真的预加载了，还是没预加载，只不过就是把它亮起来了」。
+         *
+         * 需求原文：
+         *  「我要的是缓冲条要到头，也就是这一集从当前播放位置到最后，
+         *    没有再需要缓存的了，因为从当前播放的位置到最后，缓存的已经全存到本地了。
+         *    就是按照咱们设定的那个两个缓存规则来讲，已经没有可以缓存的余地了，
+         *    这个时候才触发下一集的预加载，当下一集的预加载已经确定有本地缓存了，
+         *    相当于我点下一集马上就能播放，这时候才把下一集上面的那个预加载小气泡亮起来」
+         *
+         * 之前这里被改成只看 `nextComplete`（当时的理由是「Exo 缓冲条到不了片尾」），
+         * 结果就是现在的现象：缓冲条还差一大截，气泡已经亮了。
+         * 现在两个条件都要满足。
+         */
+        val ready = currentComplete && nextComplete
         /**
          * 用户口径（2026-11-24）**修「缓冲满了气泡还是不亮」**。
          *
@@ -1024,9 +1050,34 @@ object PlaybackCache {
         if (writing.containsKey(key)) return
         writing[key] = workScope.launch {
             try {
-                pullWindow(mediaClient, context, settings, episodeId, url, 0L, 0L, probeLength(mediaClient, url))
+                val length = probeLength(mediaClient, url)
+                pullWindow(mediaClient, context, settings, episodeId, url, 0L, 0L, length)
                 nextEpisodeId = episodeId
-                nextComplete = true
+                /**
+                 * 用户口径（2026-11-27，#25）**不许无条件点亮气泡**。
+                 *
+                 * 原来是 pullWindow 一返回就 `nextComplete = true` ——
+                 * 不管实际下了多少字节，气泡都亮，用户点下一集还是卡。
+                 *
+                 * 现在按真实落盘量判定：至少要有「片头结束 + 1 分钟」或 40MB 的量，
+                 * 否则说明没真铺好，不点亮。
+                 */
+                val cached = xyz.etkn.mobile.player.cache.VideoCache.cachedBytesFrom(episodeId, 0L, length)
+                val enough = cached >= PRELOAD_MIN_BYTES
+                if (enough) {
+                    nextComplete = true
+                    android.util.Log.i(
+                        "ETKN-Cache",
+                        "preload ready item=$episodeId cached=${cached / 1048576}MB " +
+                            "need=${PRELOAD_MIN_BYTES / 1048576}MB",
+                    )
+                } else {
+                    android.util.Log.i(
+                        "ETKN-Cache",
+                        "preload NOT ready item=$episodeId cached=${cached / 1048576}MB " +
+                            "need=${PRELOAD_MIN_BYTES / 1048576}MB（不点亮气泡）",
+                    )
+                }
                 trim(context, settings)
             } finally {
                 writing.remove(key)

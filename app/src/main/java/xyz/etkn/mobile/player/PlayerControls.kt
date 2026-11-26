@@ -88,6 +88,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 
 /**
  * 播放器控制层。
@@ -458,8 +463,25 @@ internal fun Controls(
                 // 显示一个白色小圆 + 黑色闪电。预加载没开 / 没跑完 / 没有下一集 → 完全不显示。
                 NextEpisodeAction(onNext, warmed = ui.nextPreloaded)
                 Spacer(Modifier.weight(1f))
-                DanmakuAction(0, if (ui.danmakuOn) "关闭弹幕" else "开启弹幕", ui.danmakuOn, onToggleDanmaku)
-                DanmakuAction(1, "弹幕设置", ui.danmakuOn) { onSheet(Sheet.Danmaku) }
+                /**
+                 * 用户口径（2026-11-27，#22）**弹幕开关和设置合并成一个按钮**。
+                 *
+                 * 需求原文：
+                 *  「这个画圆圈的按钮，点一下是弹幕的设置，左边的那个按钮是点一下打开弹幕和关闭弹幕，
+                 *    这两个我想给它融合在一块，把现在画圈的这个弹幕设置按钮给它去掉，
+                 *    然后把左边的那个弹幕开关按钮移动到这块，然后点一下弹幕开关的按钮，就是正常开关，
+                 *    我想在这个基础上加一个长按弹幕开关的按钮，是这个弹幕的设置，
+                 *    相当于把这两个按钮合并成一个，功能还是那些，只不过操作方式变了」
+                 *
+                 * 所以：点一下 = 开关；长按 = 打开设置面板。
+                 */
+                DanmakuAction(
+                    kind = 0,
+                    label = if (ui.danmakuOn) "关闭弹幕" else "开启弹幕",
+                    active = ui.danmakuOn,
+                    onClick = onToggleDanmaku,
+                    onLongClick = { onSheet(Sheet.Danmaku) },
+                )
                 PlayerAction(Icons.Rounded.Audiotrack, "音轨") { onSheet(Sheet.Audio) }
                 PlayerAction(Icons.Rounded.ClosedCaption, "字幕") { onSheet(Sheet.Subtitle) }
                 if (ui.item?.isEpisode == true) PlayerAction(Icons.AutoMirrored.Rounded.PlaylistPlay, "选集") { onSheet(Sheet.Episodes) }
@@ -804,8 +826,30 @@ private fun PlayerAction(icon: ImageVector, label: String, onClick: () -> Unit) 
  * [kind] = 0 弹幕开关（方框 + 内部字块）；1 弹幕设置（方框 + 内部滑块线）。
  */
 @Composable
-private fun DanmakuAction(kind: Int, label: String, active: Boolean, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(60.dp)) {
+private fun DanmakuAction(
+    kind: Int,
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    /**
+     * 用户口径（2026-11-27，#22）弹幕设置并入开关：长按打开设置面板。
+     * null = 没有长按行为（目前只有弹幕开关会传）。
+     */
+    onLongClick: (() -> Unit)? = null,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        Modifier
+            .size(60.dp)
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
         // 用户口径（2026-11-23）：播放界面元素放大 1.5 倍（24dp → 36dp，线宽同步）
         Canvas(Modifier.size(30.dp)) {
             val tint = if (active) Color.White else Color.White.copy(alpha = 0.55f)
@@ -897,22 +941,35 @@ private fun SeekThumbnail(previews: SeekPreviews, fraction: Float, duration: Lon
  * 只由 warmed 决定显不显示；warmed 来自 PlaybackCache.isWarmed(下一集 id)。
  */
 @Composable
+/**
+ * 用户口径（2026-11-27，#25）**预加载气泡改小、去掉白圈、往按钮贴近**。
+ *
+ * 需求原文：
+ *  「稍微改一改那个预加载的小气泡，有点太大了，样式也不好看，把那个圈去掉，
+ *    就留那个闪电就行，然后也有点太往上了，给它离下一集按钮近一点」
+ *
+ * 改动：
+ *  · 去掉白色实心圆底 —— 只留一个闪电图标，靠阴影保证在浅色画面上也看得清
+ *  · 尺寸 17.5dp → 12dp
+ *  · 位置从 TopEnd 改成 BottomEnd 的偏移量收小，让它贴着按钮右上角
+ */
 private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
     Box(contentAlignment = Alignment.TopEnd) {
         PlayerAction(Icons.Rounded.SkipNext, "下一集", onClick)
         if (warmed) {
-            Box(
-                Modifier.size(17.5.dp)
-                    .background(Color.White, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Rounded.Bolt,
-                    contentDescription = "下一集已预加载",
-                    tint = Color.Black,
-                    modifier = Modifier.size(11.dp),
-                )
-            }
+            Icon(
+                Icons.Rounded.Bolt,
+                contentDescription = "下一集已预加载",
+                tint = Color.White,
+                /**
+                 * 只往右下压一点点，贴着按钮右上角 —— 原来 17.5dp 的圆 + 默认 TopEnd
+                 * 会在按钮上方留出一截空白，用户觉得「太往上了」。
+                 */
+                modifier = Modifier
+                    .offset(x = 2.dp, y = 2.dp)
+                    .size(12.dp)
+                    .shadow(2.dp, CircleShape),
+            )
         }
     }
 }

@@ -1477,9 +1477,21 @@ private fun MediaTechRows(
         Divider(color = onPanel.copy(alpha = 0.10f))
 
         // ② 音频
+        /**
+         * 用户口径（2026-11-27，#20）**这一行显示的文字也要跟着选中走**。
+         *
+         * 用户实测：「选完之后，三行信息本来的那个显示他不是按照选中的那个走的，
+         *            那个还是依旧原来的那个显示，虽然对号选中的是别的，
+         *            但是显示的不是对号上面的那个」。
+         *
+         * 根因：下面选项列表的勾选读的是 `selectedAudioIndex`（用户选择），
+         * 而这里显示的文字读的是 `currentAudio`（服务端默认）—— 两边数据源不一致。
+         * 现在统一：优先用户选的，没选过才用服务端默认。
+         */
+        val shownAudio = audios.firstOrNull { it.index == selectedAudioIndex } ?: currentAudio
         MediaTechRow(
             icon = Icons.Rounded.VolumeUp,
-            main = currentAudio?.cleanTitle() ?: "无音轨",
+            main = shownAudio?.cleanTitle() ?: "无音轨",
             sub = null,
             onPanel = onPanel,
             muted = muted,
@@ -1501,11 +1513,17 @@ private fun MediaTechRows(
         Divider(color = onPanel.copy(alpha = 0.10f))
 
         // ③ 字幕
+        /** 同 #20：字幕行显示也要跟着用户选择走（-1 = 明确关闭）。 */
+        val shownSub = when {
+            selectedSubtitleIndex == -1 -> null
+            selectedSubtitleIndex != null -> subs.firstOrNull { it.index == selectedSubtitleIndex }
+            else -> currentSub
+        }
         MediaTechRow(
             icon = Icons.Rounded.Subtitles,
             main = when {
                 subs.isEmpty() -> "无字幕"
-                currentSub != null -> currentSub.cleanTitle()
+                shownSub != null -> shownSub.cleanTitle()
                 else -> "关闭"
             },
             sub = null,

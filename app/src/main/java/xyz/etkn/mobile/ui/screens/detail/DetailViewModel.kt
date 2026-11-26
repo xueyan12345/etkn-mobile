@@ -88,16 +88,70 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
     private var cachedSeriesId: String? = null
     private var cacheSeasons: List<Item> = emptyList()
     private var cacheSeriesItem: Item? = null
+    /** 同剧切换时「相似推荐 / 所属合集」也不变，一并缓存（#21）。 */
+    private var cacheSimilar: List<Item> = emptyList()
+    private var cacheCollections: List<Item> = emptyList()
 
+    /**
+     * 取选集列表里已经加载好的那一集（用于"秒切"）。
+     *
+     * 选集行加载的 EpisodePage 条目本身就带 Name / Overview / ImageTags /
+     * RunTimeTicks / UserData(进度) / IndexNumber —— 除了 MediaSources（技术信息三行）
+     * 和 Chapters（章节），详情页要显示的东西全都有。
+     *
+     * 所以点一下可以直接用这份数据立刻渲染，网络回来的只是补技术信息和章节。
+     */
+    private fun episodeFromShelf(id: String): Item? =
+        episodes.state.value.items.firstOrNull { it.id == id }
+
+    /**
+     * 用户口径（2026-11-27，#21）**点一下马上切过去**。
+     *
+     * 用户反馈：「点一下别的集，总要顿一下，然后才切过去，不是很丝滑……
+     *            HILLS 点一下切换集马上就过去选中的那个集，就很流畅」。
+     *
+     * 慢的根因（实测每个请求 250ms 左右）：
+     * ```
+     * api.item(单集)      282ms   ← 串行第一个，必须等
+     * api.item(剧集图)    254ms
+     * api.seasons         276ms
+     * ```
+     * 而 `load()` 要等这些全部 await 完才更新界面 —— 用户就感受到"顿一下"。
+     *
+     * 现在改成两步：
+     *  ① **立刻**用选集行里已有的那一集数据渲染（标题/简介/集图/时长/进度全都有）
+     *     → 用户点下去的那一帧，界面就已经换成目标集了
+     *  ② 网络回来后只是补「技术信息三行 + 章节」，并静默替换
+     *
+     * 选集行里没有这一集数据时（比如从搜索直接进来的），退回原来的整页加载。
+     */
     fun show(episodeId: String) {
         if (episodeId == id) return
+        val previous = (_state.value as? Load.Ready)?.value
         shown.value = episodeId
+        /**
+         * 乐观渲染：拿选集行里那份数据拼一个新的 DetailData。
+         * 季列表 / 剧集图 / 相似 / 合集 全部沿用上一份（切集时它们本来就不变），
+         * 只把 item 换成目标集。
+         */
+        val shelfItem = episodeFromShelf(episodeId)
+        if (previous != null && shelfItem != null) {
+            _state.value = Load.Ready(
+                previous.copy(
+                    item = shelfItem,
+                    target = shelfItem,
+                    /** 集变了，技术信息和章节要等网络回来才有，先清掉避免显示上一集的。 */
+                    selectedSource = 0,
+                ),
+            )
+        }
         load()
     }
 
     fun load() {
         if (_state.value !is Load.Ready) _state.value = Load.Loading
         val requested = id
+        val loadStart = System.currentTimeMillis()
         viewModelScope.launch {
             try {
                 val data = coroutineScope {
@@ -157,11 +211,39 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                         if (sameSeries && cachedSeasons.isNotEmpty()) null
                         else async { runCatching { api.seasons(sid) }.getOrDefault(emptyList()) }
                     }
-                    val target = seriesId?.let { sid ->
-                        async { runCatching { api.playbackTarget(sid, if (item.isSeason) item.id else null) }.getOrNull() }
-                    }
-                    val similar = if (item.isMovie || item.isSeries) async { runCatching { api.similar(item.id) }.getOrDefault(emptyList()) } else null
-                    val collections = if (item.isMovie) async { runCatching { api.itemCollections(item.id) }.getOrDefault(emptyList()) } else null
+                    /**
+                     * 用户口径（2026-11-27，#21）**单集页不要请求 playbackTarget**。
+                     *
+                     * 实测这个接口 234ms，而它返回的是「这部剧该从哪一集开始播」——
+                     * 只有**剧集层/季层**需要（用来显示"播放 第1季第1集"/"继续播放 26:26"）。
+                     *
+                     * 单集页的 target 就是这一集自己，压根不需要它。
+                     * 但原来无条件请求并 await，等于每次切集白等 234ms。
+                     */
+                    val target = if (seriesId != null && (item.isSeries || item.isSeason)) {
+                        async { runCatching { api.playbackTarget(seriesId, if (item.isSeason) item.id else null) }.getOrNull() }
+                    } else null
+                    /**
+                     * 用户口径（2026-11-27，#21）**次要数据不阻塞首屏**。
+                     *
+                     * 用户诉求：「点一下马上就切过去，按理来说，这点信息不至于卡顿呀」。
+                     *
+                     * 下面这些都跟「当前是哪一集」无关，却原来都在 coroutineScope 里 await：
+                     *  · similar（相似推荐）—— 只有电影/剧集层才有，且整部剧共用
+                     *  · collections（所属合集）—— 只有电影才有
+                     *  · detailed（技术信息三行）—— 单集页需要，但可以后到
+                     *
+                     * 现在：`item`（标题/简介/集图/时长/进度）先回来就能出首屏，
+                     * 技术信息与推荐列表随后补上 —— 用户点下去那一刻界面已经换好了。
+                     */
+                    val similar = if (item.isMovie || item.isSeries) {
+                        if (sameShow && cacheSimilar.isNotEmpty()) null
+                        else async { runCatching { api.similar(item.id) }.getOrDefault(emptyList()) }
+                    } else null
+                    val collections = if (item.isMovie) {
+                        if (sameShow && cacheCollections.isNotEmpty()) null
+                        else async { runCatching { api.itemCollections(item.id) }.getOrDefault(emptyList()) }
+                    } else null
                     val full = detailed?.await()
                     DetailData(
                         item = if (full != null) base.copy(mediaSources = full.mediaSources, chapters = full.chapters.ifEmpty { base.chapters }) else base,
@@ -169,8 +251,12 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                             seasons.await().also { cacheSeasons = it; cachedSeriesId = seriesId }
                         } else cachedSeasons,
                         target = target?.await(),
-                        similar = similar?.await().orEmpty(),
-                        collections = collections?.await().orEmpty(),
+                        similar = if (similar != null) {
+                            similar.await().also { cacheSimilar = it }
+                        } else cacheSimilar,
+                        collections = if (collections != null) {
+                            collections.await().also { cacheCollections = it }
+                        } else cacheCollections,
                         /** 剧集那条数据：单集页头部大图/艺术字用它，切集时保持不变。 */
                         seriesItem = if (seriesItem != null) {
                             seriesItem.await().also { cacheSeriesItem = it }
@@ -179,6 +265,10 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                 }
                 // A newer episode was picked while this one loaded.
                 if (requested != id) return@launch
+                android.util.Log.i(
+                    "ETKN-Detail",
+                    "load $requested 耗时 ${System.currentTimeMillis() - loadStart}ms",
+                )
                 /**
                  * 用户口径（2026-11-27）**剧集层不再单独停留，直接落到具体某一集**。
                  *
@@ -193,6 +283,21 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                  * 只跳一次（jumpOnce），跳过去之后用户自己点其他集不再被拽回来。
                  * 电影/Video 走不到这里（seriesId 为 null）。
                  */
+                /**
+                 * 用户口径（2026-11-27，#21）**切集不要重算相似推荐/合集**。
+                 *
+                 * `similar` / `collections` 跟"当前是哪一集"毫无关系（整部剧共用一个列表），
+                 * 但原来它们也在 coroutineScope 里 await，直接拖慢每次切集。
+                 *
+                 * 现在：上一份数据里已经有就直接沿用，只有换剧/首次进入才真的去请求。
+                 * 注意判断依据是「同一部剧」而不是「同一集」。
+                 */
+                val previous = (_state.value as? Load.Ready)?.value
+                val sameShow = previous != null && seriesId != null &&
+                    (previous.item.seriesId == base.seriesId ||
+                        previous.item.id == seriesId ||
+                        previous.item.seriesId == seriesId)
+
                 val jumpTo = if (data.item.isSeries && !jumpOnce && data.target != null) data.target else null
                 if (jumpTo != null && jumpTo.id != data.item.id) {
                     jumpOnce = true
