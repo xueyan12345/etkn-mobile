@@ -504,7 +504,8 @@ fun NowPlayingScreen() {
                     IconButton(onClick = music::cyclePlayMode) {
                         Icon(
                             when (mode) {
-                                0 -> Icons.AutoMirrored.Rounded.PlaylistPlay
+                                /** 用户口径（#43）顺序播放换成"三个横向箭头"自绘图标。 */
+                                0 -> SequentialPlayIcon
                                 1 -> Icons.Rounded.Repeat
                                 2 -> Icons.Rounded.RepeatOne
                                 else -> Icons.Rounded.Shuffle
