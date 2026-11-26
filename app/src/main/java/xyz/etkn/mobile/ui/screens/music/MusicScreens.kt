@@ -105,6 +105,7 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Search
+import xyz.etkn.mobile.ui.nav.MusicSearchRoute
 
 @Composable
 fun MusicHomeScreen() {

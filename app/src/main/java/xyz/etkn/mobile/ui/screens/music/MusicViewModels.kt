@@ -16,6 +16,7 @@ import xyz.etkn.mobile.ui.common.userMessage
 import xyz.etkn.mobile.ui.screens.library.PagedViewModel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 
 /**
  * 用户口径（2026-11-27，#33）**首页分类精简并重排**。
@@ -178,10 +179,15 @@ class MusicListViewModel(
         // 剩余页分批并发，每批 4 个请求
         val starts = (start until total step pageSize).toList()
         for (batch in starts.chunked(4)) {
-            val parts = coroutineScope {
-                batch.map { s -> async { runCatching { fetch(s, pageSize).items }.getOrDefault(emptyList()) } }.awaitAll()
+            val parts: List<List<Item>> = coroutineScope {
+                val deferreds = batch.map { pageStart ->
+                    async<List<Item>> {
+                        runCatching { fetch(pageStart, pageSize).items }.getOrDefault(emptyList())
+                    }
+                }
+                deferreds.awaitAll()
             }
-            parts.forEach { loaded += it }
+            parts.forEach { page -> loaded += page }
             start += batch.size * pageSize
         }
         return loaded.filter { it.isAudio && !it.isMusicGroup }.distinctBy { it.id }

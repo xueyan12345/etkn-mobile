@@ -128,14 +128,14 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     private fun saveMemory() {
         val s = _state.value
         val item = s.current ?: return
-        val pos = _player?.currentPosition ?: s.positionMs
-        val dur = _player?.duration?.takeIf { it > 0 } ?: s.durationMs
+        val pos = _player?.currentPosition ?: 0L
+        val dur = _player?.duration?.takeIf { it > 0 } ?: 0L
         prefs.edit()
             .putString("m_id", item.id)
             .putString("m_name", item.name)
             .putString("m_artist", item.artistLine)
             .putString("m_album", item.album)
-            .putString("m_tag", item.imageTags["Primary"])
+            .putString("m_tag", item.imageTags["Primary"] ?: "")
             .putLong("m_pos", pos)
             .putLong("m_dur", dur)
             .putString("m_src", s.sourceId)
@@ -145,7 +145,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             name = item.name,
             artist = item.artistLine,
             album = item.album,
-            primaryTag = item.imageTags["Primary"],
+            primaryTag = item.imageTags["Primary"]?.takeIf { it.isNotBlank() },
             positionMs = pos,
             durationMs = dur,
             sourceId = s.sourceId,

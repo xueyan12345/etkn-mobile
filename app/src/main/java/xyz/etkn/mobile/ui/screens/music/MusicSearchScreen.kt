@@ -48,10 +48,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.debounce
 import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.graph
-import xyz.etkn.mobile.ui.common.ErrorState
+import xyz.etkn.mobile.ui.components.ErrorState
 import xyz.etkn.mobile.ui.common.Load
-import xyz.etkn.mobile.ui.common.LoadingState
-import xyz.etkn.mobile.ui.common.MessageState
+import xyz.etkn.mobile.ui.components.LoadingState
+import xyz.etkn.mobile.ui.components.MessageState
 import xyz.etkn.mobile.ui.common.graphViewModel
 import xyz.etkn.mobile.ui.components.GlassBackBar
 import xyz.etkn.mobile.ui.components.glassBarClearance
@@ -68,6 +68,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import dev.chrisbanes.haze.rememberHazeState
+import xyz.etkn.mobile.ui.components.SquareCard
+import xyz.etkn.mobile.ui.components.LoadingIndicator
+import androidx.compose.foundation.lazy.grid.items
 
 /**
  * 用户口径（2026-11-27，#33）**音乐专用搜索页**。
@@ -91,6 +95,8 @@ fun MusicSearchScreen(route: MusicSearchRoute) {
     var query by rememberSaveable { mutableStateOf("") }
     val keyboard = LocalSoftwareKeyboardController.current
     val grid = rememberLazyGridState()
+    /** 在外层取出：内层 `onClick` 是普通 lambda，不能直接调 LocalContext.current。 */
+    val music = LocalContext.current.graph.music
 
     // 输入停顿 320ms 再发请求，避免每敲一个字打一次服务端
     LaunchedEffect(Unit) {
@@ -154,8 +160,7 @@ fun MusicSearchScreen(route: MusicSearchRoute) {
                                             track,
                                             onClick = {
                                                 keyboard?.hide()
-                                                LocalContext.current.graph.music
-                                                    .play(result.tracks, result.tracks.indexOf(track), "search")
+                                                music.play(result.tracks, result.tracks.indexOf(track), "search")
                                             },
                                             horizontalPadding = 0.dp,
                                         )
