@@ -1,14 +1,4 @@
-p
-/**
- * 用户口径（2026-11-27，#23）**快进增量用两位补零的 mm:ss**。
- *
- * 参考图是 `[+00:31]`（分钟也补零），和左边 `13:58` 的大字区分开。
- */
-private fun twoPartClock(ms: Long): String {
-    val totalSec = (abs(ms) / 1000).toInt()
-    return "%02d:%02d".format(totalSec / 60, totalSec % 60)
-}
-ackage xyz.etkn.mobile.player
+package xyz.etkn.mobile.player
 
 import android.app.Activity
 import android.content.Context
@@ -55,7 +45,18 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.fillMaxWidth
 
-internal sealed interface GestureFeedback {
+internal /**
+ * 用户口径（2026-11-27，#23）**快进增量用两位补零的 mm:ss**。
+ *
+ * 参考图是 `[+00:31]`（分钟也补零），和左边 `13:58` 的大字区分开。
+ * 注意 `formatClock` 在 Cards.kt 里是"分:秒"不带补零的风格，这里要的是 `00:31`。
+ */
+private fun twoPartClock(ms: Long): String {
+    val totalSec = (kotlin.math.abs(ms) / 1000).toInt()
+    return "%02d:%02d".format(totalSec / 60, totalSec % 60)
+}
+
+sealed interface GestureFeedback {
     /**
      * 用户口径（2026-11-27，#23）**快进提示按参考图重做**。
      *
