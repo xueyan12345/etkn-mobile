@@ -1155,10 +1155,16 @@ private fun SeekerLyrics(
         /** 自动跟随：不拖动时，把当前行滚到中间。 */
         LaunchedEffect(activeIndex, dragging) {
             if (!dragging && activeIndex >= 0) {
+                /**
+                 * 滚到「当前行居中」的位置。
+                 * 用 `scrollToItem` + 偏移（`animateScrollTo` 在此 Compose 版本不可用）。
+                 */
                 val boxPx = with(density) { maxHeight.toPx() }
                 val target = (activeIndex * rowPx + paddingPx - (boxPx - rowPx) / 2)
                     .coerceAtLeast(0f).toInt()
-                list.animateScrollTo(target)
+                val itemIndex = (target / rowPx).toInt().coerceIn(0, lines.lastIndex)
+                val offset = (target - itemIndex * rowPx).toInt()
+                list.scrollToItem(itemIndex, offset)
             }
         }
 
