@@ -142,6 +142,12 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
     val duration = if (track != null) clockDur else (remembered?.durationMs ?: 0L)
     val shape = Corner.panel
     var queueOpen by remember { mutableStateOf(false) }
+    /**
+     * 提前取一次 ImageUrls：
+     * `images()` 是 @Composable，不能在 runCatching 之类的普通 lambda 里调，
+     * 放在 Composable 作用域里先拿到手，后面就能随便用。
+     */
+    val imageUrls = images()
 
     Box {
         Column(modifier.fillMaxWidth().glass(shape, elevation = 10.dp).clickable(onClick = onOpen)) {
@@ -170,7 +176,7 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                      * 而重启后 `state.current` 是 null（还没播），`track` 就是 null → 传 null → 占位图。
                      * 但 `remembered` 里存了 `itemId` / `primaryTag`，足够拼出封面地址。
                      */
-                    val coverUrl = track?.let { images().music(it, 96) }
+                    val coverUrl = track?.let { imageUrls.music(it, 96) }
                         ?: remembered?.let { memory ->
                             /**
                              * 用记忆里的 itemId + primaryTag 拼封面。
@@ -180,7 +186,7 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                              * 不自己手拼字符串，避免参数写错导致 404。
                              */
                             memory.primaryTag?.takeIf { it.isNotBlank() }?.let { tag ->
-                                runCatching { images().image(memory.itemId, "Primary", 96, tag) }.getOrNull()
+                                imageUrls.image(memory.itemId, "Primary", 96, tag)
                             }
                         }
                     Artwork(

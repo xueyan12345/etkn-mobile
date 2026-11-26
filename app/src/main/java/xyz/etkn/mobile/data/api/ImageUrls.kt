@@ -146,7 +146,13 @@ class ImageUrls(private val server: String, private val userId: String) {
 
     fun absolute(path: String): String = if (path.startsWith("http")) path else server + path
 
-    private fun image(id: String, type: String, widthPx: Int, tag: String): String =
+    /**
+     * 用户口径（2026-11-27，#38）改成 internal：迷你条在「记忆状态」下要自己拼封面 URL。
+     *
+     * 原来 private，导致只能走 `music(item)` —— 而记忆状态下没有 Item 对象。
+     * 改成 internal 后 MusicConnection / NowPlaying 都能用它拼同一套规则的地址。
+     */
+    internal fun image(id: String, type: String, widthPx: Int, tag: String): String =
         "$server/api/tv/Items/${enc(id)}/Images/$type?maxWidth=${bucket(widthPx)}&quality=90&tag=${enc(tag)}"
 
     companion object {

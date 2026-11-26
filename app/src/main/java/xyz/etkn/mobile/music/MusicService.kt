@@ -91,24 +91,20 @@ class MusicService : MediaSessionService() {
              * `COMMAND_SEEK_TO_NEXT_MEDIA_ITEM` / `COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM`；
              * 不声明的话，那里只会显示一个灰的点不动。
              */
-            val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
-                .addAllCommands(
-                    listOf(
-                        Player.COMMAND_PLAY_PAUSE,
-                        Player.COMMAND_PREPARE,
-                        Player.COMMAND_STOP,
-                        Player.COMMAND_SEEK_TO_NEXT,
-                        Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                        Player.COMMAND_SEEK_TO_PREVIOUS,
-                        Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                        Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
-                        Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
-                        Player.COMMAND_GET_TIMELINE,
-                        Player.COMMAND_GET_METADATA,
-                    ),
-                )
-                .removeAllCommands(Player.COMMAND_SET_MEDIA_ITEM)
-                .build()
+            val builder = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+            // 系统状态栏那个方形控件要用到的命令，逐个 add（Builder 只有 addCommand/add）
+            builder.add(Player.COMMAND_PLAY_PAUSE)
+            builder.add(Player.COMMAND_PREPARE)
+            builder.add(Player.COMMAND_STOP)
+            builder.add(Player.COMMAND_SEEK_TO_NEXT)
+            builder.add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+            builder.add(Player.COMMAND_SEEK_TO_PREVIOUS)
+            builder.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+            builder.add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+            builder.add(Player.COMMAND_GET_CURRENT_MEDIA_ITEM)
+            builder.add(Player.COMMAND_GET_TIMELINE)
+            builder.add(Player.COMMAND_GET_METADATA)
+            val playerCommands = builder.build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailablePlayerCommands(playerCommands)
                 .build()
