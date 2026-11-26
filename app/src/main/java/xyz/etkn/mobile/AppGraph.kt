@@ -120,6 +120,13 @@ class AppGraph(val app: Application) {
          */
         xyz.etkn.mobile.player.PlaybackCache.init(http.media)
         scope.launch(Dispatchers.IO) { responses.prune() }
+        /**
+         * 用户口径（2026-11-27，#22）**音乐列表缓存也照这套清理规则**。
+         * 和 `responses.prune()` 一样在启动时跑一次，14 天过期就删。
+         */
+        scope.launch(Dispatchers.IO) {
+            runCatching { xyz.etkn.mobile.music.MusicListCache.prune(app) }
+        }
         // Nothing of a signed-out account stays on disk.
         scope.launch {
             sessions.state.collect {

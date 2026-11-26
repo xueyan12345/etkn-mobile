@@ -112,10 +112,35 @@ object MusicListCache {
     }
 
     private fun keyOf(libraryId: String, tab: String) = "list_${libraryId}_$tab"
+    private fun timeKeyOf(libraryId: String, tab: String) = "time_${libraryId}_$tab"
+
+    /**
+     * 用户口径（2026-11-27，#22）**过期规则照视频/接口缓存那套**。
+     *
+     * 参考实现：`data/net/ResponseCache.kt:40`
+     * ```
+     * fun prune(maxAgeDays: Int = 14, maxBytes: Long = 16L * 1024 * 1024)
+     * ```
+     * 即「**14 天过期**，最多 16MB，App 启动时清理一次」。
+     *
+     * 音乐列表缓存沿用同一套：
+     *  · 超过 [MAX_AGE_MS]（14 天）→ 读取时当作没有，同时删掉
+     *  · 每次写入刷新时间戳
+     *  · [prune] 在 App 启动时调用，清理所有过期的库
+     *  · 用户点「清空缓存」时直接 [clear]
+     */
+    private const val MAX_AGE_MS = 14L * 86_400_000L   // 14 天，和 ResponseCache 一致
 
     fun read(context: Context, libraryId: String, tab: String): List<Item> = runCatching {
-        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(keyOf(libraryId, tab), null) ?: return emptyList()
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        /** 过期检查：超过 14 天就当没缓存。 */
+        val savedAt = prefs.getLong(timeKeyOf(libraryId, tab), 0L)
+        if (savedAt <= 0L || System.currentTimeMillis() - savedAt > MAX_AGE_MS) {
+            android.util.Log.i("ETKN-Music", "列表缓存已过期（${'$'}{(System.currentTimeMillis() - savedAt) / 86_400_000L} 天）")
+            prefs.edit().remove(keyOf(libraryId, tab)).remove(timeKeyOf(libraryId, tab)).apply()
+            return emptyList()
+        }
+        val raw = prefs.getString(keyOf(libraryId, tab), null) ?: return emptyList()
         raw.split(ROW).mapNotNull(::decode)
     }.getOrDefault(emptyList())
 
@@ -123,14 +148,41 @@ object MusicListCache {
         runCatching {
             val raw = items.joinToString(ROW.toString()) { encode(it) }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putString(keyOf(libraryId, tab), raw).apply()
+                .edit()
+                .putString(keyOf(libraryId, tab), raw)
+                /** 写入时刷新时间戳（用于 14 天过期判定）。 */
+                .putLong(timeKeyOf(libraryId, tab), System.currentTimeMillis())
+                .apply()
         }
     }
 
     fun clear(context: Context, libraryId: String, tab: String) {
         runCatching {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().remove(keyOf(libraryId, tab)).apply()
+                .edit().remove(keyOf(libraryId, tab)).remove(timeKeyOf(libraryId, tab)).apply()
+        }
+    }
+
+    /**
+     * 启动时清理过期条目（照 `ResponseCache.prune()` 的做法）。
+     *
+     * 只按时间清理；音乐列表本身不大（601 首约 100KB），不需要按容量淘汰。
+     */
+    fun prune(context: Context) {
+        runCatching {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val now = System.currentTimeMillis()
+            val stale = prefs.all.keys.filter { k ->
+                k.startsWith("time_") && (now - ((prefs.all[k] as? Long) ?: 0L)) > MAX_AGE_MS
+            }
+            if (stale.isEmpty()) return@runCatching
+            prefs.edit().apply {
+                stale.forEach { tk ->
+                    remove(tk)
+                    remove("list_" + tk.removePrefix("time_"))
+                }
+            }.apply()
+            android.util.Log.i("ETKN-Music", "列表缓存清理 ${stale.size} 个过期库")
         }
     }
 }
