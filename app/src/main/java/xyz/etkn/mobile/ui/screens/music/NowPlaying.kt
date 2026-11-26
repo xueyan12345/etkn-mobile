@@ -258,11 +258,17 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
             )
         }
         if (queueOpen) {
-            MusicQueueSheet(state.queue, state.index, onDismiss = { queueOpen = false }) { item ->
-                val i = state.queue.indexOfFirst { it.id == item.id }
-                if (i >= 0) music.skipTo(i)
-                queueOpen = false
-            }
+            MusicQueueSheet(
+                queue = state.queue,
+                index = state.index,
+                onDismiss = { queueOpen = false },
+                onPick = { item ->
+                    val i = state.queue.indexOfFirst { it.id == item.id }
+                    if (i >= 0) music.skipTo(i)
+                    queueOpen = false
+                },
+                onClear = { music.clearQueue(); queueOpen = false },
+            )
         }
     }
 }
