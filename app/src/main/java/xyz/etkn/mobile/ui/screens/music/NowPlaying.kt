@@ -468,7 +468,12 @@ fun NowPlayingScreen() {
                         Modifier.fillMaxSize().padding(horizontal = 24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Spacer(Modifier.weight(0.15f))
+                        /**
+                         * 用户口径（2026-11-27，#13）**封面往上提，紧贴标签下方**。
+                         * 原话：「这个图片太往下了，往上点啊，放在歌曲和歌词的下边就行」
+                         * 这里原来有一大块 `Spacer(weight 0.15f)` 把它顶下去了，去掉。
+                         */
+                        Spacer(Modifier.height(12.dp))
                         /**
                          * 用户口径（2026-11-27，#4②）**封面缩到现在的一半**。
                          * 原话：「中间的封面图缩小一点，封面图变成现在的一半那么大就行」
@@ -557,8 +562,13 @@ fun NowPlayingScreen() {
                  * 用户明确要求把原来的「随机播放」「顺序播放+单曲循环」两个按钮
                  * 合并成左边一个，点一下切一种状态。
                  */
+                /**
+                 * 用户口径（2026-11-27，#14）**底部播放控件再往上一点**。
+                 * 原话：「画圆圈的部分有点太往下了，稍微往上一点点」
+                 */
+                Spacer(Modifier.height(2.dp))
                 Row(
-                    Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    Modifier.fillMaxWidth().padding(bottom = 26.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceEvenly,
                 ) {

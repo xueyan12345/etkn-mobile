@@ -310,12 +310,21 @@ private fun applySort(list: List<Item>, sort: MusicSort): List<Item> = when (sor
      *  · 非中文项（英文/数字/符号）排在字母之后（`#` 放到最后，符合常见音乐 App 习惯）
      *  · 首字母索引也只从中文/英文本里取，不再出现 `#` 打头
      */
-    /** 中文在前、非中文在后，同组内用系统 Collator 按拼音比较。 */
+    /**
+     * 中文在前、非中文在后；同组内用系统 Collator 按拼音比较。
+     *
+     * 注意：`compareBy` 只接受 `(T) -> Comparable`，**不能传 Comparator**，
+     * 所以这里用 `sortedWith(比较器链)` 而不是 `compareBy(..., COLLATOR)`。
+     */
     MusicSort.FirstLetter -> list.sortedWith(
-        compareBy({ if (isCjk(it.name)) 0 else 1 }, { it.name }, COLLATOR),
+        Comparator<Item> { a, b -> if (isCjk(a.name)) 0 else 1 }
+            .thenBy(COLLATOR) { it.name }
+            .thenBy { it.name.lowercase() },
     )
     MusicSort.ArtistLetter -> list.sortedWith(
-        compareBy({ if (isCjk(it.artistLine)) 0 else 1 }, { it.artistLine }, COLLATOR, compareBy { it.name }),
+        Comparator<Item> { a, b -> if (isCjk(a.artistLine)) 0 else 1 }
+            .thenBy(COLLATOR) { it.artistLine }
+            .thenBy(COLLATOR) { it.name },
     )
     MusicSort.PlayCount -> list.sortedByDescending { it.userData.playCount }
 }
