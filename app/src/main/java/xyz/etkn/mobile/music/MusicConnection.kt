@@ -289,9 +289,20 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 注意：这里**只 prepare 不 play**，不会自己出声，用户点播放才播。
      */
     fun restoreForResumption() {
-        val memory = _remembered.value ?: return
+        android.util.Log.i(
+            "ETKN-Music",
+            "restore: remembered=${_remembered.value?.let { "id=${it.itemId} q=${it.queueIds.size} pos=${it.positionMs}" } ?: "NULL"}",
+        )
+        val memory = _remembered.value ?: run {
+            android.util.Log.w("ETKN-Music", "restore: 没有记忆，跳过")
+            return
+        }
         val p = player
-        if (p.mediaItemCount > 0) return   // 已经有内容，不用重装
+        android.util.Log.i("ETKN-Music", "restore: mediaItemCount=${p.mediaItemCount} q=${memory.queueIds.size}")
+        if (p.mediaItemCount > 0) {
+            android.util.Log.i("ETKN-Music", "restore: 已有内容，跳过")
+            return
+        }
         runCatching {
             /**
              * 用户口径（2026-11-27，#43）**恢复整个队列，不只恢复一首**。
@@ -333,6 +344,10 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 p.setMediaItems(list, startIndex, memory.positionMs)
             }
             p.prepare()
+            android.util.Log.i(
+                "ETKN-Music",
+                "restore done: count=${p.mediaItemCount} idx=${p.currentMediaItemIndex} dur=${p.duration}",
+            )
             /**
              * 用户口径（#2）**装完必须 publish 一次**。
              *
