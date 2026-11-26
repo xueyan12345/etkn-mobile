@@ -826,6 +826,42 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 finishReport(completed = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
                 // Gapless advance keeps STATE_READY, so start the next track's report here.
                 if (player.playbackState == Player.STATE_READY) startReport()
+
+                /**
+                 * 用户口径（2026-11-27，#46）**切歌后如果没在播，补一次 play**。
+                 *
+                 * 背景：上一首/下一首已交给 Media3 默认处理（避免跳两首，
+                 * 详见 MusicService.onPlayerCommandRequest 里的说明）。
+                 * 但 Media3 默认的 seek 只移动索引，某些情况（占位 URL / 未 prepare）
+                 * 不会真的开始播 —— 这里兜一次，保证「点了下一首就真的在放」。
+                 *
+                 * 只在 `reason == SEEK`（用户主动切歌）时补，
+                 * 避免把用户手动暂停的状态又播起来。
+                 */
+                /**
+                 * 用户口径（2026-11-27，#50）**歌词要在播放层加载，不能依赖 UI**。
+                 *
+                 * 问题（用户问「CarLife 车机上现在能正常显示歌词吗」）：
+                 * ```
+                 * publishLyrics() 只在 UI 的 SeekerLyrics 里调用
+                 * → 没打开播放页 = 没歌词 = 车机卡片只有歌名
+                 * ```
+                 * 所以把加载挪到这里：每次切歌就主动拉一次，喂给歌词缓存，
+                 * 之后 `refreshLyricMetadata()` 就会把它写进 MediaMetadata.subtitle，
+                 * 车机自然就有了。UI 打开时直接复用，不再重复请求。
+                 */
+                mediaItem?.mediaId?.let { id -> ensureLyrics(id) }
+
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK && !player.isPlaying) {
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "切歌后未播放 → 补 play（idx=${player.currentMediaItemIndex} state=${player.playbackState}）",
+                    )
+                    runCatching {
+                        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                        player.play()
+                    }
+                }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -1325,6 +1361,43 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 冷启动 / 刚切歌那一刻 `state.sourceId` 是 null，
      * 界面那边就需要一个「立刻帮我取一下」的入口。
      */
+    /** 已加载过歌词的曲目（避免重复请求）。 */
+    private val lyricsLoaded = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * 用户口径（#50）**切歌时主动把歌词拉下来**（不依赖播放页是否打开）。
+     *
+     * 拉完喂给 `publishLyrics()`，之后进度变化就会把当前行写进
+     * `MediaMetadata.subtitle` —— 车机 / 系统控制中心都能显示。
+     */
+    private fun ensureLyrics(itemId: String) {
+        if (lyricsLoaded[itemId] == true) return
+        lyricsLoaded[itemId] = true
+        graph.scope.launch {
+            runCatching {
+                val sid = ensureSourceId(itemId) ?: run {
+                    /** 拿不到 sourceId 就撤掉标记，下次切歌再试。 */
+                    lyricsLoaded.remove(itemId)
+                    return@launch
+                }
+                val text = graph.api.lyrics(itemId, sid)
+                if (text.isBlank()) {
+                    lyricsLoaded.remove(itemId)
+                    return@launch
+                }
+                val parsed = Lyrics.parse(text)
+                publishLyrics(itemId, parsed.lines.map { it.timeMs to it.text })
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "歌词已预载 item=$itemId 行数=${parsed.lines.size}",
+                )
+            }.onFailure {
+                lyricsLoaded.remove(itemId)
+                android.util.Log.w("ETKN-Music", "歌词预载失败 item=$itemId", it)
+            }
+        }
+    }
+
     suspend fun ensureSourceId(itemId: String): String? {
         resolved[itemId]?.sourceId?.let { return it }
         return runCatching {

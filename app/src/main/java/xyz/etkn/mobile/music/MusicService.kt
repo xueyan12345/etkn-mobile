@@ -550,35 +550,6 @@ class MusicService : MediaLibraryService() {
          * 关键：这些命令可能在「App 刚被拉起、token 还没恢复」时到达，
          * 所以统一走 `music.executeSystemCommand()`，它内部会等会话就绪。
          */
-        /**
-         * 用户口径（#46）**Media3 默认切歌后要确保真的播起来**。
-         *
-         * 上一首/下一首已交给 Media3 默认处理（避免跳两首），
-         * 但它默认的 `seekToNext` 在某些情况下（占位 URL / 未 prepare）
-         * 只会移动索引不会播放。这里在索引变化后补一次 `play()`，
-         * 保证「点了下一首就真的在放下一首」。
-         */
-        override fun onMediaItemTransition(
-            mediaItem: MediaItem?,
-            reason: Int,
-        ) {
-            val p = applicationContext.graph.music.player
-            /**
-             * 只在「用户主动切歌」且当前没在播时补 play，
-             * 避免把用户手动暂停的状态又播起来。
-             */
-            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK && !p.isPlaying) {
-                android.util.Log.i(
-                    "ETKN-Music",
-                    "onMediaItemTransition: 切歌后未播放，补一次 play（idx=${p.currentMediaItemIndex}）",
-                )
-                runCatching {
-                    if (p.playbackState == Player.STATE_IDLE) p.prepare()
-                    p.play()
-                }
-            }
-        }
-
         override fun onPlayerCommandRequest(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
