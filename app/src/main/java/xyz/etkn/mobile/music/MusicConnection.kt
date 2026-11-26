@@ -1235,6 +1235,58 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         }
         // 用户口径（#29）：每次状态变化都把「上次播的歌 + 进度」落盘，供下次启动恢复。
         if (current != null) saveMemory()
+        /** 用户口径（#39）：缓存追上来了就预载下一首。 */
+        runCatching { maybePrefetchNext(p) }
+    }
+
+    /**
+     * 用户口径（2026-11-27，#39）**预载下一首**。
+     *
+     * 用户原话：
+     *  「把视频的预加载下一集也应用到音乐上，相当于进度条缓存满了之后，
+     *    就预加载下一首，这样下一首播放的时候能秒播放，不用再等待加载」
+     *
+     * 触发条件（满足任一）：
+     *  · 已缓存位置距离播放位置 < 20 秒（缓存追得很近，说明这首稳了）
+     *  · 已播过 70%
+     *
+     * 只预载下一首；同一首不重复提交（`MusicPrefetch` 内部去重）。
+     */
+    private fun maybePrefetchNext(p: androidx.media3.common.Player) {
+        if (p.mediaItemCount == 0) return
+        val nextIndex = p.currentMediaItemIndex + 1
+        if (nextIndex >= p.mediaItemCount) return
+        val cur = p.currentPosition
+        val dur = p.duration
+        if (dur <= 0) return
+        val cached = _state.value.cachedPosition
+        val cacheFull = cached > 0 && (cached - cur) < 20_000L
+        val nearlyDone = cur > dur * 7 / 10
+        if (!cacheFull && !nearlyDone) return
+
+        val nextId = p.getMediaItemAt(nextIndex).mediaId
+        graph.scope.launch {
+            runCatching {
+                /** 已经在预载/已解析过就不重复请求。 */
+                if (MusicPrefetch.lastKey?.endsWith(nextId) == true) return@launch
+                val active = session ?: return@launch
+                val info = graph.api.playbackInfo(nextId, audio = true)
+                val source = info.sources.firstOrNull() ?: return@launch
+                val url = PlaybackAddress.music(
+                    source, active.server, active.token, active.userId, info.playSessionId,
+                )
+                /** 缓存 key 用 source.id + session，和播放侧保持一致才能命中。 */
+                val key = "${source.id}|${info.playSessionId}"
+                val upstream = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                    .setUserAgent("ETKN-Mobile")
+                MusicPrefetch.prefetch(
+                    context = graph.app,
+                    key = key,
+                    uri = android.net.Uri.parse(url),
+                    upstream = upstream,
+                )
+            }
+        }
     }
 
     // ---------- Reporting (TV contract: Playing → Progress → Stopped with PlayedToCompletion) ----------

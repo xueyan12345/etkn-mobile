@@ -357,18 +357,12 @@ private fun MiniLyrics(track: Item?, remembered: xyz.etkn.mobile.music.MusicMemo
 private enum class Pane { Lyrics, Queue }
 
 @Composable
+@Composable
 fun NowPlayingScreen() {
     val nav = LocalNav.current
     val graph = LocalContext.current.graph
     val music = graph.music
     val state by music.state.collectAsStateWithLifecycle()
-    /**
-     * 用户口径（2026-11-27，#41）**重启后点迷你条要能进得来**。
-     *
-     * 根因：原来 `if (track == null) { nav.back(); return }`，而重启后
-     * `state.current` 是 null → 页面刚推上去就立刻 pop → 用户看到「抖了一下」。
-     * 现在 state.current 为空时退回记忆里的那首，只有从没播过才返回。
-     */
     val remembered by music.remembered.collectAsStateWithLifecycle()
     val memory = remembered
     val track: Item? = state.current ?: memory?.let { mem -> music.itemFromMemory(mem) }
@@ -378,31 +372,29 @@ fun NowPlayingScreen() {
     }
     val urls = images()
     val (position, duration) = rememberPlayerClock()
-
-    /**
-     * 用户口径（2026-11-27，#32）**播放器整页重做**。
-     *
-     * 需求（用户逐条提的，下面全部落到实现里）：
-     *  ① 顶部只留「歌曲 / 歌词」两个标签居中；删掉原来右上角那两个按钮
-     *  ② 专辑封面放大到屏幕 70% 以上
-     *  ③ 歌名 + 歌手居中
-     *  ④ 5 行歌词滚动，最上/最下两行渐变淡出
-     *  ⑤ 进度条改成视频播放器那种（带缓存段）
-     *  ⑥ 底部：循环模式合并成 1 个按钮切 3 态 + 播放列表按钮
-     *  ⑦ 左右滑动切「歌曲 / 歌词」，点歌词也能进，要有过渡动画
-     *  ⑧ 参考图里划掉的 6 处一律不做（收起箭头、右上两个图标、
-     *     歌曲信息右侧小按钮、底部三个功能小图标）
-     */
-    var page by remember { mutableIntStateOf(0) }   // 0 = 歌曲  1 = 歌词
-    val pager = rememberPagerState(initialPage = 0) { 2 }
     var queueOpen by remember { mutableStateOf(false) }
 
-    /** 左右滑动切换两页（#32⑦）。 */
-    LaunchedEffect(pager.currentPage) { page = pager.currentPage }
-    LaunchedEffect(page) { if (pager.currentPage != page) pager.animateScrollToPage(page) }
-
+    /**
+     * 用户口径（2026-11-27，#35）**播放页只留一个界面，删掉「歌曲/歌词」两个标签**。
+     *
+     * 用户原话：
+     *  「我觉得把上边的歌曲和歌词那个可以删掉了，就只留现在点开播放界面，
+     *    这一个界面就可以，因为下边的歌词已经很长了，不必要再专门整一个歌词界面，
+     *    然后你把那个专辑图往上提一提，提到歌词和歌曲那两个字那块，
+     *    这样下边的歌词还能拉长一些」
+     *
+     * 布局（从上到下）：
+     * ```
+     * [专辑封面]        ← 顶到原来"歌曲/歌词"标签的位置
+     * 歌名 / 歌手
+     * ─────────────
+     * 歌词区（可手势滑动 + 中间定位线 + 点定位线跳播）
+     * ─────────────
+     * 进度条 + 底部控制
+     * ```
+     */
     Box(Modifier.fillMaxSize()) {
-        // 背景：封面严重模糊 + 暗化，保持原样
+        // 背景：封面严重模糊 + 暗化
         Artwork(
             urls.music(track, 320),
             Modifier.fillMaxSize().blur(60.dp),
@@ -419,135 +411,61 @@ fun NowPlayingScreen() {
                 ),
             ),
         )
-        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-
-            /** ① 顶部两个标签，居中一左一右（原来的收起箭头和右侧图标都删了）。 */
-            Row(
-                Modifier.fillMaxWidth().padding(top = 10.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                listOf("歌曲", "歌词").forEachIndexed { i, label ->
-                    val active = page == i
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .clip(Corner.pill)
-                            .clickable { page = i }
-                            .padding(horizontal = 20.dp, vertical = 8.dp),
-                    ) {
-                        /**
-                         * 用户口径（2026-11-27，#4①）**顶部两个字加大到跟歌名一样大**。
-                         * 原话：「这个顶部和差这俩字可以稍微再大点，可以跟现在的播放界面的歌名一样大小」
-                         */
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                            color = if (active) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        // 选中下划线
-                        Box(
-                            Modifier
-                                .padding(top = 4.dp)
-                                .width(if (active) 26.dp else 0.dp)
-                                .height(2.dp)
-                                .background(MaterialTheme.colorScheme.onSurface, Corner.pill),
-                        )
-                    }
-                }
+        Column(
+            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            /** ① 封面上移到最顶（原来标签的位置），去掉多余空白。 */
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.fillMaxWidth(0.58f).widthIn(max = 240.dp).aspectRatio(1f)) {
+                Artwork(
+                    urls.music(track, 1080),
+                    Modifier.fillMaxSize().clip(Corner.panel),
+                    track.name,
+                    placeholder = Icons.Rounded.MusicNote,
+                )
+                if (state.buffering) LoadingIndicator(Modifier.align(Alignment.Center))
             }
-
-            HorizontalPager(
-                state = pager,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                userScrollEnabled = true,
-            ) { index ->
-                if (index == 0) {
-                    /**
-                     * ② ③ ④ 歌曲页：大封面 + 歌名歌手居中 + 5 行歌词。
-                     * 封面占满可用宽度（70% 以上），受 480dp 上限约束避免平板上过大。
-                     */
-                    Column(
-                        Modifier.fillMaxSize().padding(horizontal = 24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        /**
-                         * 用户口径（2026-11-27，#13）**封面往上提，紧贴标签下方**。
-                         * 原话：「这个图片太往下了，往上点啊，放在歌曲和歌词的下边就行」
-                         * 这里原来有一大块 `Spacer(weight 0.15f)` 把它顶下去了，去掉。
-                         */
-                        Spacer(Modifier.height(12.dp))
-                        /**
-                         * 用户口径（2026-11-27，#4②）**封面缩到现在的一半**。
-                         * 原话：「中间的封面图缩小一点，封面图变成现在的一半那么大就行」
-                         */
-                        Box(
-                            Modifier.fillMaxWidth(0.62f).widthIn(max = 260.dp).aspectRatio(1f),
-                        ) {
-                            Artwork(
-                                urls.music(track, 1080),
-                                Modifier.fillMaxSize().clip(Corner.panel),
-                                track.name,
-                                placeholder = Icons.Rounded.MusicNote,
-                            )
-                            if (state.buffering) LoadingIndicator(Modifier.align(Alignment.Center))
-                        }
-                        Spacer(Modifier.height(20.dp))
-                        /** 用户口径（#4③）歌名再大一点。 */
-                        Text(
-                            track.name,
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            listOfNotNull(track.artistLine.ifEmpty { null }, track.album).joinToString(" · "),
-                            /** 用户口径（#4④）歌手名跟着歌名等比加大。 */
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                        )
-                        Spacer(Modifier.height(14.dp))
-                        /**
-                         * ④ 5 行歌词（中间完整、上下渐隐），点它进歌词页（#32⑦）。
-                         */
-                        /**
-                         * 用户口径（2026-11-27，#5）**歌词行数按剩余空间自适应**。
-                         *
-                         * 原话：「播放详情界面把歌词行数按照空白区域计算一下能放多少行就放多少行」
-                         *
-                         * 做法：用 `BoxWithConstraints` 拿到这块区域的实际高度，
-                         * 除以单行高度（约 26dp）得到能放几行，
-                         * 保证奇数（中间行才是"当前这句"），最少 3 行。
-                         */
-                        BoxWithConstraints(
-                            Modifier.fillMaxWidth().weight(1f).clickable { page = 1 },
-                        ) {
-                            val rowHeight = 26.dp
-                            val fitted = (maxHeight / rowHeight).toInt().coerceAtLeast(3)
-                            val rows = if (fitted % 2 == 0) fitted - 1 else fitted
-                            AdaptiveLyrics(track, position, rows)
-                        }
-                        /** 用户口径（#4⑥）底部控件整体往上移 —— 压缩这里的弹性空白。 */
-                        Spacer(Modifier.height(6.dp))
-                    }
-                } else {
-                    /** 歌词页：整页滚动歌词。 */
-                    Box(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
-                        FullLyrics(track, position, state.sourceId)
-                    }
-                }
-            }
+            Spacer(Modifier.height(14.dp))
+            /** ② 歌名 + 歌手 */
+            Text(
+                track.name,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+            Text(
+                listOfNotNull(track.artistLine.ifEmpty { null }, track.album).joinToString(" · "),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+            Spacer(Modifier.height(10.dp))
 
             /**
-             * ⑤ 进度条（带缓存段）+ 底部控制（#32⑤⑥）。
+             * ③ 歌词区：占满剩余空间（比原来长），支持手势滑动 + 定位线 + 点击跳播。
+             *
+             * 用户原话：
+             *  「现在的专辑下边的歌词不能用手滑动，正常的播放器是可以用手动滑动歌词，
+             *    然后中间有一个定位线，根据歌词定位的位置直接可点一下定位线旁边的按钮，
+             *    就直接定位到歌词那句，相当于定位播放，这个现在所有的播放器都支持」
              */
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                SeekerLyrics(
+                    track = track,
+                    positionMs = position,
+                    onSeek = { music.seekTo(it) },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+
+            /** ④ 进度条 + 时间 */
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
                 MusicProgressBar(
                     position = position,
@@ -556,7 +474,7 @@ fun NowPlayingScreen() {
                     onSeek = { music.seekTo(it) },
                 )
                 Row(
-                    Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp),
+                    Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -571,44 +489,12 @@ fun NowPlayingScreen() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                /**
-                 * ⑥ 底部五个按钮：
-                 *  循环模式（一个按钮切三态） / 上一首 / 播放 / 下一首 / 播放列表
-                 *
-                 * 用户明确要求把原来的「随机播放」「顺序播放+单曲循环」两个按钮
-                 * 合并成左边一个，点一下切一种状态。
-                 */
-                /**
-                 * 用户口径（2026-11-27，#14）**底部播放控件再往上一点**。
-                 * 原话：「画圆圈的部分有点太往下了，稍微往上一点点」
-                 */
-                Spacer(Modifier.height(2.dp))
+                /** ⑤ 底部五个按钮 */
                 Row(
-                    Modifier.fillMaxWidth().padding(bottom = 26.dp),
+                    Modifier.fillMaxWidth().padding(bottom = 22.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceEvenly,
                 ) {
-                    /**
-                     * 用户口径（#4⑧）**一个按钮切 4 态**：顺序 → 列表循环 → 单曲循环 → 随机。
-                     *
-                     * 对比原实现：只有 repeatMode 的 3 态，缺「随机」，
-                     * 而「随机」是 shuffleModeEnabled 这个独立维度，现在合并成一条循环。
-                     */
-                    /**
-                     * 用户口径（2026-11-27，#4）**四种状态必须用四个不同图标**。
-                     *
-                     * 原话：「左下角的那个顺序播放/随机播放/单曲循环/列表循环播放，
-                     *        我要4个小图标不一样的，你现在只有3个，说好几遍了」
-                     *
-                     * 原来 0(顺序) 和 1(列表循环) 都用了 `Repeat`，看起来就是只有 3 个。
-                     * 现在四个各用各的：
-                     * ```
-                     * 0 顺序播放   → PlaylistPlay    （列表 + 播放箭头，表示按序播完停）
-                     * 1 列表循环   → Repeat          （两个箭头成环）
-                     * 2 单曲循环   → RepeatOne       （环 + 数字 1）
-                     * 3 随机播放   → Shuffle         （交叉箭头）
-                     * ```
-                     */
                     val mode = when {
                         state.shuffle -> 3
                         state.repeat == Player.REPEAT_MODE_ONE -> 2
@@ -629,7 +515,6 @@ fun NowPlayingScreen() {
                                 2 -> "单曲循环"
                                 else -> "随机播放"
                             },
-                            /** 四个状态都用主色，只有「顺序播放」用中性色（默认态）。 */
                             tint = if (mode == 0) {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             } else MaterialTheme.colorScheme.primary,
@@ -651,7 +536,6 @@ fun NowPlayingScreen() {
                     IconButton(onClick = music::next) {
                         Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(30.dp))
                     }
-                    /** 播放列表（#32⑥ 右侧改成播放列表）。 */
                     IconButton(onClick = { queueOpen = true }) {
                         Icon(Icons.AutoMirrored.Rounded.QueueMusic, "播放列表")
                     }
@@ -1089,7 +973,7 @@ private fun MiniProgressLine(
     val accent = MaterialTheme.colorScheme.primary
     val cachedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f)
     val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-    Box(modifier.height(10.dp), contentAlignment = Alignment.CenterStart) {
+    Box(modifier.height(14.dp), contentAlignment = Alignment.CenterStart) {
         // 底轨
         Box(Modifier.fillMaxWidth().height(3.dp).background(trackColor, Corner.pill))
         // 缓存段
@@ -1099,12 +983,23 @@ private fun MiniProgressLine(
         )
         // 已播放
         Box(Modifier.fillMaxWidth(played).height(3.dp).background(accent, Corner.pill))
-        // 头部实心圆点
+        /**
+         * 用户口径（2026-11-27，#37）**迷你条也要有那个实心圆点**。
+         *
+         * 用户原话：「小的播放控件里边是没有那个圆点的，把那个圆点加上」
+         *
+         * 原来这里只有 7dp，而且外层容器只有 10dp 高，圆点被压得几乎看不见。
+         * 现在加大到 10dp，容器给到 14dp。
+         */
         Box(
-            Modifier.fillMaxWidth(played).height(3.dp),
+            Modifier.fillMaxWidth(played).height(14.dp),
             contentAlignment = Alignment.CenterEnd,
         ) {
-            Box(Modifier.size(7.dp).background(accent, CircleShape))
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .background(accent, CircleShape),
+            )
         }
     }
 }
@@ -1182,6 +1077,193 @@ private fun AdaptiveLyrics(track: Item, positionMs: Long, rows: Int) {
                 /** 固定行高，保证中间行真正居中（#11）。 */
                 modifier = Modifier.fillMaxWidth().heightIn(min = rowH),
             )
+        }
+    }
+}
+
+/**
+ * 用户口径（2026-11-27，#36）**可滑动 + 带定位线的歌词**。
+ *
+ * 用户原话：
+ *  「现在的专辑下边的歌词不能用手滑动，正常的播放器是可以用手动滑动歌词，
+ *    然后中间有一个定位线，根据歌词定位的位置直接可点一下定位线旁边的按钮，
+ *    就直接定位到歌词那句，相当于定位播放，这个现在所有的播放器都支持」
+ *
+ * 实现（对齐全网主流播放器的做法）：
+ * ```
+ *  · LazyColumn 手动滑动，正中固定一条"定位线"（指示当前选中行）
+ *  · 手指滑动时，把"最靠近定位线的那一行"作为选中行（高亮）
+ *  · 停止滑动后：选中行停留 1.5 秒 → 自动 seek 到该行时间点并恢复自动跟随
+ *  · 同时给定位线旁边一个播放按钮，点它立刻跳播（不用等）
+ * ```
+ *
+ * 关键点：**滑动期间完全停止自动滚动**，否则播放进度一变就把用户拽回去。
+ */
+@Composable
+private fun SeekerLyrics(
+    track: Item,
+    positionMs: Long,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val graph = LocalContext.current.graph
+    val music by graph.music.state.collectAsStateWithLifecycle()
+    var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
+
+    LaunchedEffect(track.id, music.sourceId) {
+        val sid = music.sourceId ?: return@LaunchedEffect
+        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
+        parsed = if (text.isBlank()) null else Lyrics.parse(text)
+        /** 供车机/CarLife 卡片显示当前行（#34）。 */
+        parsed?.lines?.let { ls ->
+            graph.music.publishLyrics(track.id, ls.map { it.timeMs to it.text })
+        }
+    }
+
+    val lines = parsed?.lines.orEmpty()
+    val activeIndex = parsed?.indexAt(positionMs) ?: -1
+
+    if (lines.isEmpty()) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            Text(
+                "暂无歌词",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+
+    val list = rememberLazyListState()
+    /** 用户正在手动滑动（暂停自动跟随）。 */
+    var dragging by remember { mutableStateOf(false) }
+    /** 定位线锁定的行（滑动时跟着变，用于高亮 + 跳播）。 */
+    var pinnedIndex by remember { mutableIntStateOf(-1) }
+
+    /** 行高（固定，保证定位线判定准确）。 */
+    val rowHeight = 34.dp
+    val rowPx = with(LocalDensity.current) { rowHeight.toPx() }
+
+    /**
+     * 布局：上下各留 half 高度，这样第一行/最后一行也能滚到正中。
+     */
+    BoxWithConstraints(modifier) {
+        val halfPx = with(LocalDensity.current) { (maxHeight / 2).toPx() }
+        val paddingPx = (halfPx - rowPx / 2).coerceAtLeast(0f)
+
+        /** 自动跟随：不拖动时，把当前行滚到中间。 */
+        LaunchedEffect(activeIndex, dragging) {
+            if (!dragging && activeIndex >= 0) {
+                val target = (activeIndex * rowPx + paddingPx - (maxHeight.toPx() - rowPx) / 2)
+                    .coerceAtLeast(0f).toInt()
+                list.animateScrollTo(target)
+            }
+        }
+
+        /** 拖动时：根据滚动位置更新定位行。 */
+        LaunchedEffect(list.isScrollInProgress, list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) {
+            if (!list.isScrollInProgress) return@LaunchedEffect
+            dragging = true
+            /** 正中那一点落在第几行。 */
+            val centerInList = list.firstVisibleItemScrollOffset +
+                (maxHeight.toPx() - rowPx) / 2 + list.firstVisibleItemIndex * rowPx - paddingPx
+            val idx = (centerInList / rowPx).toInt().coerceIn(0, lines.lastIndex)
+            pinnedIndex = idx
+        }
+
+        /** 手松开 1.2 秒后：自动跳播到定位行。 */
+        LaunchedEffect(dragging, pinnedIndex) {
+            if (dragging && !list.isScrollInProgress && pinnedIndex >= 0) {
+                kotlinx.coroutines.delay(1_200)
+                val target = lines.getOrNull(pinnedIndex)
+                if (target != null) {
+                    onSeek(target.timeMs)
+                }
+                dragging = false
+                pinnedIndex = -1
+            }
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = list,
+                contentPadding = PaddingValues(top = paddingPx.dp, bottom = paddingPx.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                itemsIndexed(lines, key = { i, _ -> i }) { i, line ->
+                    val isPinned = dragging && i == pinnedIndex
+                    val isActive = !dragging && i == activeIndex
+                    val highlighted = isPinned || isActive
+                    Box(
+                        Modifier.fillMaxWidth().height(rowHeight),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            line.text,
+                            style = if (highlighted) MaterialTheme.typography.titleLarge
+                            else MaterialTheme.typography.bodyLarge,
+                            fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Normal,
+                            color = if (highlighted) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+                    }
+                }
+            }
+
+            /** 中间定位线（细横线，左右各留边）。 */
+            Box(
+                Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth(0.72f)
+                    .height(1.dp)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.30f), Corner.pill),
+            )
+
+            /** 定位线右侧的「跳到这里播」按钮（滑动时才出现）。 */
+            if (dragging && pinnedIndex >= 0) {
+                val target = lines.getOrNull(pinnedIndex)
+                if (target != null) {
+                    FilledIconButton(
+                        onClick = {
+                            onSeek(target.timeMs)
+                            dragging = false
+                            pinnedIndex = -1
+                        },
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 12.dp)
+                            .size(40.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.PlayArrow,
+                            "跳到这句播放",
+                            Modifier.size(22.dp),
+                        )
+                    }
+                }
+            }
+
+            /** 拖动时显示目标时间（参考主流播放器）。 */
+            if (dragging && pinnedIndex >= 0) {
+                val target = lines.getOrNull(pinnedIndex)
+                if (target != null) {
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 12.dp),
+                    ) {
+                        Text(
+                            formatClock(target.timeMs),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
         }
     }
 }

@@ -288,19 +288,16 @@ class MusicService : MediaLibraryService() {
          * Service 起来后直接读它 —— 同一个进程，静态变量肯定已经写好了。
          */
         val hintedKey = MediaButtonHint.consume()
-        android.util.Log.i("ETKN-Music", "onStartCommand: 拿到的媒体键提示=$hintedKey")
-        if (keyCode != null || isMediaButtonAction || hintedKey != null) {
-            /**
-             * 用户口径（#27）：没在播时，「播放」和「下一曲」都等于开始播放。
-             * 所以这里统一走 `systemPlay()` —— 它会等会话就绪、解析真直链、真的出声。
-             */
+        /** 实际按下的键（Intent 或静态提示任一来源）。 */
+        val pressed = keyCode ?: hintedKey
+        android.util.Log.i(
+            "ETKN-Music",
+            "onStartCommand: 媒体键=$pressed (intent=$keyCode hint=$hintedKey)",
+        )
+        if (pressed != null || isMediaButtonAction) {
             applicationContext.graph.scope.launch {
                 runCatching {
-                    /**
-                     * 等两个前提都就绪再播，缺一个都会「进程起来了但没声音」：
-                     *  ① 登录态 SignedIn（否则直链解析失败）
-                     *  ② remembered 读到（否则不知道播哪首）
-                     */
+                    /** 等登录态 + remembered 就绪（冷启动必需）。 */
                     kotlinx.coroutines.withTimeoutOrNull(15_000L) {
                         applicationContext.graph.sessions.state.first {
                             it is xyz.etkn.mobile.data.session.SessionState.SignedIn
@@ -309,10 +306,47 @@ class MusicService : MediaLibraryService() {
                     kotlinx.coroutines.withTimeoutOrNull(5_000L) {
                         applicationContext.graph.music.remembered.first { it != null }
                     }
-                    applicationContext.graph.music.systemPlay()
+                    /**
+                     * 用户口径（2026-11-27，#38）**必须按具体按键分流，不能一律当"播放"**。
+                     *
+                     * 用户报的 bug（OPPO 流体云卡片）：
+                     *  「它的暂停不好使，暂停之后马上就继续播放，
+                     *    下一曲好像也不好使，下一曲好像播放的不是列表里的下一个」
+                     *
+                     * 根因：上一版这里收到任何媒体键（包括 PAUSE）都调 `systemPlay()`
+                     * → 点暂停立刻又播起来；点下一曲播的还是 remembered 那首，
+                     * 不是队列里的下一首。
+                     *
+                     * 现在按 keyCode 分流：
+                     * ```
+                     * PLAY        → systemPlay()     （没在播就播，在播就继续）
+                     * PAUSE       → pause()          （必须真的暂停）
+                     * PLAY_PAUSE  → toggle()
+                     * NEXT        → systemNext()     （在播就切歌，没播当播放）
+                     * PREVIOUS    → systemPrevious()
+                     * STOP        → pause()
+                     * HEADSEТHOOK → toggle()         （耳机线控单击）
+                     * ```
+                     */
+                    val m = applicationContext.graph.music
+                    when (pressed) {
+                        android.view.KeyEvent.KEYCODE_MEDIA_PLAY -> m.systemPlay()
+                        android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> m.pause()
+                        android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                        android.view.KeyEvent.KEYCODE_HEADSETHOOK,
+                        -> m.toggle()
+                        android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> m.systemNext()
+                        android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> m.systemPrevious()
+                        android.view.KeyEvent.KEYCODE_MEDIA_STOP -> m.pause()
+                        else -> {
+                            /** 未知键（或只有 action 没 keyCode）：当作"用户要听歌"。 */
+                            android.util.Log.i("ETKN-Music", "onStartCommand: 未知键，按播放处理")
+                            m.systemPlay()
+                        }
+                    }
                     android.util.Log.i(
                         "ETKN-Music",
-                        "onStartCommand: 已触发播放 keyCode=$keyCode state=${applicationContext.graph.music.state.value.isPlaying}",
+                        "onStartCommand: 已处理 key=$pressed isPlaying=${m.state.value.isPlaying}",
                     )
                 }
             }

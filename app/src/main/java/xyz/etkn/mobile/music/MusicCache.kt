@@ -107,3 +107,84 @@ object MusicCache {
         runCatching { cache?.keys?.forEach { cache?.removeResource(it) } }
     }
 }
+
+/**
+ * 用户口径（2026-11-27，#39）**预加载下一首**。
+ *
+ * 用户原话：
+ *  「把视频的预加载下一集也应用到音乐上，相当于进度条缓存满了之后，
+ *    就预加载下一首，这样下一首播放的时候能秒播放，不用再等待加载」
+ *
+ * 与视频预加载的区别：
+ * ```
+ * 视频  按字节/时长窗口预热（片子大，不可能整集下完）
+ * 音乐  一首歌通常 3-8MB，整首下完最简单
+ * ```
+ *
+ * 实现要点：
+ *  · 复用同一个 `SimpleCache`（MusicCache），不另建目录
+ *  · 写侧用 `CacheDataSink`，播侧只读 —— 避免双写把缓存搞坏
+ *  · `isCached` 已完整就不再下
+ *  · 只预载「下一首」，不做整队列预载（省流量、够用）
+ */
+object MusicPrefetch {
+    private val jobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+
+    /** 进行中的预载 key（调试用）。 */
+    @Volatile
+    var lastKey: String? = null
+        private set
+
+    fun prefetch(
+        context: android.content.Context,
+        key: String,
+        uri: android.net.Uri,
+        upstream: androidx.media3.datasource.DataSource.Factory,
+    ) {
+        val cache = MusicCache.get(context) ?: return
+        jobs[key]?.let { if (it.isActive) return }
+        jobs[key] = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            var source: androidx.media3.datasource.DataSource? = null
+            runCatching {
+                lastKey = key
+                if (cache.isCached(key, 0L, Long.MAX_VALUE)) {
+                    android.util.Log.i("ETKN-Music", "预载跳过（已缓存）$key")
+                    return@launch
+                }
+                val writer = androidx.media3.datasource.cache.CacheDataSink.Factory()
+                    .setCache(cache)
+                    .setFragmentSize(androidx.media3.datasource.cache.CacheDataSink.DEFAULT_FRAGMENT_SIZE)
+                source = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                    .setCache(cache)
+                    .setUpstreamDataSourceFactory(upstream)
+                    .setCacheWriteDataSinkFactory(writer)
+                    .createDataSource()
+                val spec = androidx.media3.datasource.DataSpec.Builder()
+                    .setUri(uri)
+                    .setKey(key)
+                    .build()
+                source.open(spec)
+                val buf = ByteArray(256 * 1024)
+                var total = 0L
+                while (true) {
+                    val n = source.read(buf, 0, buf.size)
+                    if (n == -1) break
+                    total += n
+                }
+                android.util.Log.i("ETKN-Music", "预载完成 $key (${total / 1024}KB)")
+            }.onFailure {
+                android.util.Log.w("ETKN-Music", "预载失败 $key", it)
+            }
+            runCatching { source?.close() }
+        }
+    }
+
+    fun cancel(key: String) {
+        jobs.remove(key)?.cancel()
+    }
+
+    fun cancelAll() {
+        jobs.values.forEach { it.cancel() }
+        jobs.clear()
+    }
+}
