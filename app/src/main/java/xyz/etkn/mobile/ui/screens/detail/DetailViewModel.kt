@@ -200,6 +200,15 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                      * 现在：同剧复用上一次的结果（内存缓存，切剧时自动失效），
                      * 只有真正的"这一集自己的数据"才重新请求。
                      */
+                    /**
+                     * 用户口径（2026-11-27，#21）**相似推荐/合集在同剧内切换时不要重新请求**。
+                     *
+                     * `similar` / `collections` 跟"当前是哪一集"无关（整部剧共用一个列表），
+                     * 却原来也在 coroutineScope 里 await，直接拖慢每次切集。
+                     * 判断依据是「同一部剧」而不是「同一集」。
+                     */
+                    val sameShow = cachedSeriesId == seriesId && seriesId != null
+
                     val sameSeries = cachedSeriesId == seriesId && seriesId != null
                     val cachedSeriesItem = cacheSeriesItem
                     val cachedSeasons = cacheSeasons
@@ -283,21 +292,6 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                  * 只跳一次（jumpOnce），跳过去之后用户自己点其他集不再被拽回来。
                  * 电影/Video 走不到这里（seriesId 为 null）。
                  */
-                /**
-                 * 用户口径（2026-11-27，#21）**切集不要重算相似推荐/合集**。
-                 *
-                 * `similar` / `collections` 跟"当前是哪一集"毫无关系（整部剧共用一个列表），
-                 * 但原来它们也在 coroutineScope 里 await，直接拖慢每次切集。
-                 *
-                 * 现在：上一份数据里已经有就直接沿用，只有换剧/首次进入才真的去请求。
-                 * 注意判断依据是「同一部剧」而不是「同一集」。
-                 */
-                val previous = (_state.value as? Load.Ready)?.value
-                val sameShow = previous != null && seriesId != null &&
-                    (previous.item.seriesId == base.seriesId ||
-                        previous.item.id == seriesId ||
-                        previous.item.seriesId == seriesId)
-
                 val jumpTo = if (data.item.isSeries && !jumpOnce && data.target != null) data.target else null
                 if (jumpTo != null && jumpTo.id != data.item.id) {
                     jumpOnce = true

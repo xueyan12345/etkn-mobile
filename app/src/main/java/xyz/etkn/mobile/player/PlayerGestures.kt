@@ -45,7 +45,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.fillMaxWidth
 
-internal /**
+/**
  * 用户口径（2026-11-27，#23）**快进增量用两位补零的 mm:ss**。
  *
  * 参考图是 `[+00:31]`（分钟也补零），和左边 `13:58` 的大字区分开。
