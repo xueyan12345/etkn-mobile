@@ -153,7 +153,18 @@ class HomeViewModel(
              * 够 10 个才用新的；不够就保留上一次的（通常也是满 10 个），
              * 绝不让首页顶部先出 6 个再跳变。
              */
+            /**
+             * 用户口径（2026-11-27，#2 第三版）**不足 10 个时保留旧 hero，但会记一条日志**。
+             *
+             * 之前这里是静默兜底，导致「只有 3 个」这种问题在日志里完全看不见。
+             * 现在打点，方便下次直接定位到底是快照只有 3 个、还是池子只有 3 个。
+             */
             val useHero = if (enough) hero else keepOld.ifEmpty { hero }
+            android.util.Log.i(
+                "ETKN-Hero",
+                "showCached: snapshot=${fromSnapshot.size} hero=${hero.size} " +
+                    "enough=$enough keepOld=${keepOld.size} use=${useHero.size}",
+            )
             _state.value = Load.Ready(cached.copy(hero = useHero))
         }
     }
@@ -405,10 +416,49 @@ class HomeViewModel(
                  *
                  * 现在三条路径统一：第 1 位=继续播放随机 1 部，后 9 位=全库随机。
                  */
-                val randomNine = candidates.shuffled(Random(seed)).take(HERO_RANDOM_SIZE)
+                    val randomNine = candidates.shuffled(Random(seed)).take(HERO_RANDOM_SIZE)
                 val picked = pickResumeFirst(data, randomNine, seed)
-                publishHero(picked)
-                HeroSnapshot.write(context, accountKey, picked.map { it.id })
+                /**
+                 * 用户口径（2026-11-27，#2 第三版）**凑不满就现场从服务端再补一轮**。
+                 *
+                 * 现象：h 账号进来只有 3 个圆点，服务端直查却有 50 个合格候选。
+                 * 说明 `data.latest` 这条链路在某些情况下给不全（缓存/首屏/时序都可能）。
+                 *
+                 * 与其继续猜是哪一环阉了数据，不如在「最终结果」上加一道硬保障：
+                 * 算完如果还不到 HERO_SIZE，就按库 id 直接从服务端再拉一次补足。
+                 * 这一步很便宜（一次并发请求），但能保证用户永远看到满 10 个。
+                 */
+                val finalPicked = if (picked.size >= HERO_SIZE) {
+                    picked
+                } else {
+                    val extra = runCatching {
+                        data.libraries
+                            .filter { it.collectionType !in NON_LATEST }
+                            .map { lib ->
+                                async {
+                                    val t = when (lib.collectionType) {
+                                        "movies" -> "Movie"
+                                        "tvshows" -> "Series"
+                                        else -> null
+                                    }
+                                    runCatching { api.latest(lib.id, t, HERO_POOL_PER_LIBRARY) }
+                                        .getOrDefault(emptyList())
+                                }
+                            }.awaitAll().flatten()
+                            .filter(::hasBackdrop)
+                            .filter { !isFinished(it) }
+                            .distinctBy { it.id }
+                    }.getOrDefault(emptyList())
+                    val have = picked.map { it.id }.toSet()
+                    val merged = picked + extra.filter { it.id !in have }
+                    android.util.Log.i(
+                        "ETKN-Hero",
+                        "hero 补足: picked=${picked.size} extra=${extra.size} final=${merged.size}/${HERO_SIZE}",
+                    )
+                    merged.take(HERO_SIZE)
+                }
+                publishHero(finalPicked)
+                HeroSnapshot.write(context, accountKey, finalPicked.map { it.id })
                 return@launch
             }
             // 连库列表都还没到（首屏缓存路径）时退回旧的兜底，别让轮播空着

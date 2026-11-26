@@ -26,6 +26,11 @@ data class DetailData(
     val item: Item,
     val seasons: List<Item> = emptyList(),
     val target: Item? = null,
+    /**
+     * 用户口径（2026-11-27）**单集页头部用「剧集」数据**（复用已删掉的剧集详情页那条接口）。
+     * item 是 Episode 时这里放 `api.item(seriesId)` 的结果；其他情况为 null。
+     */
+    val seriesItem: Item? = null,
     val similar: List<Item> = emptyList(),
     /** TMDb collections a movie belongs to. */
     val collections: List<Item> = emptyList(),
@@ -101,6 +106,19 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                         else -> null
                     }
                     val item = base
+                    /**
+                     * 用户口径（2026-11-27）**单集页的头部大图要用「剧集」那张**。
+                     *
+                     * 用户要求：「你去查看之前咱们删掉的那个详情页，它那个调取的接口是哪个？你复用过来就 OK 了」。
+                     *
+                     * 那个已删掉的剧集详情页，`item` 本身就是 Series，
+                     * 数据来自 `api.item(seriesId)` —— 里面的 Backdrop/Thumb/Logo 就是剧集图。
+                     * 现在单集页虽然 item 是 Episode，但 `seriesId` 已经拿得到，
+                     * 所以这里直接把剧集那条也请求一次，喂给头部用（不用自己猜父级字段）。
+                     */
+                    val seriesItem = if (base.isEpisode && base.seriesId != null) {
+                        async { runCatching { api.item(base.seriesId) }.getOrNull() }
+                    } else null
                     val seasons = seriesId?.let { sid -> async { runCatching { api.seasons(sid) }.getOrDefault(emptyList()) } }
                     val target = seriesId?.let { sid ->
                         async { runCatching { api.playbackTarget(sid, if (item.isSeason) item.id else null) }.getOrNull() }
@@ -114,6 +132,8 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                         target = target?.await(),
                         similar = similar?.await().orEmpty(),
                         collections = collections?.await().orEmpty(),
+                        /** 剧集那条数据：单集页头部大图/艺术字用它，切集时保持不变。 */
+                        seriesItem = seriesItem?.await(),
                     )
                 }
                 // A newer episode was picked while this one loaded.

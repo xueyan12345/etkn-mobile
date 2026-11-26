@@ -517,12 +517,22 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
              * 全部是「整部剧」层级的图，切集时同一张，不会跳。
              * 电影 / Video（没有 seriesId）仍按原来的三级回退，不受影响。
              */
-            val headerArt = if (item.isEpisode || item.isSeason) {
-                urls.seriesCover(item, widthPx)
-                    ?: urls.backdrop(item, widthPx) ?: urls.poster(item, widthPx)
-            } else {
-                urls.backdrop(item, widthPx) ?: urls.landscape(item, widthPx) ?: urls.poster(item, widthPx)
-            }
+            /**
+             * 用户口径（2026-11-27，#3 第二版）**直接用「剧集」那条数据取图**。
+             *
+             * 上一版我用父级字段自己拼（seriesCover/seriesLogo），结果还是显示单集图 ——
+             * 说明服务端给分集塞了 parentThumb/parentBackdrop 指向分集自己的图，
+             * 拿父级字段拼不可靠。
+             *
+             * 现在按用户指的路子办：**复用已删掉的那个剧集详情页的接口**。
+             * 那一版 item 是 Series，数据就是 `api.item(seriesId)`；
+             * 这里 `data.seriesItem` 存的就是同一个请求的结果。
+             * 对它调 backdrop/landscape/poster，拿到的必然和原来剧集页顶部一模一样。
+             */
+            val artFor = data.seriesItem ?: item
+            val headerArt = urls.backdrop(artFor, widthPx)
+                ?: urls.landscape(artFor, widthPx)
+                ?: urls.poster(artFor, widthPx)
             Artwork(
                 headerArt,
                 Modifier.fillMaxSize(),
@@ -550,7 +560,8 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
              * 用户口径（2026-11-27）**艺术字也跟着「整部剧」走**，切集时不许跳。
              * 单集页优先取父级（剧）的 Logo，电影/Video 走原来的 logo()。
              */
-            val heroLogo = if (item.isEpisode) urls.seriesLogo(item, 720) else urls.logo(item, 720)
+            /** 艺术字同理：用剧集那条数据取 Logo，切集不动。 */
+            val heroLogo = urls.logo(data.seriesItem ?: item, 720)
             Column(
                 Modifier
                     .align(Alignment.TopStart)
