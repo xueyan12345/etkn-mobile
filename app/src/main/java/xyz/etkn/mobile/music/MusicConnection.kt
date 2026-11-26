@@ -213,6 +213,10 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             .putLong("m_dur", dur)
             .putString("m_src", s.sourceId)
             .apply()
+        android.util.Log.i(
+            "ETKN-Music",
+            "saveMemory: id=${item.id} pos=$pos dur=$dur q=${s.queue.size} rawDur=${_player?.duration} ticks=${item.runTimeTicks}",
+        )
         _remembered.value = MusicMemory(
             itemId = item.id,
             name = item.name,
