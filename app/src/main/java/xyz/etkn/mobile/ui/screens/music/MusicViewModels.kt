@@ -154,9 +154,38 @@ private fun pinyinInitialOf(text: String): Char {
     return '#'
 }
 
-/** 排序键：首字母 + 原串（小写）。纯 String，保证比较可传递。 */
-private fun sortKeyOf(text: String): String =
-    pinyinInitialOf(text).toString() + "\u0000" + text.lowercase()
+/**
+ * 排序键：首字母 + 原串（小写）。纯 String，保证比较可传递。
+ *
+ * 用户口径（2026-11-27，#16）**剥掉歌名前的书名号等标点再取首字母**。
+ *
+ * 用户截图实测：《以沫》排在最前面（它应该是 Y）。
+ * 根因：这首歌全名是「《以沫》——默读广播剧主题曲」，
+ * 第一个字符是 `《`，不是字母也不是汉字 → 归到 `#`，
+ * 而 `#` 的 ASCII 是 0x23，比 `A` 的 0x41 小 → 排到 A 前面去了。
+ *
+ * 修法两条：
+ *  ① 取首字母前先剥掉开头的标点/空白（《》【】「」""''·《》等）
+ *  ② 归到 `#` 的（数字/符号开头的）用 `~`(0x7E) 作 key，**排到 Z 后面**
+ *     而不是排在 A 前面
+ */
+private val LEADING_JUNK = "《》【】「」『』（）()<>[]{}\"'“”‘’·、，,。.:：;；!！?？-—_~`@#$%^&*+=|\\/ 　	
+"
+
+private fun stripLeadingJunk(text: String): String {
+    var i = 0
+    val t = text.trim()
+    while (i < t.length && t[i] in LEADING_JUNK) i++
+    return if (i >= t.length) t else t.substring(i)
+}
+
+private fun sortKeyOf(text: String): String {
+    val cleaned = stripLeadingJunk(text)
+    val initial = pinyinInitialOf(cleaned)
+    /** `#` 换成 `~`（0x7E），保证排到 Z 之后，而不是排在 A 之前。 */
+    val key = if (initial == '#') '~' else initial
+    return "$key\u0000${cleaned.lowercase()}\u0000${text.lowercase()}"
+}
 
 class MusicListViewModel(
     private val graph: AppGraph,
@@ -237,11 +266,42 @@ class MusicListViewModel(
     private val _sortedTracks = MutableStateFlow<List<Item>>(emptyList())
     val sortedTracks: StateFlow<List<Item>> = _sortedTracks.asStateFlow()
 
+    /**
+     * 用户口径（2026-11-27，#17）**歌曲清单必须一次全部加载完，不能翻着翻着才出来**。
+     *
+     * 用户原话：
+     *  「我每次打开，看到得歌曲清单界面是不全的…虽然显示的歌曲是按照字母排序的，
+     *    但是还有部分音乐得我向下翻，往下一直翻，翻着翻着就一个个都出来了，
+     *    它还不是按照这个排序的顺序出来，它是跳着出来的，一会上面出来点，一会下面出来点」
+     *
+     * 根因：列表是分页的（一次 60 条 / 601 首 = 11 页），
+     * 而排序只能排「已加载的那部分」。用户往下翻的时候，
+     * 新一页的数据被追加到列表末尾再重排 → 视觉上就是"跳着出来"。
+     *
+     * 修法：**歌曲 tab 进页面就一次把全库拉完**（601 首约 11 个请求，并发 4 路，
+     * 一两秒内完成），拿到完整列表后统一排序、一次性渲染。
+     * 这样用户看到的第一眼就是完整的、正确排序的清单。
+     */
+    private val _allLoaded = MutableStateFlow(false)
+    val allLoaded: StateFlow<Boolean> = _allLoaded.asStateFlow()
+
     init {
-        // 排序或分页数据任一变化，就重算一次并推给 UI
-        viewModelScope.launch {
-            combine(_sort, _paged) { sort, page -> applySort(page.items.filter { it.isAudio && !it.isMusicGroup }, sort) }
-                .collect { _sortedTracks.value = it }
+        if (tab == "songs" || tracksOnly) {
+            /** 歌曲列表：一次性全量加载。 */
+            viewModelScope.launch {
+                runCatching {
+                    val all = loadEverything()
+                    _sortedTracks.value = applySort(all, _sort.value)
+                    _allLoaded.value = true
+                }
+            }
+        } else {
+            /** 其他 tab（专辑/歌手/歌单）：保持分页（本身就是分组卡片，不需要全量）。 */
+            viewModelScope.launch {
+                combine(_sort, _paged) { sort, page ->
+                    applySort(page.items.filter { it.isAudio && !it.isMusicGroup }, sort)
+                }.collect { _sortedTracks.value = it }
+            }
         }
     }
 
@@ -271,8 +331,14 @@ class MusicListViewModel(
             viewModelScope.launch {
                 _sortLoading.value = true
                 runCatching {
-                    val all = loadEverything()
+                    /** 全量数据已缓存就直接排；没有就拉一次。 */
+                    val all = if (_allLoaded.value) {
+                        _sortedTracks.value
+                    } else {
+                        loadEverything()
+                    }
                     _sortedTracks.value = applySort(all, value)
+                    _allLoaded.value = true
                 }
                 _sortLoading.value = false
             }
@@ -317,10 +383,21 @@ class MusicListViewModel(
 
     /** 把整张列表（所有分页）拉完；已加载的部分直接复用，只补后面的页。 */
     private suspend fun loadEverything(): List<Item> {
+        /**
+         * 用户口径（#17）**先把 total 探出来，再决定要不要补页**。
+         *
+         * 注意 `paged.value.total` 在首页还没返回时是 0，
+         * 之前直接 `if (total <= start) return` 会误以为"已经全了"，
+         * 只返回 60 条 —— 这就是"清单不全"的另一半原因。
+         */
+        var total = paged.value.total
+        if (total <= 0) {
+            /** 首页还没到：先拉一次首页拿 total。 */
+            runCatching { fetch(0, pageSize) }.onSuccess { total = it.total }
+        }
         val loaded = paged.value.items.toMutableList()
         var start = loaded.size
-        val total = paged.value.total
-        if (total <= start) return loaded.filter { it.isAudio && !it.isMusicGroup }
+        if (total > 0 && total <= start) return loaded.filter { it.isAudio && !it.isMusicGroup }
         // 剩余页分批并发，每批 4 个请求
         val starts = (start until total step pageSize).toList()
         for (batch in starts.chunked(4)) {
@@ -394,8 +471,6 @@ private fun applySort(list: List<Item>, sort: MusicSort): List<Item> = when (sor
      * 满足传递性，不会触发 TimSort 的 "Comparison method violates its general contract"。
      */
     MusicSort.FirstLetter -> list.sortedBy { sortKeyOf(it.name) }
-    MusicSort.ArtistLetter -> list.sortedBy {
-        sortKeyOf(it.artistLine) + "\u0000" + it.name.lowercase()
-    }
+    MusicSort.ArtistLetter -> list.sortedBy { sortKeyOf(it.artistLine) + "\u0000" + it.name.lowercase() }
     MusicSort.PlayCount -> list.sortedByDescending { it.userData.playCount }
 }

@@ -312,12 +312,30 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
      * 「@Composable invocations can only happen from the context of a @Composable function」）。
      */
     val sortedList by vm.sortedTracks.collectAsStateWithLifecycle()
-    val shouldLoad by remember(paged) {
-        derivedStateOf { paged.canLoadMore && (grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= paged.items.size - 12 }
+    val allLoaded by vm.allLoaded.collectAsStateWithLifecycle()
+    /**
+     * 用户口径（2026-11-27，#17）**歌曲 tab 不做滚动分页**。
+     *
+     * 原来这里会在滚动到底部时 `vm.loadMore()`，把新一页追加进列表 ——
+     * 那正是用户看到的「往下翻，一个个跳着出来」。
+     *
+     * 现在歌曲 tab 由 ViewModel 一次性全量拉完（`allLoaded`），
+     * 这里只对其它 tab（专辑/歌手/歌单）保留滚动分页。
+     */
+    val pagingEnabled = route.tab != "songs" && !route.tracksOnly
+    val shouldLoad by remember(paged, pagingEnabled) {
+        derivedStateOf {
+            pagingEnabled && paged.canLoadMore &&
+                (grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= paged.items.size - 12
+        }
     }
-    LaunchedEffect(grid, paged) { snapshotFlow { shouldLoad }.collect { if (it) vm.loadMore() } }
+    LaunchedEffect(grid, paged, pagingEnabled) {
+        snapshotFlow { shouldLoad }.collect { if (it) vm.loadMore() }
+    }
 
     when {
+        /** 歌曲 tab 全量还没回来时先显示 loading，别让用户看到半截列表。 */
+        !pagingEnabled && !allLoaded && sortedList.isEmpty() -> LoadingState()
         paged.items.isEmpty() && folders.isEmpty() && paged.loading -> LoadingState()
         paged.items.isEmpty() && folders.isEmpty() && paged.error != null -> ErrorState(paged.error!!, vm::retry)
         paged.items.isEmpty() && folders.isEmpty() && paged.endReached -> MessageState("暂无音乐", icon = Icons.Rounded.MusicNote)
