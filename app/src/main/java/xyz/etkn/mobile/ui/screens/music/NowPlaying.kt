@@ -102,6 +102,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.offset
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
