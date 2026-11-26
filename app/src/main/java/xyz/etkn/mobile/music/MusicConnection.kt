@@ -946,23 +946,47 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         }
     }
 
-    /** 系统「下一首」：先确保队列在，再切下一首并播放。 */
+    /**
+     * 用户口径（2026-11-27，#27）**「下一曲」键在没播放时 = 开始播放**。
+     *
+     * 用户原话：
+     *  「我要求是APP如果没在后台的话，播放和下一曲都要唤醒APP的音乐播放的开始播放，
+     *    下一曲这个按键也是播放，只有真的在播放的时候，下一曲才是下一曲」
+     *
+     * 规则：
+     * ```
+     * App 没在后台 / 没在播 → 下一曲键 = 开始播放（接着上次的进度，不跳歌）
+     * App 正在播放        → 下一曲键 = 真的切到下一首
+     * ```
+     *
+     * 为什么这么设计（用户场景）：车上/蓝牙耳机只有一个「下一曲」物理键，
+     * 想听歌时按它，期望的是「开始放」，而不是「跳过上次那首」。
+     */
     fun systemNext() {
         graph.scope.launch {
             withTimeoutOrNull(10_000L) {
                 graph.sessions.state.first { it is SessionState.SignedIn }
             }
             val p = _player
-            if (p == null || p.mediaItemCount == 0) {
-                /** 队列还没恢复：先恢复，再切下一首。 */
-                resumeRemembered()
-                /** 等队列真的装进播放器（最多 5 秒）。 */
-                var waited = 0
-                while (player.mediaItemCount == 0 && waited < 50) {
-                    kotlinx.coroutines.delay(100)
-                    waited++
+            /** 现在真的在播放吗？（决定「下一首」还是「开始播」） */
+            val actuallyPlaying = p != null && p.isPlaying
+            if (!actuallyPlaying) {
+                /** 没在播 → 等同于"开始播放"，续上次进度。 */
+                android.util.Log.i("ETKN-Music", "systemNext: 当前没在播 → 当作开始播放")
+                if (p != null && p.mediaItemCount > 0) {
+                    val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+                    if (uri.startsWith("$SCHEME://") && _remembered.value != null) {
+                        resumeRemembered()
+                    } else {
+                        runCatching { p.prepare() }
+                        p.play()
+                    }
+                } else if (_remembered.value != null) {
+                    resumeRemembered()
                 }
+                return@launch
             }
+            /** 真的在播 → 切下一首。 */
             runCatching {
                 player.seekToNextMediaItem()
                 player.prepare()
@@ -970,33 +994,40 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             }
             android.util.Log.i(
                 "ETKN-Music",
-                "systemNext 完成 idx=${player.currentMediaItemIndex} count=${player.mediaItemCount}",
+                "systemNext 完成（切歌） idx=${player.currentMediaItemIndex}",
             )
         }
     }
 
-    /** 系统「上一首」。 */
+    /** 系统「上一首」：规则同 [systemNext] —— 没在播就当开始播放（#27）。 */
     fun systemPrevious() {
         graph.scope.launch {
             withTimeoutOrNull(10_000L) {
                 graph.sessions.state.first { it is SessionState.SignedIn }
             }
             val p = _player
-            if (p == null || p.mediaItemCount == 0) {
-                resumeRemembered()
-                /** 等队列真的装进播放器（最多 5 秒）。 */
-                var waited = 0
-                while (player.mediaItemCount == 0 && waited < 50) {
-                    kotlinx.coroutines.delay(100)
-                    waited++
+            val actuallyPlaying = p != null && p.isPlaying
+            if (!actuallyPlaying) {
+                android.util.Log.i("ETKN-Music", "systemPrevious: 当前没在播 → 当作开始播放")
+                if (p != null && p.mediaItemCount > 0) {
+                    val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+                    if (uri.startsWith("$SCHEME://") && _remembered.value != null) {
+                        resumeRemembered()
+                    } else {
+                        runCatching { p.prepare() }
+                        p.play()
+                    }
+                } else if (_remembered.value != null) {
+                    resumeRemembered()
                 }
+                return@launch
             }
             runCatching {
                 player.seekToPreviousMediaItem()
                 player.prepare()
                 player.play()
             }
-            android.util.Log.i("ETKN-Music", "systemPrevious 完成 idx=${player.currentMediaItemIndex}")
+            android.util.Log.i("ETKN-Music", "systemPrevious 完成（切歌） idx=${player.currentMediaItemIndex}")
         }
     }
 
