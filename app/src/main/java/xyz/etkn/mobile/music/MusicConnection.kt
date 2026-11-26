@@ -912,6 +912,94 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      *    （它会等登录态就绪再解析）
      *  · 其他情况 → prepare + play
      */
+    /**
+     * 用户口径（2026-11-27，#26）**系统/蓝牙/车机的播放命令**。
+     *
+     * 场景（用户实测）：
+     *  · 连着 CarLife，按方向盘「下一曲」→ 应该直接开始播
+     *  · 蓝牙耳机双击 → 同理
+     *  · App 没启动时也要能拉起并播
+     *
+     * 共同前提：**必须等登录态就绪**，否则 token 没恢复、直链解析失败，
+     * 表现就是「进程起来了但没声音」。
+     */
+    fun systemPlay() {
+        graph.scope.launch {
+            withTimeoutOrNull(10_000L) {
+                graph.sessions.state.first { it is SessionState.SignedIn }
+            }
+            val p = _player
+            if (p != null && p.mediaItemCount > 0 && p.playbackState != Player.STATE_IDLE) {
+                /** 已有内容：直接播（可能停在占位 URL，先尝试 prepare）。 */
+                val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+                if (uri.startsWith("$SCHEME://") && _remembered.value != null) {
+                    resumeRemembered()
+                } else {
+                    runCatching { p.prepare() }
+                    p.play()
+                }
+            } else if (_remembered.value != null) {
+                /** 没有内容：从记忆恢复整个队列再播。 */
+                resumeRemembered()
+            }
+            android.util.Log.i("ETKN-Music", "systemPlay 完成 state=${_player?.playbackState}")
+        }
+    }
+
+    /** 系统「下一首」：先确保队列在，再切下一首并播放。 */
+    fun systemNext() {
+        graph.scope.launch {
+            withTimeoutOrNull(10_000L) {
+                graph.sessions.state.first { it is SessionState.SignedIn }
+            }
+            val p = _player
+            if (p == null || p.mediaItemCount == 0) {
+                /** 队列还没恢复：先恢复，再切下一首。 */
+                resumeRemembered()
+                /** 等队列真的装进播放器（最多 5 秒）。 */
+                var waited = 0
+                while (player.mediaItemCount == 0 && waited < 50) {
+                    kotlinx.coroutines.delay(100)
+                    waited++
+                }
+            }
+            runCatching {
+                player.seekToNextMediaItem()
+                player.prepare()
+                player.play()
+            }
+            android.util.Log.i(
+                "ETKN-Music",
+                "systemNext 完成 idx=${player.currentMediaItemIndex} count=${player.mediaItemCount}",
+            )
+        }
+    }
+
+    /** 系统「上一首」。 */
+    fun systemPrevious() {
+        graph.scope.launch {
+            withTimeoutOrNull(10_000L) {
+                graph.sessions.state.first { it is SessionState.SignedIn }
+            }
+            val p = _player
+            if (p == null || p.mediaItemCount == 0) {
+                resumeRemembered()
+                /** 等队列真的装进播放器（最多 5 秒）。 */
+                var waited = 0
+                while (player.mediaItemCount == 0 && waited < 50) {
+                    kotlinx.coroutines.delay(100)
+                    waited++
+                }
+            }
+            runCatching {
+                player.seekToPreviousMediaItem()
+                player.prepare()
+                player.play()
+            }
+            android.util.Log.i("ETKN-Music", "systemPrevious 完成 idx=${player.currentMediaItemIndex}")
+        }
+    }
+
     fun toggle() {
         val p = _player ?: return
         if (p.isPlaying) {

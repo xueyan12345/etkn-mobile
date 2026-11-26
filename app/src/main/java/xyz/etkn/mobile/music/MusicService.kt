@@ -319,6 +319,57 @@ class MusicService : MediaLibraryService() {
         ): ListenableFuture<MutableList<Media3Item>> = Futures.immediateFuture(mediaItems)
 
         /**
+         * 用户口径（2026-11-27，#26）**系统/蓝牙/车机发来的「播放/下一首」命令要真执行**。
+         *
+         * 用户实测（车上连着 CarLife）：
+         *  「我在车上播放也一样连接CarLife，点击方向盘的下一曲，就可以直接播放，而且是继续播放」
+         *
+         * adb 实测：App 被 force-stop 后按 KEYCODE_MEDIA_NEXT（keyevent 87），
+         * 进程**能**被拉起（说明自启动白名单生效了），但只恢复到 PAUSED 原曲，
+         * 没有真的跳到下一首 —— 因为命令没人接。
+         *
+         * 这个回调就是接命令的地方：
+         *  · `COMMAND_PLAY_PAUSE` → 播放/暂停（要等登录态 + 真直链）
+         *  · `COMMAND_SEEK_TO_NEXT` / `COMMAND_SEEK_TO_NEXT_MEDIA_ITEM` → 下一首
+         *  · `COMMAND_SEEK_TO_PREVIOUS*` → 上一首
+         *
+         * 关键：这些命令可能在「App 刚被拉起、token 还没恢复」时到达，
+         * 所以统一走 `music.executeSystemCommand()`，它内部会等会话就绪。
+         */
+        override fun onPlayerCommandRequest(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            playerCommand: Int,
+        ): Int {
+            android.util.Log.i(
+                "ETKN-Music",
+                "onPlayerCommandRequest: cmd=$playerCommand from=${controller.packageName}",
+            )
+            val music = applicationContext.graph.music
+            when (playerCommand) {
+                Player.COMMAND_PLAY_PAUSE -> applicationContext.graph.scope.launch {
+                    runCatching { music.systemPlay() }
+                }
+                Player.COMMAND_SEEK_TO_NEXT,
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                -> applicationContext.graph.scope.launch {
+                    runCatching { music.systemNext() }
+                }
+                Player.COMMAND_SEEK_TO_PREVIOUS,
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                -> applicationContext.graph.scope.launch {
+                    runCatching { music.systemPrevious() }
+                }
+                else -> return android.os.Bundle.EMPTY.let {
+                    /** 不认识的命令：返回 -1 让 Media3 走默认处理。 */
+                    -1
+                }
+            }
+            /** `RESULT_SUCCESS`(=0) 表示"已处理"。 */
+            return androidx.media3.session.SessionResult.RESULT_SUCCESS
+        }
+
+        /**
          * 内容库浏览：ETKN 不做 MediaBrowser 浏览树（不需要 Android Auto 那套），
          * 返回空库即可 —— 系统只要求"类型是 MediaLibraryService"，不要求真的有曲库树。
          */
