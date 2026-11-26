@@ -332,8 +332,25 @@ fun NowPlayingScreen() {
     val graph = LocalContext.current.graph
     val music = graph.music
     val state by music.state.collectAsStateWithLifecycle()
-    val track = state.current
     var pane by remember { mutableStateOf<Pane?>(null) }
+    /**
+     * 用户口径（2026-11-27，#41）**重启后点迷你条要能进得来**。
+     *
+     * 修的 bug（用户原话）：
+     *  「完全退出 app，打开音乐界面，下边的播放控制条现在显示都正常，但是不能点，
+     *    正常点这个播放控制条不是应该能弹出来界面吗，但是点不了，点的时候它抖了一下，
+     *    不弹出那个详情页」
+     *
+     * 根因：这里原来写 `if (track == null) { nav.back(); return }` ——
+     * 用的是 `state.current`，而重启后还没播，它是 null，
+     * 于是页面刚被推上去就立刻 pop 回来，用户看到的就是「抖了一下」。
+     *
+     * 现在：`state.current` 为空时退回记忆里的那首（和迷你条同一套判断），
+     * 只有**记忆也没有**（从没播过）才返回。
+     */
+    val remembered by music.remembered.collectAsStateWithLifecycle()
+    val memory = remembered
+    val track: Item? = state.current ?: memory?.let { mem -> music.itemFromMemory(mem) }
     if (track == null) {
         LaunchedEffect(Unit) { nav.back() }
         return

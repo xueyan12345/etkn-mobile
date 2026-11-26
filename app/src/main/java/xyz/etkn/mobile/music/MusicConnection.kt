@@ -31,6 +31,7 @@ import xyz.etkn.mobile.data.session.SessionState
 import xyz.etkn.mobile.player.PlaybackAddress
 import xyz.etkn.mobile.player.PlayerFactory
 import java.util.concurrent.ConcurrentHashMap
+import xyz.etkn.mobile.data.model.UserData
 
 @Immutable
 data class MusicState(
@@ -195,6 +196,90 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             .setMediaMetadata(metadata)
             .build()
     }
+
+    /**
+     * 用户口径（2026-11-27，#42）**Service 起来时把「上次那首」预装进播放器**。
+     *
+     * 为什么必须预装（对照系统音乐那张卡片：`00:00 / 04:00` + 播放键可点）：
+     * 系统卡片要显示封面、总时长、可点的播放键，前提是
+     * ```
+     * player.mediaItemCount >= 1     // 有内容
+     * player.duration > 0            // 知道时长（prepare 后才有）
+     * isCommandAvailable(PLAY_PAUSE) // 命令可用
+     * ```
+     * 播放器空着的时候这三条全不成立，卡片整块就是灰的 —— 这正是用户报的问题。
+     *
+     * 注意：这里**只 prepare 不 play**，不会自己出声，用户点播放才播。
+     */
+    fun restoreForResumption() {
+        val memory = _remembered.value ?: return
+        val p = player
+        if (p.mediaItemCount > 0) return   // 已经有内容，不用重装
+        runCatching {
+            p.setMediaItem(resumeMediaItem(memory))
+            p.prepare()
+            p.seekTo(memory.positionMs)
+        }.onFailure { android.util.Log.w("ETKN-Music", "restoreForResumption failed", it) }
+    }
+
+    /**
+     * 用户口径（2026-11-27，#41）**把记忆还原成一个可显示的最小 Item**。
+     *
+     * 播放页在重启后 `state.current` 是 null，需要用它来渲染封面/歌名/进度，
+     * 否则页面会直接被 pop 掉（用户看到「抖一下」）。
+     *
+     * 只填显示必需字段，不填 mediaSources —— 播放时会走 `resumeRemembered()` 重新取详情。
+     */
+    fun itemFromMemory(memory: MusicMemory): Item = Item(
+        id = memory.itemId,
+        name = memory.name,
+        type = "Audio",
+        collectionType = null,
+        sourceType = null,
+        overview = null,
+        taglines = emptyList(),
+        productionYear = null,
+        premiereDate = null,
+        dateCreated = null,
+        endDate = null,
+        officialRating = null,
+        communityRating = null,
+        criticRating = null,
+        tmdbRating = null,
+        doubanRating = null,
+        imdbRating = null,
+        runTimeTicks = 0L,
+        genres = emptyList(),
+        studios = emptyList(),
+        seriesId = null,
+        seriesName = null,
+        seasonId = null,
+        seasonName = null,
+        parentIndexNumber = null,
+        indexNumber = null,
+        indexNumberEnd = null,
+        imageTags = memory.primaryTag?.takeIf { it.isNotBlank() }?.let { mapOf("Primary" to it) } ?: emptyMap(),
+        backdropTags = emptyList(),
+        parentBackdropItemId = null,
+        parentBackdropTags = emptyList(),
+        parentLogoItemId = null,
+        parentLogoTag = null,
+        parentThumbItemId = null,
+        parentThumbTag = null,
+        seriesPrimaryTag = null,
+        primaryAspectRatio = null,
+        userData = UserData(),
+        people = emptyList(),
+        mediaSources = emptyList(),
+        childCount = null,
+        recursiveItemCount = null,
+        providerIds = emptyMap(),
+        isFolder = false,
+        locationType = null,
+        album = memory.album.ifEmpty { null },
+        albumKey = null,
+        artists = if (memory.artist.isNotBlank()) listOf(memory.artist) else emptyList(),
+    )
 
     /**
      * 用户口径（2026-11-27，#29）**点「记忆里的那首歌」→ 从上次进度续播**。

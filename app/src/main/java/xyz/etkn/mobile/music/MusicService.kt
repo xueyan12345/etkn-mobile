@@ -5,34 +5,48 @@ import android.content.Intent
 import androidx.media3.common.Player
 import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import androidx.media3.common.MediaItem as Media3Item
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import xyz.etkn.mobile.MainActivity
 import xyz.etkn.mobile.graph
 
 /**
- * Hosts a MediaSession around the shared music player so playback continues in the
- * background with a system media notification, lock-screen and Bluetooth controls.
+ * 音乐播放服务。
  *
- * 用户口径（2026-11-27，#35）**必须真能响应系统/蓝牙的播放控制**。
+ * 用户口径（2026-11-27，#42）**必须是 MediaLibraryService，否则系统卡片按钮永远是灰的**。
  *
- * 修的 bug（用户实测）：
- *  「虽然我能选择默认应用，但是我的手机是 oppo，下拉系统状态栏，
- *    不能在播放音乐的那个方形控件上点击播放……
- *    连接蓝牙耳机之后，点击耳机的播放，或者下一集能直接唤醒 etkn 的音乐播放」
+ * 官方文档（Android Developers / Media3 / Background playback）原文：
+ * ```
+ * By default, playback resumption is turned off. This means the user can't resume
+ * playback when your service isn't running.
+ * To opt-in to this feature, you need to declare a media button receiver and
+ * implement the onPlaybackResumption method.
  *
- * 根因：原来只 `.setSessionActivity(open)`，**完全没有 `MediaSession.Callback`**。
- * 系统状态栏那个方形媒体控件、蓝牙耳机线控发的都是 MediaController 命令，
- * 走的是 Session 的 Callback；没有 Callback 就没人接，表现就是「点了没反应」。
+ * Note: The Android System UI resumption notification is only available
+ * if you implement a MediaLibraryService to serve a content library.
+ * ```
  *
- * 另外「App 不在后台点耳机能续播」靠的是 `onPlaybackResumption`：
- * 系统会先查询「上次播到哪」，App 必须在这里返回一组 MediaItem + 起始位置，
- * 系统才能把播放器拉起来。
+ * 用户实测对照：
+ *  · 系统自带音乐设为默认（后台已彻底关闭）→ 媒体卡片中间播放键**可点**，点了直接续播
+ *  · 换成 ETKN（原实现是 MediaSessionService）→ 同一个位置**灰色点不动**
+ *
+ * 差别就在这里：系统 UI 的「续播卡片」只对 MediaLibraryService 开放。
+ * 这不是 OPPO 特有的适配问题，是 Android 平台标准 API 的要求，所有机型通用。
+ *
+ * 三个要点：
+ *  · 继承 `MediaLibraryService`，`onGetSession` 返回 `MediaLibrarySession`
+ *  · `onPlaybackResumption` 用**带 `isForPlayback` 的新签名**
+ *    （蓝牙耳机直连播放时系统会传 true）
+ *  · Service 起来时把「上次那首」预装进播放器并 prepare —— 这样卡片才有
+ *    封面、总时长、可点的播放键（对照系统音乐那张卡片：00:00 / 04:00）
  */
-class MusicService : MediaSessionService() {
-    private var session: MediaSession? = null
+class MusicService : MediaLibraryService() {
+    private var session: MediaLibrarySession? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -46,21 +60,40 @@ class MusicService : MediaSessionService() {
         val bitmaps = DataSourceBitmapLoader.Builder(this)
             .setDataSourceFactory(OkHttpDataSource.Factory(graph.http.images))
             .build()
-        session = MediaSession.Builder(this, graph.music.player)
+        session = MediaLibrarySession.Builder(this, graph.music.player, MusicCallback())
             .setSessionActivity(open)
             .setBitmapLoader(bitmaps)
-            .setCallback(MusicCallback())
             .build()
+        /**
+         * 用户口径（#42）**起来就把上次那首预装进播放器**。
+         *
+         * 为什么必须这么做：系统卡片要显示「封面 / 总时长 / 可点的播放键」，
+         * 前提是播放器里已经有一个 MediaItem 且已 prepare（duration 已知）。
+         * 播放器空着的时候 `mediaItemCount == 0`、`duration == 0`、
+         * `isCommandAvailable(COMMAND_PLAY_PAUSE) == false` → 卡片整块是灰的。
+         *
+         * 对照图（系统音乐）：00:00 / 04:00 —— 时长已知，正是"预装 + prepare"的结果。
+         */
+        applicationContext.graph.music.restoreForResumption()
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val player = session?.player
-        if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
-            applicationContext.graph.music.stop()
-            stopSelf()
-        }
+        /**
+         * 用户口径（#42）**App 被划掉时不要再 clearMediaItems**。
+         *
+         * 原来这里调 `graph.music.stop()`，而 `stop()` 里有 `clearMediaItems()` ——
+         * 播放器被清空 → 系统卡片立刻变灰、时长归零、续播入口消失。
+         *
+         * 现在只暂停、保留 MediaItem：
+         *  · 卡片继续显示封面/歌名/时长
+         *  · 点播放键能立刻接着播
+         *  · Service 由系统按需回收，回收后走 onPlaybackResumption 续播
+         */
+        applicationContext.graph.music.pause()
+        if (session?.player?.playWhenReady == true) return
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -70,15 +103,9 @@ class MusicService : MediaSessionService() {
     }
 
     /**
-     * 用户口径（#35）**媒体按键/系统控件的真正入口**。
-     *
-     * 三个关键点：
-     *  · `onConnect`：放开播放/暂停/上一首/下一首这些命令，系统控件才会显示对应按钮
-     *  · `onPlaybackResumption`：App 不在后台时点耳机 → 系统问「上次播到哪」，
-     *    这里返回上次那首 + 它的进度，系统才能把播放续上
-     *  · `onAddMediaItems`：把系统传回来的 MediaItem（我们只带了 id）解析成可播的条目
+     * 用户口径（#42）**系统 UI / 蓝牙耳机的控制入口**。
      */
-    private inner class MusicCallback : MediaSession.Callback {
+    private inner class MusicCallback : MediaLibrarySession.Callback {
 
         override fun onConnect(
             session: MediaSession,
@@ -87,12 +114,11 @@ class MusicService : MediaSessionService() {
             /**
              * 声明允许的命令。
              *
-             * 系统状态栏的方形控件只显示 `COMMAND_PLAY_PAUSE`、上一首/下一首对应的
-             * `COMMAND_SEEK_TO_NEXT_MEDIA_ITEM` / `COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM`；
-             * 不声明的话，那里只会显示一个灰的点不动。
+             * 系统状态栏那个方形控件只用这几个：
+             * `COMMAND_PLAY_PAUSE`、上一首/下一首对应的 SEEK_TO_*_MEDIA_ITEM。
+             * 不声明的话那里只有一个灰点，点不动。
              */
             val builder = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
-            // 系统状态栏那个方形控件要用到的命令，逐个 add（Builder 只有 addCommand/add）
             builder.add(Player.COMMAND_PLAY_PAUSE)
             builder.add(Player.COMMAND_PREPARE)
             builder.add(Player.COMMAND_STOP)
@@ -104,36 +130,37 @@ class MusicService : MediaSessionService() {
             builder.add(Player.COMMAND_GET_CURRENT_MEDIA_ITEM)
             builder.add(Player.COMMAND_GET_TIMELINE)
             builder.add(Player.COMMAND_GET_METADATA)
-            val playerCommands = builder.build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
-                .setAvailablePlayerCommands(playerCommands)
+                .setAvailablePlayerCommands(builder.build())
                 .build()
         }
 
         /**
-         * 用户口径（#35）**App 不在后台、点耳机按钮也能续播上次那首**。
+         * 用户口径（#42）**App 不在后台时，点卡片/蓝牙耳机能续播上次那首**。
          *
-         * 系统在「MediaSession 已经不存在」时会先调这个方法，
-         * 拿回一组 MediaItem + startIndex + startPositionMs，
-         * 然后用这些把 Service 拉起来接着播。
+         * 官方签名带 `isForPlayback`：
+         *  · `true` = 蓝牙耳机/车机这类「真的要播」，系统会拉起前台服务
+         *  · `false` = 系统 UI 只是恢复界面
          *
-         * 这里从 `graph.music.remembered` 读上次的歌和进度 ——
-         * 就是迷你条上显示的那份「记忆状态」。
+         * 两参数那个旧签名在新版 Media3 里可能不被调用，所以必须用这个。
          */
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
+            isForPlayback: Boolean,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
             val remembered = applicationContext.graph.music.remembered.value
             if (remembered == null) {
-                // 从没播过：返回空，系统就不会拉起播放（符合预期）
+                // 从没播过：返回空列表，系统就不会拉起播放（符合预期）
                 return Futures.immediateFuture(
-                    MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L),
+                    MediaLibraryService.MediaLibrarySession.MediaItemsWithStartPosition(
+                        ImmutableList.of(), 0, 0L,
+                    ),
                 )
             }
             return Futures.immediateFuture(
-                MediaSession.MediaItemsWithStartPosition(
-                    /* mediaItems = */ listOf(
+                MediaLibraryService.MediaLibrarySession.MediaItemsWithStartPosition(
+                    /* mediaItems = */ ImmutableList.of(
                         applicationContext.graph.music.resumeMediaItem(remembered),
                     ),
                     /* startIndex = */ 0,
@@ -143,16 +170,49 @@ class MusicService : MediaSessionService() {
         }
 
         /**
-         * 系统把 MediaItem 传回来时要变成能播的条目。
+         * 系统把 MediaItem 传回来时原样返回。
          *
-         * 我们的 MediaItem 里只塞了 `itemId`（不塞直链，因为直链会过期），
-         * 真正的解析在 `MusicConnection.resolve()` 里按 itemId 现取 —— 所以这里原样返回即可。
+         * 我们的 MediaItem 只带 `itemId`（直链会过期，不塞），
+         * 真正解析在 `MusicConnection.resolve()` 里按 itemId 现取。
          */
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
-            mediaItems: MutableList<androidx.media3.common.MediaItem>,
-        ): ListenableFuture<MutableList<androidx.media3.common.MediaItem>> =
-            Futures.immediateFuture(mediaItems)
+            mediaItems: MutableList<Media3Item>,
+        ): ListenableFuture<MutableList<Media3Item>> = Futures.immediateFuture(mediaItems)
+
+        /**
+         * 内容库浏览：ETKN 不做 MediaBrowser 浏览树（不需要 Android Auto 那套），
+         * 返回空库即可 —— 系统只要求"类型是 MediaLibraryService"，不要求真的有曲库树。
+         */
+        override fun onGetLibraryRoot(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: MediaLibraryService.LibraryParams?,
+        ): ListenableFuture<LibraryResult<Media3Item>> =
+            Futures.immediateFuture(LibraryResult.ofItem(rootItem(), params))
+
+        override fun onGetChildren(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: MediaLibraryService.LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<Media3Item>>> =
+            Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.of(), params))
     }
+
+    /** 根节点（空库的占位 root）。 */
+    private fun rootItem(): Media3Item = Media3Item.Builder()
+        .setMediaId("etkn-root")
+        .setMediaMetadata(
+            androidx.media3.common.MediaMetadata.Builder()
+                .setIsBrowsable(true)
+                .setIsPlayable(false)
+                .setMediaType(androidx.media3.common.MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
+                .setTitle("ETKN 音乐")
+                .build(),
+        )
+        .build()
 }

@@ -170,9 +170,14 @@ fun MusicSearchScreen(route: MusicSearchRoute) {
                                 item(span = { GridItemSpan(maxLineSpan) }, key = "h-albums") {
                                     SectionLabel("专辑 · ${result.albums.size}")
                                 }
-                                items(result.albums.size, key = { "a-" + result.albums[it].id }) { i ->
+                                items(result.albums.size, key = { "a-" + result.albums[it].name }) { i ->
                                     val album: Item = result.albums[i]
-                                    SquareCard(album, onClick = { nav.open(album) }, width = null)
+                                    /** 用户口径（#40）点专辑 → 按专辑名再搜一次，列出这张专辑的歌。 */
+                                    SquareCard(
+                                        album,
+                                        onClick = { query = album.name },
+                                        width = null,
+                                    )
                                 }
                             }
                             /** ③ 歌手 */
@@ -180,9 +185,14 @@ fun MusicSearchScreen(route: MusicSearchRoute) {
                                 item(span = { GridItemSpan(maxLineSpan) }, key = "h-artists") {
                                     SectionLabel("歌手 · ${result.artists.size}")
                                 }
-                                items(result.artists.size, key = { "ar-" + result.artists[it].id }) { i ->
+                                items(result.artists.size, key = { "ar-" + result.artists[it].name }) { i ->
                                     val artist: Item = result.artists[i]
-                                    SquareCard(artist, onClick = { nav.open(artist) }, width = null)
+                                    /** 用户口径（#40）点歌手 → 按歌手名再搜，列出他的歌。 */
+                                    SquareCard(
+                                        artist,
+                                        onClick = { query = artist.name },
+                                        width = null,
+                                    )
                                 }
                             }
                         }
@@ -293,8 +303,25 @@ class MusicSearchViewModel(
         tracks.forEach { track ->
             val key = if (byAlbum) track.album.orEmpty().trim() else track.artistLine.trim()
             if (key.isEmpty() || key in seen) return@forEach
+            /**
+             * 用户口径（2026-11-27，#40）**封面必须能显示**。
+             *
+             * 修的 bug：搜索结果里「专辑 · 7」那一排全是灰块，没有图。
+             *
+             * 根因：上一版用
+             * ```
+             * track.copy(id = "album:$key", name = key, ...)
+             * ```
+             * 造了一个**假 ID**。而 `SquareCard` 取图的规则是
+             * `images().music(item, ...)` → 内部用 `item.id` 拼
+             * `/api/tv/Items/{id}/Images/Primary` —— 服务端不认识 `album:xxx`
+             * 这种 id，直接 404，于是显示占位图。
+             *
+             * 现在：**id 保持该专辑下第一首歌的真实 itemId**（这样封面能正常拿到，
+             * 因为歌曲自己带 Primary 图），只把 `name` 换成专辑名/歌手名用于显示。
+             * 点进去时按 `name` 去搜这个专辑/歌手的歌，不依赖 id。
+             */
             seen[key] = track.copy(
-                id = (if (byAlbum) "album:" else "artist:") + key,
                 name = key,
                 type = if (byAlbum) "MusicAlbum" else "MusicArtist",
                 isFolder = true,
