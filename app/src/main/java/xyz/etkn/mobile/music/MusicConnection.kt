@@ -134,7 +134,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             .putString("m_id", item.id)
             .putString("m_name", item.name)
             .putString("m_artist", item.artistLine)
-            .putString("m_album", item.album)
+            .putString("m_album", item.album ?: "")
             .putString("m_tag", item.imageTags["Primary"] ?: "")
             .putLong("m_pos", pos)
             .putLong("m_dur", dur)
@@ -144,7 +144,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             itemId = item.id,
             name = item.name,
             artist = item.artistLine,
-            album = item.album,
+            album = item.album ?: "",
             primaryTag = item.imageTags["Primary"]?.takeIf { it.isNotBlank() },
             positionMs = pos,
             durationMs = dur,

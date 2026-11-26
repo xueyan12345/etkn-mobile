@@ -267,7 +267,7 @@ private fun MiniLyrics(track: Item?, positionMs: Long) {
         listOf(-1, 0, 1).forEach { offset ->
             val line = lines.getOrNull(current + offset)
             Text(
-                line ?: "",
+                text = line ?: "",
                 style = if (offset == 0) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodySmall,
                 color = base.copy(
                     alpha = when (offset) {
