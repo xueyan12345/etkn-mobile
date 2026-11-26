@@ -27,11 +27,13 @@ import xyz.etkn.mobile.data.api.ImageUrls
 import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.data.model.TICKS_PER_MS
 import xyz.etkn.mobile.data.session.ActiveSession
-import xyz.etkn.mobile.data.session.SessionState
 import xyz.etkn.mobile.player.PlaybackAddress
 import xyz.etkn.mobile.player.PlayerFactory
 import java.util.concurrent.ConcurrentHashMap
 import xyz.etkn.mobile.data.model.UserData
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
+import xyz.etkn.mobile.data.session.SessionState
 
 @Immutable
 data class MusicState(
@@ -167,8 +169,42 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             "ETKN-Music",
             "init: remembered=${_remembered.value?.let { "id=${it.itemId} queue=${it.queueIds.size} pos=${it.positionMs} src=${it.sourceId != null}" } ?: "null"}",
         )
-        runCatching { restoreForResumption() }.onFailure {
-            android.util.Log.w("ETKN-Music", "restore failed", it)
+        /**
+         * 用户口径（2026-11-27，#24）**必须等登录态恢复后再恢复队列**。
+         *
+         * 实测日志（这次是真正的根因）：
+         * ```
+         * init: remembered=id=item-25293 queue=601 pos=41145 src=false
+         * restore: mediaItemCount=0 q=601
+         * restore 解析直链失败
+         *   va1: 登录已过期，请重新登录      ← 就是这句
+         * ```
+         *
+         * 原因：`SessionManager.restore()` 是 **异步** 的（`scope.launch`），
+         * 而这里 `init` 里同步调 `restoreForResumption()` —— token 还没解出来，
+         * 所有 API 调用都返回「登录已过期」：
+         *  · 直链解析失败 → 队列装不进播放器 → 播放列表空
+         *  · `api.item()` 失败 → 点播放没反应
+         *  · sourceId 永远拿不到 → src=false → 迷你条没歌词
+         *
+         * 三个问题同一个根因。
+         *
+         * 现在：等 `sessions.state` 变成 SignedIn（有 token）之后再恢复。
+         */
+        graph.scope.launch {
+            runCatching {
+                /** 等登录态就绪（最多 15 秒，避免卡死）。 */
+                withTimeoutOrNull(15_000L) {
+                    graph.sessions.state.first { it is SessionState.SignedIn }
+                }
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "登录态就绪（${graph.sessions.state.value.javaClass.simpleName}），开始恢复队列",
+                )
+                restoreForResumption()
+            }.onFailure {
+                android.util.Log.w("ETKN-Music", "restore failed", it)
+            }
         }
         android.util.Log.i(
             "ETKN-Music",
@@ -431,6 +467,13 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
              */
             graph.scope.launch {
                 runCatching {
+                    /**
+                     * 用户口径（#25）**Service 直接调进来时也要等登录态**。
+                     * （init 那条路径已经等了，但 MusicService.onCreate 是另一条入口。）
+                     */
+                    withTimeoutOrNull(10_000L) {
+                        graph.sessions.state.first { it is SessionState.SignedIn }
+                    }
                     val info = graph.api.playbackInfo(memory.itemId, audio = true)
                     val source = info.sources.firstOrNull() ?: return@runCatching
                     val active = session ?: return@runCatching
@@ -671,6 +714,13 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val memory = _remembered.value ?: return
         graph.scope.launch {
             /**
+             * 用户口径（#25）**等登录态就绪再解析**，否则 token 没恢复
+             * 所有 API 都返回「登录已过期」，点播放永远没反应。
+             */
+            withTimeoutOrNull(10_000L) {
+                graph.sessions.state.first { it is SessionState.SignedIn }
+            }
+            /**
              * 先按队列 id 重建整个列表。
              * 当前这首优先用线上详情（有完整 MediaSource），
              * 拿不到就用记忆里的最小 Item（至少能播、能显示）。
@@ -846,15 +896,31 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 修法：播放前检查当前 item 的 URL 是不是占位 scheme，
      * 是的话先用记忆里的 itemId 重新走一次完整播放（`resumeRemembered()`）。
      */
+    /**
+     * 用户口径（2026-11-27，#25）**点播放一定要有反应 —— 会话没就绪就先等它**。
+     *
+     * 用户原话：「重开之后点小播放条，进入播放页，点播放，没有任何反应，
+     *            一点也不好使还是有问题，没整明白」
+     *
+     * 实测日志：`va1: 登录已过期，请重新登录`
+     * App 刚启动时 token 还没恢复，`api.item()` / 直链解析全失败，
+     * 而这里原来直接调 `p.play()` —— 播放器里没有可播的源，就静默失败。
+     *
+     * 现在：
+     *  · 正在播 → 暂停
+     *  · 当前 item 是占位 URL（恢复出来的）→ 走 `resumeRemembered()`
+     *    （它会等登录态就绪再解析）
+     *  · 其他情况 → prepare + play
+     */
     fun toggle() {
         val p = _player ?: return
         if (p.isPlaying) {
             p.pause()
             return
         }
-        /** 当前 item 还是占位 URL → 重新解析并起播。 */
         val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
-        if (uri.startsWith("$SCHEME://") && _remembered.value != null) {
+        /** 占位 URL 或根本没有 item → 都要走完整解析。 */
+        if ((uri.startsWith("$SCHEME://") || p.currentMediaItem == null) && _remembered.value != null) {
             resumeRemembered()
             return
         }
