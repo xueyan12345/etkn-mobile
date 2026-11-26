@@ -153,13 +153,13 @@ class MusicService : MediaLibraryService() {
             if (remembered == null) {
                 // 从没播过：返回空列表，系统就不会拉起播放（符合预期）
                 return Futures.immediateFuture(
-                    MediaLibraryService.MediaLibrarySession.MediaItemsWithStartPosition(
+                    MediaSession.MediaItemsWithStartPosition(
                         ImmutableList.of(), 0, 0L,
                     ),
                 )
             }
             return Futures.immediateFuture(
-                MediaLibraryService.MediaLibrarySession.MediaItemsWithStartPosition(
+                MediaSession.MediaItemsWithStartPosition(
                     /* mediaItems = */ ImmutableList.of(
                         applicationContext.graph.music.resumeMediaItem(remembered),
                     ),

@@ -279,6 +279,17 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         album = memory.album.ifEmpty { null },
         albumKey = null,
         artists = if (memory.artist.isNotBlank()) listOf(memory.artist) else emptyList(),
+        isMissing = false,
+        status = null,
+        kind = null,
+        key = null,
+        artworkHash = null,
+        artistImage = null,
+        count = null,
+        chapters = emptyList(),
+        progress = if (memory.durationMs > 0) {
+            (memory.positionMs.toFloat() / memory.durationMs).coerceIn(0f, 1f)
+        } else 0f,
     )
 
     /**
