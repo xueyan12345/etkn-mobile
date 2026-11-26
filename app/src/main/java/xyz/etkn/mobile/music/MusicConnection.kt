@@ -163,7 +163,17 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
          * 现在放到 init 里（App 启动就执行），不等 Service。
          * 注意用 `runCatching` 兜住：恢复失败不能影响正常使用。
          */
-        runCatching { restoreForResumption() }
+        android.util.Log.i(
+            "ETKN-Music",
+            "init: remembered=${_remembered.value?.let { "id=${it.itemId} queue=${it.queueIds.size} pos=${it.positionMs} src=${it.sourceId != null}" } ?: "null"}",
+        )
+        runCatching { restoreForResumption() }.onFailure {
+            android.util.Log.w("ETKN-Music", "restore failed", it)
+        }
+        android.util.Log.i(
+            "ETKN-Music",
+            "init done: mediaItemCount=${_player?.mediaItemCount ?: -1} queue=${_state.value.queue.size}",
+        )
     }
 
     /** 空串返回空列表（不是 [""]）。 */
@@ -240,7 +250,26 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             .build()
         return MediaItem.Builder()
             .setMediaId(memory.itemId)
-            .setUri(Uri.Builder().scheme("etkn-music").authority(memory.itemId).build())
+            /**
+             * 用户口径（2026-11-27，#2）**URI 必须和 `toMediaItem` 完全一致**。
+             *
+             * 修的 bug：这里原来写 `authority(itemId)` —— itemId 在 authority 位、path 为空。
+             * 而 `resolve()` 取的是 `spec.uri.lastPathSegment`：
+             * ```
+             * val id = spec.uri.lastPathSegment ?: throw IllegalStateException("无效曲目")
+             * ```
+             * path 为空 → lastPathSegment == null → 直接抛「无效曲目」
+             * → 恢复出来的队列一 prepare 就崩，queue 归零。
+             *
+             * 正确写法（和 `toMediaItem` 一致）：scheme + authority("track") + appendPath(itemId)。
+             */
+            .setUri(
+                Uri.Builder()
+                    .scheme(SCHEME)
+                    .authority("track")
+                    .appendPath(memory.itemId)
+                    .build(),
+            )
             .setMediaMetadata(metadata)
             .build()
     }
@@ -304,6 +333,13 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 p.setMediaItems(list, startIndex, memory.positionMs)
             }
             p.prepare()
+            /**
+             * 用户口径（#2）**装完必须 publish 一次**。
+             *
+             * `state.queue` 是从 player 的 MediaItem 列表算出来的（在 `publish()` 里），
+             * 只 setMediaItems 不 publish，界面读到的队列依然是空的。
+             */
+            publish()
         }.onFailure { android.util.Log.w("ETKN-Music", "restoreForResumption failed", it) }
     }
 

@@ -95,6 +95,26 @@ class MusicPlaylistsViewModel(private val graph: AppGraph, private val parentId:
 }
 
 /** Paged `U/Music` listing for a tab / group key. Folder entries and artist bio come with page 0. */
+/**
+ * 用户口径（2026-11-27，#11）**按字母/拼音排序用系统 Collator**。
+ *
+ * 为什么不用自建的「汉字 Unicode 区段 → 首字母」表：
+ * 同一区段里常混着不同拼音首字母的字（阿 a / 波 b / 次 c 可能相邻），
+ * 靠区段猜必然出错。`Collator.getInstance(Locale.CHINA)` 是 JDK 内置的
+ * 中文排序规则，**本身就是按拼音排的**，这才是正统做法。
+ */
+private val COLLATOR: java.util.Comparator<String> =
+    java.text.Collator.getInstance(java.util.Locale.CHINA).let { c ->
+        c.strength = java.text.Collator.PRIMARY
+        java.util.Comparator { a, b -> c.compare(a, b) }
+    }
+
+/** 是否以汉字开头（用于把中文排在非中文前面）。 */
+private fun isCjk(text: String): Boolean {
+    val c = text.trim().firstOrNull() ?: return false
+    return Character.UnicodeScript.of(c.code) == Character.UnicodeScript.HAN
+}
+
 class MusicListViewModel(
     private val graph: AppGraph,
     private val parentId: String,
@@ -269,9 +289,33 @@ private fun pinyinInitial(text: String): String {
 
 private fun applySort(list: List<Item>, sort: MusicSort): List<Item> = when (sort) {
     MusicSort.AddedTime -> list.sortedByDescending { it.dateCreated ?: "" }
-    MusicSort.FirstLetter -> list.sortedWith(compareBy({ pinyinInitial(it.name) }, { it.name.lowercase() }))
+    /**
+     * 用户口径（2026-11-27，#11）**按字母排序必须是 A → B → C 的顺序**。
+     *
+     * 修的 bug（用户原话）：
+     *  「这个按字母排序也不对呀」「按字母排序不应该是A，然后B然后C吗」
+     *
+     * 根因有两个：
+     *
+     * ① **`#` 排在 `A` 前面**。原来直接按 `pinyinInitial()` 的返回值做字符串比较，
+     *    而非字母开头的（数字、符号、生僻字）统一返回 `"#"`，
+     *    而 `'#'` 的码位是 0x23，比 `'A'` 的 0x41 小 ——
+     *    所以列表变成 `# A B C ...`，用户看到的「顺序不对」就是这些 `#` 项全挤在最上面。
+     *
+     * ② **汉字按 Unicode 区段切字母本身不准**。同一区段里往往混着不同拼音首字母的字
+     *    （比如「阿(a)/波(b)/次(c)」可能被划进同一段），靠区段猜必然错。
+     *
+     * 现在的做法：
+     *  · 中文项按 **拼音全串** 排序（`Pinyin.full()`，见下），首字母自然就对了
+     *  · 非中文项（英文/数字/符号）排在字母之后（`#` 放到最后，符合常见音乐 App 习惯）
+     *  · 首字母索引也只从中文/英文本里取，不再出现 `#` 打头
+     */
+    /** 中文在前、非中文在后，同组内用系统 Collator 按拼音比较。 */
+    MusicSort.FirstLetter -> list.sortedWith(
+        compareBy({ if (isCjk(it.name)) 0 else 1 }, { it.name }, COLLATOR),
+    )
     MusicSort.ArtistLetter -> list.sortedWith(
-        compareBy({ pinyinInitial(it.artistLine) }, { it.artistLine.lowercase() }, { pinyinInitial(it.name) }),
+        compareBy({ if (isCjk(it.artistLine)) 0 else 1 }, { it.artistLine }, COLLATOR, compareBy { it.name }),
     )
     MusicSort.PlayCount -> list.sortedByDescending { it.userData.playCount }
 }

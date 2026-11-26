@@ -376,29 +376,47 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
                          *  · 已经点过播放全部 → 用实际进队列的数（最准）
                          *  · 否则用分页返回的 total（服务端总数，601 这种）
                          */
+                        /**
+                         * 用户口径（2026-11-27，#12）**这两个按钮要小一点**。
+                         *
+                         * 原话：「这上面全部播放和随机那个按钮也太大了，
+                         *        比头上那个推荐歌曲、歌手、歌单的还大」
+                         *
+                         * 改成紧凑样式：小字号 + 小图标 + 窄内边距，
+                         * 高度压到 32dp（原来 MediumContainerHeight 约 40dp + 默认内边距更大）。
+                         */
                         val totalSongs = paged.total.takeIf { it > 0 } ?: sortedList.size
                         Button(
                             onClick = { vm.playAll { count = it } },
-                            modifier = Modifier.height(ButtonDefaults.MediumContainerHeight),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(32.dp),
                         ) {
-                            Icon(Icons.Rounded.PlayArrow, null)
-                            Spacer(Modifier.width(6.dp))
+                            Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
                             Text(
                                 count?.let { "播放全部 $it 首" }
                                     ?: if (totalSongs > 0) "播放全部 · $totalSongs 首" else "播放全部",
+                                style = MaterialTheme.typography.labelLarge,
                             )
                         }
-                        Spacer(Modifier.width(10.dp))
-                        FilledTonalButton(onClick = vm::shuffle, modifier = Modifier.height(ButtonDefaults.MediumContainerHeight)) {
-                            Icon(Icons.Rounded.Shuffle, null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("随机")
+                        Spacer(Modifier.width(8.dp))
+                        FilledTonalButton(
+                            onClick = vm::shuffle,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(32.dp),
+                        ) {
+                            Icon(Icons.Rounded.Shuffle, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("随机", style = MaterialTheme.typography.labelLarge)
                         }
                         Spacer(Modifier.weight(1f))
                         /** 排序菜单：点开选一种，列表立刻按它重排；「播放全部」也照这个顺序进队列。 */
                         Box {
-                            FilledTonalIconButton(onClick = { menu = true }) {
-                                Icon(Icons.Rounded.Sort, "排序")
+                            FilledTonalIconButton(
+                                onClick = { menu = true },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(Icons.Rounded.Sort, "排序", modifier = Modifier.size(18.dp))
                             }
                             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                                 MusicSort.entries.forEach { option ->
