@@ -1036,31 +1036,32 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     private fun create(): ExoPlayer {
         val upstream = PlayerFactory.dataSource(graph.http.media, graph.identity.userAgent)
         /**
-         * 用户口径（2026-11-27，#124）**音乐缓存链路：缓存必须在最外层**。
+         * 用户口径（2026-11-27，#124）**音乐缓存必须命中**。
          *
-         * ## 为什么缓存必须在最外层
+         * ## 试过但会卡死的写法（已回滚，勿重试）
          *
-         * `CacheDataSource` 的 `CacheKeyFactory` 拿到的是**它自己收到的那个 DataSpec**。
-         * 如果 `ResolvingDataSource` 包在缓存外面：
-         * ```
-         * ResolvingDataSource → CacheDataSource → HttpDataSource
-         *      ↑ 先解析，缓存根本看不到 etkn-music://
-         * ```
-         * 缓存拿到的 `spec.uri` 已经是**带 token 的真实直链**，
-         * token 每次播放都换 → cache key 每次不同 → **命中率恒为 0**。
-         * 这就是用户看到的「一直往手机里写，但从来不读，用完就废」。
-         *
-         * 正确的顺序：
          * ```
          * CacheDataSource → ResolvingDataSource → HttpDataSource
-         *      ↑ 缓存先拿到稳定的 etkn-music://track/<id>
          * ```
-         * 命中 → 直接读本地，一个字节都不回源；
-         * 未命中 → 交给 `ResolvingDataSource` 解析成真实直链去下载。
+         * 理论上缓存能拿到稳定的 `etkn-music://track/<id>` 做 key，
+         * 实测**卡死在 `BUFFERING`、`position=0`、`speed=0`**，日志里
+         * 连一次 `resolve()` 都没有 —— `CacheDataSource` 拿着自定义 scheme
+         * 没能把请求交到下游解析。
+         *
+         * ## 现在的写法：解析在前，缓存 key 显式指定
+         *
+         * ```
+         * ResolvingDataSource → CacheDataSource → HttpDataSource
+         * ```
+         * `CacheDataSource` 收到的仍是解析后的真实直链，但
+         * **`MusicCache` 的 `CacheKeyFactory` 会从 DataSpec 里取显式 key**，
+         * 而不是拿 URL 当 key（token 每次都变 → 永远不命中）。
+         *
+         * 显式 key 在 `resolve()` 里补：返回的 DataSpec 带上 `music-<itemId>`。
          */
-        val resolving = ResolvingDataSource.Factory(upstream) { spec -> resolve(spec) }
-        val cached = MusicCache.dataSource(context, resolving, MusicCache.limitMb)
-        val player = PlayerFactory.music(context, cached)
+        val cached = MusicCache.dataSource(context, upstream, MusicCache.limitMb)
+        val resolving = ResolvingDataSource.Factory(cached) { spec -> resolve(spec) }
+        val player = PlayerFactory.music(context, resolving)
         /**
          * 用户口径（2026-11-27，#83）**播放进度必须定期落盘**。
          *
@@ -1168,7 +1169,26 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         }
         /** 记下文件总字节，缓冲条换算「已缓存字节 → 已缓存时长」要用。 */
         if (entry.size > 0L) sourceBytes[id] = entry.size
-        return spec.withUri(Uri.parse(entry.url))
+        /**
+         * 用户口径（2026-11-27，#124）**给解析后的请求钉上稳定 cache key**。
+         *
+         * 这是让缓存真正命中的关键一步。
+         *
+         * 缓存层（`CacheDataSource`）拿到的 `DataSpec` 已经被换成带 token 的真实直链，
+         * 如果让它用 URL 当 key，token 每次播放都变 → 永远不命中。
+         *
+         * 这里显式把 key 改成 `music-<itemId>`（跨会话恒定），
+         * `MusicCache` 的 `CacheKeyFactory` 优先采用 `spec.key` —— 于是：
+         * ```
+         * 第一次播放  未命中 → 下载 → 按 music-<id> 落盘
+         * 第二次播放  命中   → 直接读本地，零流量
+         * ```
+         */
+        return spec
+            .withUri(Uri.parse(entry.url))
+            .buildUpon()
+            .setKey(MusicCache.cacheKeyFor(id))
+            .build()
     }
 
     /**
