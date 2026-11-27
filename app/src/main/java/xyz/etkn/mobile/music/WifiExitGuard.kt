@@ -173,13 +173,32 @@ object WifiExitGuard {
 
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         try {
-            /** ① 暂停。 */
+            /**
+             * 用户口径（2026-11-27，#81）**退出前必须先把播放进度落盘**。
+             *
+             * 用户原话：
+             * ```
+             * 「播放的歌曲，记录它保存不上，比如说播放一半，然后我触发了 WiFi 关闭，
+             *   整个软件不退出了吗，下次打开之后，播放一半，那个进度没了，就从头开始了」
+             * ```
+             * 根因：我下面 `clearMediaItems()` 一执行，`state.current` 变 null，
+             * `saveMemory()` 里 `val item = s.current ?: return` 直接返回 →
+             * **磁盘上留的是旧进度（常为 0）**。
+             *
+             * 所以顺序改成：**先存进度，再做任何会清空当前曲目的动作**。
+             */
             runCatching { context.graph.music.pause() }
-            delay(150)
-            /** ② 清空队列 —— 卡片没有内容可显示。 */
-            runCatching { context.graph.music.player.clearMediaItems() }
-            delay(150)
-            /** ③ 释放会话 —— 系统立刻收掉卡片。 */
+            delay(120)
+            runCatching { context.graph.music.flushMemory() }
+            delay(120)
+            android.util.Log.i("ETKN-WifiExit", "进度已落盘 → 再清理会话")
+            /**
+             * ③ 释放会话 —— 系统收掉卡片。
+             *
+             * **不再 clearMediaItems()**：那会把当前曲目清掉，
+             * 导致 saveMemory 写不进进度（#81）。
+             * 只释放会话 + 停服务 + killProcess 就够让卡片消失。
+             */
             MusicSessionHolder.release()
             delay(200)
             /** ④ 撤通知 + 停服务。 */

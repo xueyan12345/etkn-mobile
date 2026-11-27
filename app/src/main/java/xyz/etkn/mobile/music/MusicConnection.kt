@@ -217,6 +217,17 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         if (isEmpty()) emptyList() else split(SEP)
 
     /** 每次状态变化时写盘（`publish()` 里调用，见下方）。 */
+    /**
+     * 用户口径（#81）**退出前主动把当前进度写进磁盘**。
+     *
+     * WifiExitGuard 杀进程前调用一次 —— 否则磁盘上留的是旧进度（常为 0），
+     * 下次打开就从头开始（用户实测）。
+     */
+    fun flushMemory() {
+        runCatching { saveMemory() }
+            .onFailure { android.util.Log.w("ETKN-Music", "flushMemory 失败", it) }
+    }
+
     private fun saveMemory() {
         val s = _state.value
         val item = s.current ?: return
@@ -733,11 +744,63 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             val startIndex = ids.indexOf(memory.itemId).coerceAtLeast(0)
             /** 一次性把整个队列装回播放器，再定位到上次的位置。 */
             play(list, startIndex, memory.sourceId ?: "remembered")
-            _player?.seekTo(memory.positionMs)
-            android.util.Log.i(
-                "ETKN-Music",
-                "resumeRemembered: 队列=${list.size} 起始=$startIndex 位置=${memory.positionMs}",
-            )
+
+            /**
+             * 用户口径（2026-11-27，#82）**恢复播放必须回到上次断开的位置**。
+             *
+             * 用户原话：
+             * ```
+             * 「下次我再播放的时候，就不能从上次播放断掉的地方开始」
+             * 「播放一半，那个进度没了，就从头开始了」
+             * ```
+             *
+             * 根因：原来这里是
+             * ```
+             * play(list, startIndex, ...)   ← 异步：解析直链、prepare
+             * _player?.seekTo(memory.positionMs)  ← 立刻执行，被后面的加载覆盖成 0
+             * ```
+             * `play()` 内部是异步的（要拉 playbackInfo、解析直链、prepare），
+             * 这一步 seekTo 打在「还没准备好的播放器」上，等 prepare 完成
+             * 位置就归零了 —— 所以永远是「从头开始」。
+             *
+             * 正确做法：**等播放器进入 READY（或至少 timeline 就绪）之后再 seek**。
+             * 用 `publish` 里的监听不方便，这里直接轮询等待，最多 8 秒。
+             */
+            val target = memory.positionMs
+            if (target > 0) {
+                val p = _player
+                if (p != null) {
+                    var waited = 0L
+                    while (waited < 8_000L) {
+                        val ready = p.playbackState == Player.STATE_READY ||
+                            (p.playbackState == Player.STATE_BUFFERING && p.duration > 0)
+                        if (ready && p.duration > target) break
+                        kotlinx.coroutines.delay(120L)
+                        waited += 120L
+                    }
+                    /**
+                     * **二次确认**：seek 后读回 currentPosition，
+                     * 若被覆盖（通常发生在准备过程中）再补一次。
+                     */
+                    runCatching { p.seekTo(target) }
+                    kotlinx.coroutines.delay(200L)
+                    if (p.currentPosition < target / 2) {
+                        runCatching { p.seekTo(target) }
+                        kotlinx.coroutines.delay(150L)
+                        android.util.Log.i("ETKN-Music", "resumeRemembered: 补一次 seek（第一次被覆盖）")
+                    }
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "resumeRemembered: 队列=${list.size} 起始=$startIndex " +
+                            "目标=${target}ms 实际=${p.currentPosition}ms state=${p.playbackState}",
+                    )
+                }
+            } else {
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "resumeRemembered: 队列=${list.size} 起始=$startIndex 位置=0（从头播）",
+                )
+            }
         }
     }
 
