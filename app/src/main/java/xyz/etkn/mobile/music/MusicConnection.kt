@@ -778,15 +778,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (startedId != null) report("Progress", completed = false)
-                /**
-                 * 用户口径（2026-11-27，#74）**维护 WiFi 退出的「上膛」状态**。
-                 *
-                 * 只有「连着指定 WiFi + 真的在放歌」才上膛；
-                 * 一停就解除。退出逻辑在 WifiExitGuard 里。
-                 */
-                runCatching {
-                    WifiExitGuard.onPlaybackChanged(context.applicationContext, isPlaying)
-                }
+                /** 用户口径 #74：维护 WiFi 退出的「上膛」状态（唯一新增的一行）。 */
+                runCatching { WifiExitGuard.onPlaybackChanged(context.applicationContext, isPlaying) }
             }
 
             override fun onPlayerError(error: PlaybackException) {

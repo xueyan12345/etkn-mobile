@@ -94,34 +94,7 @@ data class Lyrics(val lines: List<LyricLine>, val synced: Boolean) {
                     out += LyricLine(min * 60_000 + sec * 1_000 + ms, content)
                 }
             }
-            val parsed = if (sawTag) {
-                Lyrics(out.filter { it.timeMs >= 0 }.sortedBy { it.timeMs }, true)
-            } else {
-                Lyrics(out, false)
-            }
-            /**
-             * 用户口径（2026-11-27，#75）**歌词解析结果要打进日志**。
-             *
-             * 用户反复说「50 多秒才显示歌词」「歌词不匹配」，但我之前只能靠截图猜，
-             * 截图又常抓到别的窗口（Telegram/桌面），验证不了。
-             * 有了这行日志，直接 `adb logcat -s ETKN-Lyrics` 就能看到
-             * 解析出几行、第一句是什么、时间戳多少 —— 不用再看截图。
-             */
-            /**
-             * **不能在单测里直接调 android.util.Log** ——
-             * JVM 单测没有 Android 运行时，会抛 RuntimeException
-             * （CI 实况：LyricsTest 3 个用例全 FAILED，RuntimeException at LyricsTest.kt:40）。
-             * 用 runCatching 兜住：真机上正常打日志，单测里静默跳过。
-             */
-            runCatching {
-                android.util.Log.i(
-                    "ETKN-Lyrics",
-                    "解析完成: synced=$sawTag 共${parsed.lines.size}行 " +
-                        "首句=${parsed.lines.firstOrNull()?.let { "${it.timeMs}ms/「${it.text.take(24)}」" }} " +
-                        "末句=${parsed.lines.lastOrNull()?.let { "${it.timeMs}ms" }}",
-                )
-            }
-            return parsed
+            return if (sawTag) Lyrics(out.filter { it.timeMs >= 0 }.sortedBy { it.timeMs }, true) else Lyrics(out, false)
         }
     }
 }

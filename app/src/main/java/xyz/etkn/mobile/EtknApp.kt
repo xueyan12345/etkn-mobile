@@ -71,19 +71,14 @@ class EtknApp : Application(), SingletonImageLoader.Factory {
         }.getOrDefault(false)
         if (wasOn) runCatching { Diagnostics.setEnabled(this, true) }
 
-        /**
-         * 用户口径（2026-11-27，#74）**退出 App 功能跟着 App 一起常驻**。
-         *
-         * 只在开着开关时才真正注册回调（默认关，不占资源）。
-         * `WifiExitGuard.start()` 内部会先 stop 旧的，重复调用安全。
-         */
+        /** 用户口径 #74：开关开着才注册 WiFi 监听（默认关，不占资源）。 */
         runCatching {
-            val enabled = kotlinx.coroutines.runBlocking {
+            val wifiExit = kotlinx.coroutines.runBlocking {
                 kotlinx.coroutines.withTimeoutOrNull(1_500L) {
                     graph.settings.flow.first().wifiExitEnabled
                 } ?: false
             }
-            if (enabled) xyz.etkn.mobile.music.WifiExitGuard.start(this)
+            if (wifiExit) xyz.etkn.mobile.music.WifiExitGuard.start(this)
         }
     }
 

@@ -644,6 +644,7 @@ private fun LyricsPane(track: Item, sourceId: String?) {
      */
     val rowHeight = 44.dp
     var dragging by remember { mutableStateOf(false) }
+    var pinnedIndex by remember { mutableIntStateOf(-1) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
@@ -658,87 +659,49 @@ private fun LyricsPane(track: Item, sourceId: String?) {
         val half = rows / 2
 
         /**
-         * 用户口径（2026-11-27，#76）**手指滑动歌词 + 中间横杠 + 定位播放**。
-         *
-         * 用户原话：
-         * ```
-         * 「我想要的是滑动歌词，可以来回滑动，然后中间不是会显示有一个横杠吗，
-         *   然后定位播放这个好像没加，能加吗，我怕你加完之后又出问题了」
-         * ```
-         *
-         * 上一版我写了这套，但三个 bug 让它完全失效：
-         * ```
-         * ① LaunchedEffect(dragging, shift) 里判断 dragging && ... → 一拖就重置 dragging，
-         *    松手瞬间又重置 shift，等于永远回不到 0（或永远在归零）
-         * ② verticalScroll(rememberScrollState(0), enabled = false) 嵌在里面，
-         *    它自己的滚动状态会吞掉/干扰拖动手势
-         * ③ shift 只在「拖过半行」时才 ±1，要拖 22dp 才动一行，手感像卡住
-         * ```
-         *
-         * 现在重写：
-         * ```
-         * 拖动时不按行取整，而是按像素累积 dragPx，实时换算成行偏移
-         * → 手指跟手，滑多少动多少
-         * 松手后：不立刻归零，保持 1.5 秒（用户要看定位线在哪句）
-         * → 1.5 秒内没有新动作才回到正在播的那句
-         * ```
+         * 用户手动滑动时，用「偏移的行数」来移动窗口：
+         * `shift = 0` 表示窗口跟随当前播放句；`shift > 0` 表示往后看。
          */
-        var dragPx by remember { mutableFloatStateOf(0f) }
+        var shift by remember { mutableIntStateOf(0) }
 
-        /** 拖动产生的行偏移 = 累积像素 / 行高，四舍五入。 */
-        val dragRows = (dragPx / rowPx).toInt()
-
-        /** 窗口中心 = 当前播的那句 + 拖动偏移。 */
-        val centerIndex = (active.coerceAtLeast(0) + dragRows)
-            .coerceIn(0, current.lines.lastIndex.coerceAtLeast(0))
-
-        /**
-         * 松手后 1.5 秒：如果这期间没有新的拖动，就回到正在播的那句。
-         *
-         * 用 `dragPx` 当唯一依赖 —— 它一变这个 effect 就重启计时器，
-         * 所以"持续拖动"期间永远不会归零，只有真正停下来 1.5 秒才归位。
-         */
-        LaunchedEffect(dragPx, active) {
-            if (dragPx != 0f) {
-                kotlinx.coroutines.delay(1_500)
-                dragPx = 0f
+        /** 拖动结束后 1 秒，shift 归零（回到正在播的那句）。 */
+        LaunchedEffect(dragging, shift) {
+            if (dragging && !listScrollInProgressIgnore()) {
+                kotlinx.coroutines.delay(1_000)
                 dragging = false
+                shift = 0
+                pinnedIndex = -1
             }
         }
 
-        /** 拖动中（有像素偏移）才显示横杠和定位按钮。 */
-        val showLocator = dragPx != 0f || dragging
+        /** 窗口中心对应的歌词行。 */
+        val centerIndex = (active.coerceAtLeast(0) + shift)
+            .coerceIn(0, current.lines.lastIndex)
+
+        /** 拖动时把「窗口中心那行」当定位行。 */
+        if (dragging) pinnedIndex = centerIndex
 
         Box(Modifier.fillMaxSize()) {
             /**
-             * 垂直滑动：整个歌词区可拖动，累积像素换算成行偏移（跟手，不按行取整）。
+             * 垂直滑动：整个歌词区可拖动，拖动量换算成 shift（一行一档）。
              */
             Column(
                 Modifier
                     .fillMaxSize()
-                    /**
-                     * 用户口径（#76）**去掉 verticalScroll**。
-                     *
-                     * 之前这里嵌了 `verticalScroll(rememberScrollState(0), enabled = false)`，
-                     * 它虽然被禁用滚动，但仍然会参与手势竞争，把手势吞掉一部分，
-                     * 表现就是"滑不动"。纯 pointerInput 就够，不需要它。
-                     *
-                     * 拖动直接累积像素（dragPx），不做"过半行才跳一格"的取整 ——
-                     * 那样要拖 22dp 才动一行，手感像卡住。
-                     */
-                    .pointerInput(rows, active) {
+                    .verticalScroll(rememberScrollState(0), enabled = false)
+                    .pointerInput(rows) {
                         detectVerticalDragGestures(
                             onDragStart = { dragging = true },
-                            onDragEnd = { dragging = false },
-                            onDragCancel = { dragging = false; dragPx = 0f },
+                            onDragEnd = { },
+                            onDragCancel = { dragging = false; shift = 0 },
                         ) { change, dragAmount ->
                             change.consume()
-                            /** 手指向上滑（dragAmount < 0）→ 看后面的歌词 → dragPx 增大。 */
-                            dragPx = (dragPx - dragAmount)
-                                .coerceIn(
-                                    -active.coerceAtLeast(0) * rowPx,
-                                    (current.lines.lastIndex - active.coerceAtLeast(0)) * rowPx,
-                                )
+                            /** 每拖动 rowPx 像素移动一行。 */
+                            val delta = (-dragAmount / rowPx)
+                            if (kotlin.math.abs(delta) >= 0.5f) {
+                                shift = (shift + if (delta > 0) 1 else -1)
+                                    .coerceIn(-active.coerceAtLeast(0), current.lines.lastIndex - active)
+                            }
                         }
                     },
                 verticalArrangement = Arrangement.Center,
@@ -780,33 +743,23 @@ private fun LyricsPane(track: Item, sourceId: String?) {
                 }
             }
 
-            /**
-             * 定位线：只在手动滑动时显示（用户口径 #76）。
-             *
-             * 位置：**中间那行文字的下沿再往下 2dp**，不压在字上 ——
-             * 直接 `align(Center)` 会正好穿过文字中间，看着像划掉。
-             * 用 offset 往下挪半个行高的一半，落在行与行之间的空隙里。
-             */
-            if (showLocator) {
+            /** 定位线：只在手动滑动时显示，正好落在中间那一格。 */
+            if (dragging) {
                 Box(
-                    Modifier
-                        .align(Alignment.Center)
-                        .offset(y = rowHeight / 2 + 2.dp)
-                        .fillMaxWidth(0.72f)
-                        .height(1.dp)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f), Corner.pill),
+                    Modifier.align(Alignment.Center).fillMaxWidth(0.72f).height(1.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.45f), Corner.pill),
                 )
             }
 
             /** 定位线右侧的小播放按钮：点它跳到中间那行。 */
-            if (showLocator) {
+            if (dragging) {
                 current.lines.getOrNull(centerIndex)?.let { target ->
                     FilledIconButton(
                         onClick = {
                             graph.music.seekTo(target.timeMs)
-                            /** 跳完立刻回到跟随状态（用户口径 #76）。 */
-                            dragPx = 0f
                             dragging = false
+                            shift = 0
+                            pinnedIndex = -1
                         },
                         modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp).size(40.dp),
                     ) {

@@ -3,18 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!--
-        用户口径（2026-11-27，#74）**离开指定 WiFi 且正在放歌时彻底退出**。
-        ACCESS_WIFI_STATE 读当前 SSID 与系统保存过的网络；
-        ACCESS_FINE_LOCATION 是 Android 10+ 读 SSID 的硬性前提（系统规定），
-        没有它就只会拿到 `<unknown ssid>`。
-    -->
+    <!-- 用户口径 #74：离开指定 WiFi 且正在放歌时彻底退出。必须 FINE+COARSE 成对声明。 -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <!--
-        Android 12+ 的硬性要求：申请 FINE 必须同时声明 COARSE，
-        否则 lint 直接报错（CoarseFineLocation）导致构建失败。
-        CI 实况 45930117075：Lint found 1 error ... aborting build。
-    -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- 投屏: SSDP discovery of DLNA renderers on the Wi-Fi. -->

@@ -152,28 +152,12 @@ data class Settings(
      */
     val musicCacheMb: Int = 2048,
     /**
-     * 用户口径（2026-11-27，#74）**离开指定 WiFi 且正在放歌时，彻底关闭 App**。
-     *
-     * 用户原话：
-     * ```
-     * 「当连接特定 wifi 并正在播放音乐的情况下。
-     *   如果这个设定的 wifi 断开了，直接彻底关闭 etkn」
-     * 「确认断开就立即退出」
-     * 「主要就是用在车上」
-     * ```
-     * 场景：车机/车上的 WiFi（热点或车载 WiFi）—— 车一熄火 WiFi 就断，
-     * 断开即退出，避免 App 在后台一直占着播放。
-     *
-     * 默认关闭；WiFi 名称用系统列表选（像 MacroDroid 那样），不用手打。
+     * 用户口径 #74：连着指定 WiFi 且正在放歌时，一断就彻底退出。
+     * 默认关闭；WiFi 名称用系统列表选（照 MacroDroid）。
      */
     val wifiExitEnabled: Boolean = false,
     val wifiExitSsid: String = "",
-    /**
-     * 记录「当前这条 WiFi 会话是否已经开始放歌」。
-     *
-     * 用户口径要求「正在播放音乐的情况下」才退出 —— 所以不能只看 WiFi 断开，
-     * 还必须确认这次 WiFi 连接期间真的放过歌。断开时这个标记为 false 就不退。
-     */
+    /** 本次 WiFi 连接期间是否真的放过歌 —— 没放过就不断 WiFi 杀 App。 */
     val wifiExitArmed: Boolean = false,
     /** 播放结束后自动清空该集磁盘缓存。 */
     val cacheClearOnFinish: Boolean = false,
@@ -381,7 +365,7 @@ class AppSettings(private val context: Context) {
     /** 用户口径（#39）音乐缓存大小（MB），与视频缓存完全独立。 */
     suspend fun setMusicCacheMb(value: Int) = context.settingsDataStore.edit { it[Keys.musicCacheMb] = value }
 
-    /** 用户口径（#74）离开指定 WiFi 且正在放歌时彻底退出。 */
+    /** 用户口径 #74。 */
     suspend fun setWifiExitEnabled(value: Boolean) =
         context.settingsDataStore.edit { it[Keys.wifiExitEnabled] = value }
 
