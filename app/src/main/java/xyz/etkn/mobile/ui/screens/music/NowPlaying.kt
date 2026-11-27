@@ -912,8 +912,24 @@ private fun QueuePane(queue: List<Item>, index: Int) {
     LazyColumn(state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
         itemsIndexed(queue, key = { i, item -> "$i-${item.id}" }) { i, item ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { TrackRow(item, onClick = { music.skipTo(i) }, horizontalPadding = 0.dp) }
-                if (i != index) IconButton(onClick = { music.removeAt(i) }) { Icon(Icons.Rounded.Close, "移出队列") }
+                Box(Modifier.weight(1f)) {
+                    /** 用户口径（#104）这一处也统一成「只有垃圾桶」（原来三点 + 叉号并存）。 */
+                    TrackRow(
+                        item,
+                        onClick = { music.skipTo(i) },
+                        horizontalPadding = 0.dp,
+                        trailing = {
+                            IconButton(onClick = { music.removeAt(i) }, modifier = Modifier.size(40.dp)) {
+                                Icon(
+                                    Icons.Rounded.DeleteOutline,
+                                    "移出队列",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                    )
+                }
             }
         }
     }
@@ -984,7 +1000,36 @@ fun MusicQueueSheet(
                         ),
                     ) {
                         Box(Modifier.weight(1f)) {
-                            TrackRow(item, onClick = { onPick(item) }, horizontalPadding = Etkn.space.screen)
+                            /**
+                             * 用户口径（#104）**三点必须消失，只剩垃圾桶**。
+                             *
+                             * 用户原话：
+                             * ```
+                             * 「你现在是三个点和垃圾桶都留着了，这3个点啥用没有？留它干啥呀」
+                             * ```
+                             * 上一版：TrackRow 没传 trailing（三点照画），
+                             * 外面又加了一个 IconButton（垃圾桶）→ 两个并排。
+                             *
+                             * 现在：垃圾桶作为 trailing 传进去，TrackRow 内部不画三点。
+                             */
+                            TrackRow(
+                                item,
+                                onClick = { onPick(item) },
+                                horizontalPadding = Etkn.space.screen,
+                                trailing = {
+                                    IconButton(
+                                        onClick = { onRemove(i) },
+                                        modifier = Modifier.size(40.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.DeleteOutline,
+                                            "从播放列表移除",
+                                            modifier = Modifier.size(20.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                            )
                         }
                         if (i == index) {
                             Text(
@@ -992,33 +1037,6 @@ fun MusicQueueSheet(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.padding(end = 4.dp),
-                            )
-                        }
-                        /**
-                         * 用户口径（2026-11-27，#91）**播放列表每行右侧改成删除图标**。
-                         *
-                         * 用户原话：
-                         * ```
-                         * 「播放列表里的歌，后面的三个点没有任何功能，
-                         *   我觉得可以把那三个点换成删除小图标，
-                         *   相当于把这个歌从播放列表移除」
-                         * ```
-                         * 原来这里只有「播放中」文字，右边没有可点的东西；
-                         * 而歌曲列表页（TrackRow）那个三点菜单里只有
-                         * 「加入播放队列 / 添加到歌单」，也确实没有删除。
-                         *
-                         * 现在：每行右侧一个删除图标，点了从队列移除。
-                         * 删除后队列为空时调用方会自动停播（见 removeAt 实现）。
-                         */
-                        IconButton(
-                            onClick = { onRemove(i) },
-                            modifier = Modifier.size(40.dp),
-                        ) {
-                            Icon(
-                                Icons.Rounded.DeleteOutline,
-                                "从播放列表移除",
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
