@@ -460,20 +460,26 @@ fun NowPlayingScreen() {
             Spacer(Modifier.height(10.dp))
 
             /**
-             * ③ 歌词区：占满剩余空间（比原来长），支持手势滑动 + 定位线 + 点击跳播。
+             * ③ 歌词区：**用上游官方实现 LyricsPane**。
              *
-             * 用户原话：
-             *  「现在的专辑下边的歌词不能用手滑动，正常的播放器是可以用手动滑动歌词，
-             *    然后中间有一个定位线，根据歌词定位的位置直接可点一下定位线旁边的按钮，
-             *    就直接定位到歌词那句，相当于定位播放，这个现在所有的播放器都支持」
+             * 用户口径（2026-11-27，#59）：
+             *  「ETKN 是有歌词对接的接口的，你不要自己去搞，你要直接对接 ETKN 的歌词，
+             *    人家那都配套做好的，你非得自己再弄一套」
+             *
+             * 我此前写了 4 版（FiveLineLyrics / FullLyrics / AdaptiveLyrics / SeekerLyrics）
+             * 全部删掉了。上游 `LyricsPane` 本来就完整：
+             * ```
+             * ✅ 走官方接口 /api/tv/Music/{id}/Lyrics?MediaSourceId=
+             * ✅ 当前行高亮（大字 + 加粗）
+             * ✅ 点歌词直接跳播（用户要的"定位播放"它自带）
+             * ✅ 自动滚动跟随
+             * ✅ 加载中显示 LoadingIndicator、无词显示"暂无歌词"
+             * ```
+             * 唯一受限：`sourceId` 为空时不加载 —— 但服务端实测
+             * `/api/tv/Music/{id}/Lyrics?MediaSourceId={id}` 传曲目 ID 即可，见 LyricsPane 内注释。
              */
             Box(Modifier.fillMaxWidth().weight(1f)) {
-                SeekerLyrics(
-                    track = track,
-                    positionMs = position,
-                    onSeek = { music.seekTo(it) },
-                    modifier = Modifier.fillMaxSize(),
-                )
+                LyricsPane(track = track, sourceId = state.sourceId)
             }
 
             /** ④ 进度条 + 时间 */
@@ -572,25 +578,7 @@ fun NowPlayingScreen() {
 }
 
 
-@Composable
-private fun MiniTransport(playing: Boolean) {
-    val music = LocalContext.current.graph.music
-    Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = music::previous) { Icon(Icons.Rounded.SkipPrevious, "上一首") }
-        FilledIconButton(onClick = music::toggle, modifier = Modifier.size(60.dp)) {
-            Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "暂停" else "播放")
-        }
-        IconButton(onClick = music::next) { Icon(Icons.Rounded.SkipNext, "下一首") }
-    }
-}
 
-@Composable
-private fun SidePane(pane: Pane, track: Item, sourceId: String?, queue: List<Item>, index: Int) {
-    when (pane) {
-        Pane.Lyrics -> LyricsPane(track, sourceId)
-        Pane.Queue -> QueuePane(queue, index)
-    }
-}
 
 @Composable
 private fun LyricsPane(track: Item, sourceId: String?) {
@@ -598,8 +586,19 @@ private fun LyricsPane(track: Item, sourceId: String?) {
     var lyrics by remember(track.id) { mutableStateOf<Lyrics?>(null) }
     var loaded by remember(track.id) { mutableStateOf(false) }
     LaunchedEffect(track.id, sourceId) {
-        if (sourceId == null) return@LaunchedEffect
-        val text = runCatching { graph.api.lyrics(track.id, sourceId) }.getOrDefault("")
+        /**
+         * 用户口径（2026-11-27，#59）**这一处只做最小修补，不另起一套**。
+         *
+         * 上游原样是 `if (sourceId == null) return@LaunchedEffect`。
+         * 实测：`state.sourceId` 要等直链解析完才有，刚进播放页时是 null；
+         * 而服务端 `/api/tv/Music/{id}/Lyrics?MediaSourceId={id}`
+         * **直接传曲目 ID 就能返回歌词**（已用 curl 验证）。
+         *
+         * 所以只把 null 兜底成 track.id，其余逻辑（高亮/跳播/跟随）
+         * 全部沿用上游，一行没动。
+         */
+        val sid = sourceId ?: track.id
+        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
         lyrics = if (text.isBlank()) null else Lyrics.parse(text)
         loaded = true
     }
@@ -728,167 +727,7 @@ fun MusicQueueSheet(
     }
 }
 
-/**
- * 用户口径（2026-11-27，#32④）**播放页里的 5 行歌词**。
- *
- * 需求原文：
- *  「下面除了放歌名和歌手，还要居中滚动歌词，我想要一共显示 5 行，
- *    其中最上面的那行和最下面的那行要做成跟刚才播放控制条一样，
- *    越往上和越往下渐变显示的效果」
- *
- * 实现：中间那行（index=2）完整不透明，往两侧逐级降透明度，
- * 第一行和第五行几乎看不见 —— 就是"渐变淡出"的观感。
- */
-@Composable
-private fun FiveLineLyrics(track: Item, positionMs: Long) {
-    val graph = LocalContext.current.graph
-    val music by graph.music.state.collectAsStateWithLifecycle()
-    var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
-    /**
-     * 用户口径（2026-11-27，#42）**不能因为 sourceId 为空就不加载歌词**。
-     *
-     * 用户报的 bug（截图里正在播放却没有歌词）：
-     * ```
-     * val sid = music.sourceId ?: return@LaunchedEffect
-     * ```
-     * `sourceId` 要等直链解析完才有，冷启动 / 刚切歌的那一刻是 null
-     * → 直接 return，歌词永远不加载 → 界面空白。
-     *
-     * 修法：sourceId 为空时**主动去取一次**（后台，不阻塞界面），
-     * 拿到就存进 MusicConnection 的解析表并立刻用上。
-     */
-    LaunchedEffect(track.id, music.sourceId) {
-        var sid = music.sourceId
-        if (sid == null) {
-            /** 顺带把 sourceId 补上，避免每次切歌都白等一次。 */
-            sid = runCatching { graph.music.ensureSourceId(track.id) }.getOrNull()
-        }
-        if (sid == null) return@LaunchedEffect
-        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
-        parsed = if (text.isBlank()) null else Lyrics.parse(text)
-    }
-    val lines = parsed?.lines.orEmpty()
-    val active = parsed?.indexAt(positionMs) ?: -1
-    if (lines.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                "暂无歌词",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        return
-    }
-    val base = MaterialTheme.colorScheme.onSurface
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
-        // 5 行：以当前行为中心，offset 从 -2 到 +2
-        listOf(-2, -1, 0, 1, 2).forEach { offset ->
-            val idx = active + offset
-            val line: LyricLine? = lines.getOrNull(idx)
-            val isCenter = offset == 0
-            Text(
-                text = line?.text.orEmpty(),
-                /** 用户口径（#4⑤）歌词字稍微大一点点（不要太大）。 */
-                style = if (isCenter) MaterialTheme.typography.titleLarge
-                else MaterialTheme.typography.bodyLarge,
-                fontWeight = if (isCenter) FontWeight.Bold else FontWeight.Normal,
-                color = base.copy(
-                    alpha = when (offset) {
-                        0 -> 1f
-                        -1, 1 -> 0.45f
-                        else -> 0.16f
-                    },
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-            )
-        }
-    }
-}
 
-/**
- * 用户口径（#32）**歌词页（整页）**：滚动列表 + 当前行高亮。
- */
-@Composable
-private fun FullLyrics(track: Item, positionMs: Long, sourceId: String?) {
-    val graph = LocalContext.current.graph
-    var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
-    LaunchedEffect(track.id, sourceId) {
-        val sid = sourceId ?: return@LaunchedEffect
-        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
-        parsed = if (text.isBlank()) null else Lyrics.parse(text)
-        /**
-         * 用户口径（#10）**把歌词喂给 MusicConnection**，
-         * 它会按播放进度把「当前这句」写进 MediaSession 的 subtitle，
-         * 车机 CarLife / OPPO Car+ 那个卡片就能跟着滚。
-         */
-        parsed?.lines?.let { ls ->
-            graph.music.publishLyrics(track.id, ls.map { it.timeMs to it.text })
-        }
-    }
-    val lines = parsed?.lines.orEmpty()
-    val active = parsed?.indexAt(positionMs) ?: -1
-    if (lines.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("暂无歌词", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        return
-    }
-    /**
-     * 用户口径（2026-11-27，#15）**歌词页必须能手滑**。
-     *
-     * 用户原话：「这个界面的歌词也不能滑动」
-     *
-     * 原来有两个原因导致滑不动：
-     *  ① `LaunchedEffect(active)` 每次都 `animateScrollToItem` ——
-     *     用户刚滑走一点，播放进度一变就被拽回当前行
-     *  ② 外层是 `HorizontalPager`，垂直手势本应不受影响，
-     *     但 LazyColumn 没给足内容高度时（列表短）根本滚不动
-     *
-     * 现在：
-     *  · 加 `userScrolling` 标记：用户手滑之后，暂停自动跟随 5 秒，然后恢复
-     *  · 内容不足一屏时也能拖动（加足够的上下 padding）
-     */
-    val list = rememberLazyListState()
-    var userScrolling by remember { mutableStateOf(false) }
-    LaunchedEffect(list.isScrollInProgress) {
-        if (list.isScrollInProgress) {
-            userScrolling = true
-        } else if (userScrolling) {
-            /** 手松开后再等 5 秒恢复自动跟随，避免立刻被拽走。 */
-            kotlinx.coroutines.delay(5_000)
-            userScrolling = false
-        }
-    }
-    LaunchedEffect(active, userScrolling) {
-        if (active >= 0 && !userScrolling) {
-            list.animateScrollToItem((active - 3).coerceAtLeast(0))
-        }
-    }
-    LazyColumn(
-        state = list,
-        /** 上下留白按屏幕高度的一半，保证第一句/最后一句也能滚到中间。 */
-        contentPadding = PaddingValues(vertical = 160.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        itemsIndexed(lines, key = { i, _ -> i }) { i, line ->
-            val highlighted = i == active
-            Text(
-                line.text,
-                style = if (highlighted) MaterialTheme.typography.titleMedium
-                else MaterialTheme.typography.bodyLarge,
-                fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Normal,
-                color = if (highlighted) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-    }
-}
 
 /**
  * 用户口径（2026-11-27，#32⑤）**音乐进度条照视频播放器那套**。
@@ -1034,312 +873,4 @@ private fun MiniProgressLine(
     }
 }
 
-/**
- * 用户口径（2026-11-27，#5）**按可用高度自适应的滚动歌词**。
- *
- * 中间那行（`rows / 2`）完整不透明，往两侧逐级降透明度，
- * 最外两行几乎看不见 —— 和迷你条一样的渐变观感。
- *
- * @param rows 这块区域能放几行（由调用方按高度算，保证是奇数）
- */
-@Composable
-private fun AdaptiveLyrics(track: Item, positionMs: Long, rows: Int) {
-    val graph = LocalContext.current.graph
-    val music by graph.music.state.collectAsStateWithLifecycle()
-    var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
-    LaunchedEffect(track.id, music.sourceId) {
-        val sid = music.sourceId ?: return@LaunchedEffect
-        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
-        parsed = if (text.isBlank()) null else Lyrics.parse(text)
-        parsed?.lines?.let { ls ->
-            graph.music.publishLyrics(track.id, ls.map { it.timeMs to it.text })
-        }
-    }
-    val lines = parsed?.lines.orEmpty()
-    val active = parsed?.indexAt(positionMs) ?: -1
-    if (lines.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                "暂无歌词",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        return
-    }
-    /**
-     * 用户口径（2026-11-27，#11）**当前这句必须在正中间**。
-     *
-     * 原话：「正在播放的那句歌词，不是在下方的正中间，好像有点偏下吧」
-     *
-     * 原因：上下各有 half 行，但每行有 padding(vertical=4dp)，
-     * 且中间行字号更大（titleLarge vs bodyLarge），实际行高不同，
-     * 导致中间行的视觉中心偏下。
-     *
-     * 修法：给每行固定高度（`heightIn(min = rowH)`），
-     * 让所有行等高，Column 的 Center 才是真正居中。
-     */
-    val half = rows / 2
-    val base = MaterialTheme.colorScheme.onSurface
-    val rowH = 28.dp
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
-        for (offset in -half..half) {
-            val idx = active + offset
-            val line: LyricLine? = lines.getOrNull(idx)
-            val distance = kotlin.math.abs(offset)
-            val isCenter = offset == 0
-            Text(
-                text = line?.text.orEmpty(),
-                style = if (isCenter) MaterialTheme.typography.titleLarge
-                else MaterialTheme.typography.bodyLarge,
-                fontWeight = if (isCenter) FontWeight.Bold else FontWeight.Normal,
-                color = base.copy(
-                    alpha = when (distance) {
-                        0 -> 1f
-                        1 -> 0.45f
-                        2 -> 0.22f
-                        else -> 0.10f
-                    },
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-                /** 固定行高，保证中间行真正居中（#11）。 */
-                modifier = Modifier.fillMaxWidth().heightIn(min = rowH),
-            )
-        }
-    }
-}
 
-/**
- * 用户口径（2026-11-27，#36）**可滑动 + 带定位线的歌词**。
- *
- * 用户原话：
- *  「现在的专辑下边的歌词不能用手滑动，正常的播放器是可以用手动滑动歌词，
- *    然后中间有一个定位线，根据歌词定位的位置直接可点一下定位线旁边的按钮，
- *    就直接定位到歌词那句，相当于定位播放，这个现在所有的播放器都支持」
- *
- * 实现（对齐全网主流播放器的做法）：
- * ```
- *  · LazyColumn 手动滑动，正中固定一条"定位线"（指示当前选中行）
- *  · 手指滑动时，把"最靠近定位线的那一行"作为选中行（高亮）
- *  · 停止滑动后：选中行停留 1.5 秒 → 自动 seek 到该行时间点并恢复自动跟随
- *  · 同时给定位线旁边一个播放按钮，点它立刻跳播（不用等）
- * ```
- *
- * 关键点：**滑动期间完全停止自动滚动**，否则播放进度一变就把用户拽回去。
- */
-@Composable
-private fun SeekerLyrics(
-    track: Item,
-    positionMs: Long,
-    onSeek: (Long) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val graph = LocalContext.current.graph
-    val music by graph.music.state.collectAsStateWithLifecycle()
-    var parsed by remember(track.id) { mutableStateOf<Lyrics?>(null) }
-
-    /**
-     * 用户口径（2026-11-27，#48）**从迷你条进播放页必须能看到歌词**。
-     *
-     * `state.sourceId` 要等直链解析才有，从迷你条进来时往往还是 null；
-     * 旧代码 `?: return` 直接跳过 → 歌词永远不加载。
-     * 现在为空就调 `ensureSourceId()` 主动取一次。
-     */
-    /**
-     * 用户口径（2026-11-27，#54）**歌词拉不到的真根因：PlaybackInfo 返回 Not Found**。
-     *
-     * 实测（直接打服务端接口）：
-     * ```
-     * GET /api/tv/Items/item-25511/PlaybackInfo?UserId=...  → {"detail":"Not Found"}
-     * GET /api/tv/Music/item-25511/Lyrics?MediaSourceId=item-25511
-     *     → {"text":"[ti:他一定很爱你]\n[00:31.81]我躲在车里 手握着香槟..."}   ✅ 有歌词
-     * ```
-     *
-     * 也就是说：**`MediaSourceId` 直接传曲目 ID 就能取到歌词**，
-     * 根本不需要先调 PlaybackInfo 拿真实 sourceId。
-     * 而旧代码卡在 `ensureSourceId()` → PlaybackInfo 404 → 返回 null → 不加载歌词。
-     *
-     * 现在：优先用已知 sourceId；拿不到就直接用 track.id 兜底，一次网络请求搞定。
-     */
-    LaunchedEffect(track.id, music.sourceId) {
-        val sid = music.sourceId?.takeIf { it.isNotBlank() } ?: track.id
-        val text = runCatching { graph.api.lyrics(track.id, sid) }.getOrDefault("")
-        parsed = if (text.isBlank()) null else Lyrics.parse(text)
-        /** 供车机/CarLife 卡片显示当前行（#34/#50）。 */
-        parsed?.lines?.let { ls ->
-            graph.music.publishLyrics(track.id, ls.map { it.timeMs to it.text })
-        }
-    }
-
-    val lines = parsed?.lines.orEmpty()
-    val activeIndex = parsed?.indexAt(positionMs) ?: -1
-
-    if (lines.isEmpty()) {
-        Box(modifier, contentAlignment = Alignment.Center) {
-            Text(
-                "暂无歌词",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        return
-    }
-
-    val list = rememberLazyListState()
-    var dragging by remember { mutableStateOf(false) }
-    var pinnedIndex by remember { mutableIntStateOf(-1) }
-
-    /** 行高固定，居中算法依赖它保持常量。 */
-    val rowHeight = 34.dp
-    val density = LocalDensity.current
-    val rowPx = with(density) { rowHeight.toPx() }
-
-    BoxWithConstraints(modifier) {
-        val boxPx = with(density) { maxHeight.toPx() }
-        /**
-         * 上下留白 = 半个容器减半行高：
-         * 让第一行和最后一行也能滚到正中间。
-         */
-        val paddingPx = (boxPx / 2 - rowPx / 2).coerceAtLeast(0f)
-
-        /**
-         * 用户口径（2026-11-27，#51/#53）**正在唱的那一句必须在正中间，字号最大**。
-         *
-         * 用户原话：
-         *  「歌词的位置对不上」「看不到正在播放的那一句」
-         *  「正常播放的那一句不应该在最中间的最大字吗」
-         *
-         * 上一版错在哪：
-         * ```
-         * val target = activeIndex * rowPx + paddingPx - (boxPx - rowPx) / 2
-         * val itemIndex = (target / rowPx).toInt()     ← 把绝对滚动量又拆回"下标"
-         * val offset = target - itemIndex * rowPx       ← 再算残差当 offset
-         * list.scrollToItem(itemIndex, offset)
-         * ```
-         * `scrollToItem(index, offset)` 的语义是「第 index 项顶部落在容器顶部往下
-         * offset 像素处」。上面那套「先算绝对量、再拆下标、再取残差」等价于
-         * 把结果又滚回去了一部分，所以永远对不上中线。
-         *
-         * 现在用最直接的形式：
-         * ```
-         * scrollToItem(activeIndex, offsetPx)
-         * 其中 offsetPx = (容器高 - 行高) / 2
-         *   → 第 activeIndex 行的顶部正好落在容器 (H-h)/2 处，
-         *     即该行的垂直中心 = 容器中心。恒等式，没有中间换算。
-         * ```
-         */
-        LaunchedEffect(activeIndex, dragging, boxPx, rowPx) {
-            if (!dragging && activeIndex >= 0) {
-                val offset = ((boxPx - rowPx) / 2).toInt().coerceAtLeast(0)
-                list.scrollToItem(activeIndex, offset)
-            }
-        }
-
-        /**
-         * 拖动时把「最接近中线的那一行」作为定位行。
-         *
-         * 内容坐标换算（LazyColumn 的 firstVisibleItemScrollOffset 是相对该 item 顶部的
-         * 负位移，方向为「内容相对视口向上滚了多少」）：
-         * ```
-         * 第 i 行内容坐标 = paddingPx + i * rowPx
-         * 视口顶部内容坐标 = paddingPx + firstIndex*rowPx + firstOffset
-         * 中线内容坐标     = 上面的值 + (boxPx - rowPx) / 2
-         * 中线所在行 i     = (中线 - paddingPx) / rowPx
-         * ```
-         */
-        LaunchedEffect(list.isScrollInProgress, list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) {
-            if (!list.isScrollInProgress) return@LaunchedEffect
-            dragging = true
-            val centered = list.firstVisibleItemScrollOffset + (boxPx - rowPx) / 2
-            val idx = ((centered / rowPx).toInt() + list.firstVisibleItemIndex)
-                .coerceIn(0, lines.lastIndex)
-            pinnedIndex = idx
-        }
-
-        /**
-         * 用户口径（#41）**松手 1 秒后回到正在播的那句并隐藏控件，不自动跳播**。
-         * 跳播只能点那个小播放按钮（显式操作）。
-         */
-        LaunchedEffect(dragging, pinnedIndex) {
-            if (dragging && !list.isScrollInProgress) {
-                kotlinx.coroutines.delay(1_000)
-                dragging = false
-                pinnedIndex = -1
-            }
-        }
-
-        Box(Modifier.fillMaxSize()) {
-            LazyColumn(
-                state = list,
-                contentPadding = PaddingValues(top = paddingPx.dp, bottom = paddingPx.dp),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                itemsIndexed(lines, key = { i, _ -> i }) { i, line ->
-                    val isPinned = dragging && i == pinnedIndex
-                    val isActive = !dragging && i == activeIndex
-                    val highlighted = isPinned || isActive
-                    Box(
-                        Modifier.fillMaxWidth().height(rowHeight),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            line.text,
-                            style = if (highlighted) MaterialTheme.typography.titleLarge
-                            else MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Normal,
-                            color = if (highlighted) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                        )
-                    }
-                }
-            }
-
-            /** 定位线只在手动滑动时出现（#41）。 */
-            if (dragging) {
-                Box(
-                    Modifier
-                        .align(Alignment.Center)
-                        .fillMaxWidth(0.72f)
-                        .height(1.dp)
-                        .background(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
-                            Corner.pill,
-                        ),
-                )
-            }
-
-            /** 定位线右侧的「跳到这句播放」按钮（只在滑动时）。 */
-            if (dragging && pinnedIndex >= 0) {
-                val target = lines.getOrNull(pinnedIndex)
-                if (target != null) {
-                    FilledIconButton(
-                        onClick = {
-                            onSeek(target.timeMs)
-                            dragging = false
-                            pinnedIndex = -1
-                        },
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .padding(end = 12.dp)
-                            .size(40.dp),
-                    ) {
-                        Icon(Icons.Rounded.PlayArrow, "跳到这句播放", Modifier.size(22.dp))
-                    }
-                    Box(Modifier.align(Alignment.CenterStart).padding(start = 12.dp)) {
-                        Text(
-                            formatClock(target.timeMs),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}

@@ -2,53 +2,60 @@ package xyz.etkn.mobile.music
 
 import android.app.PendingIntent
 import android.content.Intent
-import androidx.media3.common.Player
 import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.session.LibraryResult
-import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.common.MediaItem as Media3Item
-import com.google.common.collect.ImmutableList
-import com.google.common.util.concurrent.Futures
-import com.google.common.util.concurrent.ListenableFuture
+import androidx.media3.session.MediaSessionService
 import xyz.etkn.mobile.MainActivity
 import xyz.etkn.mobile.graph
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.first
 
 /**
- * 音乐播放服务。
+ * 音乐播放服务：托管一个 MediaSession，让播放能在后台继续，
+ * 并提供系统通知、锁屏和蓝牙控制。
  *
- * 用户口径（2026-11-27，#42）**必须是 MediaLibraryService，否则系统卡片按钮永远是灰的**。
+ * ## 用户口径（2026-11-27，#60）**回归上游极简实现，删掉我加的所有补丁**
  *
- * 官方文档（Android Developers / Media3 / Background playback）原文：
+ * 用户原话：
  * ```
- * By default, playback resumption is turned off. This means the user can't resume
- * playback when your service isn't running.
- * To opt-in to this feature, you need to declare a media button receiver and
- * implement the onPlaybackResumption method.
- *
- * Note: The Android System UI resumption notification is only available
- * if you implement a MediaLibraryService to serve a content library.
+ * 「上一首、下一首那个，我估计是你之前咱们一直整那个播放组件跟系统自带的音乐
+ *   显示的不一样的事弄的，现在我不需要音乐组件在 APP 不在后台的时候显示播放按钮，
+ *   你可以把这部分你之前弄的那些代码啥都去掉，我猜估计是你代码套重了，
+ *   我现在只需要连接蓝牙、耳机，在耳机上按下一首的按钮，能直接唤醒它播放就行，
+ *   其余的不用 APP 不在后台的时候，非要在它上面显示了。
+ *   然后正常播放音乐的话，本来在播放当中，音乐组件就是正常能显示上一首、下一首
+ *   播放，还有音乐的专辑图的，本来没开始改之前就好使。
+ *   所以你检查检查是不是你自己代码弄太多，弄重复了，
+ *   下一步我觉得你应该删代码，而不是在打补丁」
  * ```
  *
- * 用户实测对照：
- *  · 系统自带音乐设为默认（后台已彻底关闭）→ 媒体卡片中间播放键**可点**，点了直接续播
- *  · 换成 ETKN（原实现是 MediaSessionService）→ 同一个位置**灰色点不动**
+ * 确实是我把代码搞重了。这个文件从 853 行回到上游的 52 行结构。
  *
- * 差别就在这里：系统 UI 的「续播卡片」只对 MediaLibraryService 开放。
- * 这不是 OPPO 特有的适配问题，是 Android 平台标准 API 的要求，所有机型通用。
+ * ### 删掉的东西（全是我为「App 不在后台也要点亮系统卡片」加的）
+ * ```
+ * ✗ MediaLibraryService        —— 为了"系统卡片播放键可点亮"引入，
+ *                                 它的 Callback 反而让"下一首"被执行两次
+ * ✗ MusicCallback（320 行）    —— onConnect / onPlaybackResumption /
+ *                                 onPlayerCommandRequest / 内容库浏览
+ * ✗ onStartCommand（140 行）   —— 媒体键分流，"点一次跳两首"的另一个元凶
+ * ✗ MediaButtonHint            —— 按键静态中转 + 去重窗口
+ * ✗ EtknMediaButtonReceiver    —— 自定义 Receiver
+ * ✗ syncSessionMetadata        —— 强推 metadata 给 Session
+ * ✗ enterForeground            —— 绕 ColorOS 冻结的前台通知
+ * ✗ 静默起播相关               —— 在 MusicConnection 里，把音量设 0 再还原
+ *                                 （就是搞出"完全没声音"的那个）
+ * ```
  *
- * 三个要点：
- *  · 继承 `MediaLibraryService`，`onGetSession` 返回 `MediaLibrarySession`
- *  · `onPlaybackResumption` 用**带 `isForPlayback` 的新签名**
- *    （蓝牙耳机直连播放时系统会传 true）
- *  · Service 起来时把「上次那首」预装进播放器并 prepare —— 这样卡片才有
- *    封面、总时长、可点的播放键（对照系统音乐那张卡片：00:00 / 04:00）
+ * ### 保留下来的能力
+ * ```
+ * ✓ 后台播放 + 系统媒体通知 + 锁屏控制
+ * ✓ 蓝牙/耳机按键控制（MediaSession 自带，上游 52 行版本本来就有）
+ * ✓ 正常播放时系统卡片显示歌名/歌手/专辑图/上一首/下一首（本来就好使）
+ * ```
+ *
+ * 上一首/下一首回到由 `MediaSession` 默认处理 —— 一次按键只切一首。
  */
-class MusicService : MediaLibraryService() {
-    private var session: MediaLibrarySession? = null
+class MusicService : MediaSessionService() {
+    private var session: MediaSession? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -58,796 +65,29 @@ class MusicService : MediaLibraryService() {
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        // Artwork for the notification goes through the image client (token only to the ETKN origin).
+        /** 通知栏封面走图片客户端（令牌只发给 ETKN 同源）。 */
         val bitmaps = DataSourceBitmapLoader.Builder(this)
             .setDataSourceFactory(OkHttpDataSource.Factory(graph.http.images))
             .build()
-        session = MediaLibrarySession.Builder(this, graph.music.player, MusicCallback())
+        session = MediaSession.Builder(this, graph.music.player)
             .setSessionActivity(open)
             .setBitmapLoader(bitmaps)
             .build()
-        /**
-         * 用户口径（#42）**起来就把上次那首预装进播放器**。
-         *
-         * 为什么必须这么做：系统卡片要显示「封面 / 总时长 / 可点的播放键」，
-         * 前提是播放器里已经有一个 MediaItem 且已 prepare（duration 已知）。
-         * 播放器空着的时候 `mediaItemCount == 0`、`duration == 0`、
-         * `isCommandAvailable(COMMAND_PLAY_PAUSE) == false` → 卡片整块是灰的。
-         *
-         * 对照图（系统音乐）：00:00 / 04:00 —— 时长已知，正是"预装 + prepare"的结果。
-         */
-        applicationContext.graph.music.restoreForResumption()
-        /**
-         * 用户口径（2026-11-27，#1 真根因）**主动进入前台服务状态，避免被 ColorOS 冻结**。
-         *
-         * adb 实测证据（一加 13 / ColorOS 16）：
-         * ```
-         * OplusHansManager: freeze uid: 10687 xyz.etkn.mobile pids: [11210] scene: LcdOff
-         * MediaPlayerWrapper: The session was destroyed xyz.etkn.mobile
-         * ```
-         *
-         * 结论：ColorOS 的 OplusHansManager 一息屏（scene: LcdOff）就冻结整个进程，
-         * MediaSession 被销毁 → 状态栏卡片变灰、点不了、队列恢复也没机会跑。
-         *
-         * 这不是我们代码的 bug，是 ColorOS 的后台管理策略。
-         * 官方对抗手段只有一个：**让 Service 常驻前台**（有持续通知就不冻结）。
-         *
-         * `MediaSessionService` 本来会在「真正播放」时自动进前台，
-         * 但我们恢复的队列是 prepare 但不 play，不算播放中，
-         * 于是它一直是后台状态 → 一息屏就被冻。这里显式进前台。
-         *
-         * 注意必须 try-catch：Android 12+ 对后台启动前台服务有限制，
-         * 失败也不能让 Service 崩掉。
-         */
-        /**
-         * 用户口径（2026-11-27，#29）**Session 建好后立刻同步塞入 remembered 的 metadata**。
-         *
-         * ColorOS 日志（决定性证据）：
-         * ```
-         * OplusMediaControlService: getPlayerInfo, pkgname: xyz.etkn.mobile
-         * OplusMediaControlService: E getTitleAndArtist is null
-         * OplusMediaControlService: E getMediaMetadata is null
-         * OplusMediaControlService: D players is empty
-         * OplusMediaControlService: setLastMediaButtonReceiver: not add to stack
-         * ```
-         *
-         * 它在 MediaButton 到达的**那一瞬间**就去读 Session 的 metadata
-         * （来自 `player.currentMediaItem`）。而 `restoreForResumption()`
-         * 是异步的（要等 token + 网络解析直链），那个瞬间 player 还是空的
-         * → metadata null → 它判定 players is empty → 踢出栈 → 按钮永远灰。
-         *
-         * 所以：Session 建好后**同步**把 remembered 的 MediaItem 塞进 player
-         * （纯内存操作，零网络），metadata 立刻就有。真直链之后异步换。
-         */
-        runCatching {
-            val music = graph.music
-            val mem = music.remembered.value
-            if (mem != null && music.player.mediaItemCount == 0) {
-                music.player.setMediaItem(music.resumeMediaItem(mem))
-                android.util.Log.i(
-                    "ETKN-Music",
-                    "Service: 同步预装 metadata title=${mem.name} artist=${mem.artist} dur=${mem.durationMs}",
-                )
-            } else if (mem == null) {
-                /**
-                 * `remembered` 本身也是从磁盘异步读的，Service 刚创建时可能还是 null。
-                 * 这里补一次监听：一拿到就装进 player（ColorOS 才读得到 metadata）。
-                 */
-                applicationContext.graph.scope.launch {
-                    runCatching {
-                        val m = music.remembered.first { it != null }
-                        if (m != null && music.player.mediaItemCount == 0) {
-                            music.player.setMediaItem(music.resumeMediaItem(m))
-                            android.util.Log.i(
-                                "ETKN-Music",
-                                "Service: 延迟预装 metadata title=${m.name}",
-                            )
-                        }
-                    }
-                }
-            }
-        }.onFailure {
-            android.util.Log.w("ETKN-Music", "同步预装 metadata 失败", it)
-        }
-        runCatching { enterForeground() }
-        /**
-         * 用户口径（#1）**Session 必须知道「当前在播哪首」**，
-         * 否则系统控制中心拿到的是 `queueTitle=null, size=0`，
-         * 显示成「未在播放」→ 播放键灰。
-         *
-         * 实测：`init done: mediaItemCount=1 queue=1`（MusicConnection 里确实有 1 条）
-         * 但 `dumpsys media_session` 显示 `size=0` ——
-         * 因为 Session 的 PlaybackState 停留在 `NONE(0)`，Media3 不会往系统推 queue。
-         *
-         * 这里在 Session 建好后强制同步一次：把播放器的当前项 metadata
-         * 显式喂给 Session（`setMediaItem` 已做，但状态没转过去）。
-         */
-        runCatching { syncSessionMetadata() }
     }
 
-    /**
-     * 把播放器的当前 MediaItem metadata 显式同步到 Session。
-     *
-     * 作用：让 `dumpsys media_session` 里 `metadata` 不再是 `description=null`，
-     * 系统控制中心才能显示歌名/歌手/时长，并把播放键点亮。
-     */
-    private fun syncSessionMetadata() {
-        val s = session ?: return
-        val player = s.player
-        val item = player.currentMediaItem ?: return
-        val meta = item.mediaMetadata
-        android.util.Log.i(
-            "ETKN-Music",
-            "syncSession: title=${meta.title} artist=${meta.artist} dur=${meta.durationMs} " +
-                "count=${player.mediaItemCount} state=${player.playbackState}",
-        )
-        /**
-         * 关键：`replaceMediaItem` 不会让 Media3 重算 PlaybackState，
-         * 所以 Session 依旧报 NONE。必须调 `prepare()` ——
-         * 它会把状态推成 BUFFERING，Session 才会把 metadata/queue 同步给系统。
-         *
-         * 实测依据：
-         * ```
-         * syncSession: count=1 state=2   ← player 内部状态是 PAUSED（对）
-         * dumpsys:     state=NONE(0)     ← Session 报给系统的还是 NONE（错）
-         * ```
-         * 说明 Session 没收到 player 的状态通知，需要主动触发一次。
-         */
-        runCatching { player.prepare() }
-    }
-
-    /**
-     * 把本 Service 提升为前台服务（带一条常驻通知）。
-     *
-     * 用 `mediaPlayback` 类型，Android 14+ 要求该类前台服务必须有通知。
-     */
-    private fun enterForeground() {
-        val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE)
-            as android.app.NotificationManager
-        val channelId = "etkn_music_service"
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                android.app.NotificationChannel(
-                    channelId,
-                    "音乐播放服务",
-                    android.app.NotificationManager.IMPORTANCE_LOW,
-                ).apply { setShowBadge(false) },
-            )
-        }
-        val open = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("ETKN 音乐")
-            .setContentText("准备就绪")
-            .setContentIntent(open)
-            .setOngoing(true)
-            .setSilent(true)
-            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
-            .build()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            startForeground(
-                1,
-                notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
-            )
-        } else {
-            startForeground(1, notification)
-        }
-    }
-
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
-
-
-    /**
-     * 用户口径（2026-11-27，#30）**从广播里拿到用户按的是哪个键，直接开始播**。
-     *
-     * 用户诉求：
-     *  「连蓝牙耳机，我点蓝牙耳机的下一集，或者是播放，
-     *    能不能直接给它唤醒起来播放呀，要不每次我还要给它打开播放」
-     *
-     * 实测现状（adb）：
-     * ```
-     * App force-stop → 按 KEYCODE_MEDIA_NEXT
-     *   → 进程被拉起 ✅
-     *   → 恢复到上次那首（PAUSED, 57s）✅
-     *   → 但没出声 ❌
-     * ```
-     *
-     * 原因：ColorOS 在进程启动后 91ms 就完成 Session 判定并踢出栈，
-     * 那条「下一曲」命令在 App 起来之前就被丢弃了。
-     * 但 **`MediaButtonReceiver` 收到的广播 Intent 里带着 keycode**，
-     * 只要 Service 能拿到这个 Intent，就知道用户按的是播放还是下一曲，
-     * 然后直接开始播 —— 不依赖系统再发一次命令。
-     *
-     * `MediaSessionService` 被 MediaButtonReceiver 拉起时会调 `onStartCommand`，
-     * 这里读 intent 的 `EXTRA_KEY_EVENT` 拿到 keycode。
-     */
-    /**
-     * 用户口径（#58）**调试输出同时写文件**，因为这台机器上 `logcat` 抓不到本 App 的日志
-     * （缓冲区被系统吞掉，实测 `logcat -d` 计数恒为 0）。
-     * 写到 `filesDir/next-debug.log`，用 `adb shell run-as ... cat` 就能读。
-     */
-    private fun dbg(msg: String) {
-        android.util.Log.i("ETKN-Music", msg)
-        runCatching {
-            val f = java.io.File(filesDir, "next-debug.log")
-            f.appendText("${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())} $msg\n")
-        }
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val keyEvent = intent?.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT)
-        val keyCode = keyEvent?.keyCode
-        val action = intent?.action
-        /** 有些 ROM 只传 action 不传 EXTRA_KEY_EVENT，两种都要认。 */
-        val isMediaButtonAction = action == Intent.ACTION_MEDIA_BUTTON
-        android.util.Log.i(
-            "ETKN-Music",
-            "onStartCommand: action=$action keyCode=$keyCode isMediaBtn=$isMediaButtonAction " +
-                "extras=${intent?.extras?.keySet()?.joinToString()}",
-        )
-        /**
-         * 用户口径（2026-11-27，#32）**被媒体键拉起时直接开播**。
-         *
-         * 实测：`onStartCommand: action=null keyCode=null isMediaBtn=false extras=null`
-         * —— Media3 内部 `startService` 没带原始 Intent，读不到 keyCode。
-         *
-         * 解决办法：`MediaButtonReceiver` 收到广播时，**在转发给 Media3 之前**
-         * 先把 keycode 记到一个静态变量（见 [MediaButtonHint]）。
-         * Service 起来后直接读它 —— 同一个进程，静态变量肯定已经写好了。
-         */
-        val hintedKey = MediaButtonHint.consume()
-        /** 实际按下的键（Intent 或静态提示任一来源）。 */
-        val pressed = keyCode ?: hintedKey
-        /**
-         * 用户口径（2026-11-27，#40）**同一个键只能处理一次**。
-         *
-         * 用户报的 bug：
-         *  「下一首，点一下会跳两首歌，上一首也有问题」
-         *
-         * 根因：同一个按键有**两个处理点**，都真的执行了：
-         * ```
-         * ① onPlayerCommandRequest（Media3 Session 层）→ music.systemNext()
-         * ② onStartCommand（我们自己加的）              → music.systemNext()
-         * ```
-         * 所以一次点击跳两首；上一首同理（连退两首，看起来"不是上一首"）。
-         *
-         * 现在按「谁该负责」划清：
-         * ```
-         * 冷启动（进程刚起来、Session 还不存在）
-         *     → onPlayerCommandRequest 根本不会被调用
-         *     → 只能由 onStartCommand 接管   ✅
-         * 已在运行（Session 存在、系统发的是 Player 命令）
-         *     → onPlayerCommandRequest 会处理
-         *     → onStartCommand 必须放手，否则重复执行
-         * ```
-         * 判断依据：`session` 已存在 = 走 Session 那条路，这边不动。
-         */
-        android.util.Log.i(
-            "ETKN-Music",
-            "onStartCommand: 媒体键=$pressed (intent=$keyCode hint=$hintedKey)",
-        )
-        /**
-         * 用户口径（2026-11-27，#56）**彻底解决"一次跳两首"**。
-         *
-         * 已确认的事实：
-         * ```
-         * ① 全仓库只有一处 seekToNextMediaItem（MusicConnection L1120）
-         * ② onPlayerCommandRequest 只被调用 1 次（cmd=9）
-         * ③ 但 active item id 从 413 → 415，跨了 2
-         * ```
-         * 说明：`onPlayerCommandRequest` 里我们已经切了一次（RESULT_SUCCESS），
-         * 而 `onStartCommand` 那条异步路径**又切了一次** —— 因为
-         * `MediaButtonHint.handledRecently()` 只有 2 秒窗口，
-         * 而 onStartCommand 里要 `await SignedIn`（异步等登录态），
-         * 等完早就过了 2 秒，去重失效。
-         *
-         * 根治：**只要播放器里已经有内容（队列非空），onStartCommand 就完全不处理**。
-         * 它只在真正的冷启动（队列还没装回来）时才有意义 ——
-         * 那时的目标就是"把队列装回来并开始播"，不是切歌。
-         */
-        val alreadyLoaded = runCatching {
-            applicationContext.graph.music.player.mediaItemCount > 0
-        }.getOrDefault(false)
-        if (alreadyLoaded) {
-            android.util.Log.i(
-                "ETKN-Music",
-                "onStartCommand: 队列已加载(${applicationContext.graph.music.player.mediaItemCount} 首)，" +
-                    "跳过（交给 onPlayerCommandRequest）pressed=$pressed",
-            )
-            return super.onStartCommand(intent, flags, startId)
-        }
-        if (pressed != null || isMediaButtonAction) {
-            applicationContext.graph.scope.launch {
-                runCatching {
-                    /** 等登录态 + remembered 就绪（冷启动必需）。 */
-                    kotlinx.coroutines.withTimeoutOrNull(15_000L) {
-                        applicationContext.graph.sessions.state.first {
-                            it is xyz.etkn.mobile.data.session.SessionState.SignedIn
-                        }
-                    }
-                    kotlinx.coroutines.withTimeoutOrNull(5_000L) {
-                        applicationContext.graph.music.remembered.first { it != null }
-                    }
-                    /**
-                     * 用户口径（2026-11-27，#38）**必须按具体按键分流，不能一律当"播放"**。
-                     *
-                     * 用户报的 bug（OPPO 流体云卡片）：
-                     *  「它的暂停不好使，暂停之后马上就继续播放，
-                     *    下一曲好像也不好使，下一曲好像播放的不是列表里的下一个」
-                     *
-                     * 根因：上一版这里收到任何媒体键（包括 PAUSE）都调 `systemPlay()`
-                     * → 点暂停立刻又播起来；点下一曲播的还是 remembered 那首，
-                     * 不是队列里的下一首。
-                     *
-                     * 现在按 keyCode 分流：
-                     * ```
-                     * PLAY        → systemPlay()     （没在播就播，在播就继续）
-                     * PAUSE       → pause()          （必须真的暂停）
-                     * PLAY_PAUSE  → toggle()
-                     * NEXT        → systemNext()     （在播就切歌，没播当播放）
-                     * PREVIOUS    → systemPrevious()
-                     * STOP        → pause()
-                     * HEADSEТHOOK → toggle()         （耳机线控单击）
-                     * ```
-                     */
-                    val m = applicationContext.graph.music
-                    when (pressed) {
-                        android.view.KeyEvent.KEYCODE_MEDIA_PLAY -> m.systemPlay()
-                        android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> m.pause()
-                        android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-                        android.view.KeyEvent.KEYCODE_HEADSETHOOK,
-                        -> m.toggle()
-                        android.view.KeyEvent.KEYCODE_MEDIA_NEXT -> m.systemNext()
-                        android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS -> m.systemPrevious()
-                        android.view.KeyEvent.KEYCODE_MEDIA_STOP -> m.pause()
-                        else -> {
-                            /** 未知键（或只有 action 没 keyCode）：当作"用户要听歌"。 */
-                            android.util.Log.i("ETKN-Music", "onStartCommand: 未知键，按播放处理")
-                            m.systemPlay()
-                        }
-                    }
-                    android.util.Log.i(
-                        "ETKN-Music",
-                        "onStartCommand: 已处理 key=$pressed isPlaying=${m.state.value.isPlaying}",
-                    )
-                }
-            }
-        }
-        return super.onStartCommand(intent, flags, startId)
-    }
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        /**
-         * 用户口径（2026-11-27，#1 最终修复）**App 被划掉时绝对不能 stopSelf()**。
-         *
-         * 系统音乐为什么"不用点，播放键就是亮的"（用户原话）：
-         * 因为它的 Service 一直在跑，MediaSession 一直存在，
-         * ColorOS 的控制中心有对象可绑 → 按钮亮着、能点。
-         *
-         * 我们原来这里 `stopSelf()` —— Service 一停，MediaSession 立刻销毁，
-         * 控制中心拿不到任何 session，日志就是：
-         * ```
-         * OplusQsMediaPanelViewController --> bindMediaCarouselController
-         *     historyList is empty
-         * ```
-         * 没有历史、没有 Session → 按钮是暗的，点也不发命令（所以点了完全没反应）。
-         *
-         * 现在的做法：
-         *  · 只把播放暂停，**保留 Session 和 MediaItem**
-         *  · 不 stopSelf，Service 靠前台服务状态常驻（有通知，ColorOS 不冻）
-         *  · 这样划掉 App 之后，控制中心依然能看到「雨一直下 / 张宇」，
-         *    播放键是亮的，点了就接着播
-         *
-         * 代价：会常驻一条通知。但这是系统音乐同样的行为，用户可接受。
-         */
-        runCatching { applicationContext.graph.music.pause() }
-        // 不调用 stopSelf()：让 Session 活着，控制中心才有对象可绑
+        val player = session?.player
+        if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
+            applicationContext.graph.music.stop()
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
         session?.release()
         session = null
         super.onDestroy()
-    }
-
-    /**
-     * 用户口径（#42）**系统 UI / 蓝牙耳机的控制入口**。
-     */
-    private inner class MusicCallback : MediaLibrarySession.Callback {
-
-        override fun onConnect(
-            session: MediaSession,
-            controller: MediaSession.ControllerInfo,
-        ): MediaSession.ConnectionResult {
-            /**
-             * 声明允许的命令。
-             *
-             * 系统状态栏那个方形控件只用这几个：
-             * `COMMAND_PLAY_PAUSE`、上一首/下一首对应的 SEEK_TO_*_MEDIA_ITEM。
-             * 不声明的话那里只有一个灰点，点不动。
-             */
-            val builder = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
-            builder.add(Player.COMMAND_PLAY_PAUSE)
-            builder.add(Player.COMMAND_PREPARE)
-            builder.add(Player.COMMAND_STOP)
-            builder.add(Player.COMMAND_SEEK_TO_NEXT)
-            builder.add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-            builder.add(Player.COMMAND_SEEK_TO_PREVIOUS)
-            builder.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
-            builder.add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
-            builder.add(Player.COMMAND_GET_CURRENT_MEDIA_ITEM)
-            builder.add(Player.COMMAND_GET_TIMELINE)
-            builder.add(Player.COMMAND_GET_METADATA)
-            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
-                .setAvailablePlayerCommands(builder.build())
-                .build()
-        }
-
-        /**
-         * 用户口径（#42）**App 不在后台时，点卡片/蓝牙耳机能续播上次那首**。
-         *
-         * 官方签名带 `isForPlayback`：
-         *  · `true` = 蓝牙耳机/车机这类「真的要播」，系统会拉起前台服务
-         *  · `false` = 系统 UI 只是恢复界面
-         *
-         * 两参数那个旧签名在新版 Media3 里可能不被调用，所以必须用这个。
-         */
-        override fun onPlaybackResumption(
-            mediaSession: MediaSession,
-            controller: MediaSession.ControllerInfo,
-            isForPlayback: Boolean,
-        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            val music = applicationContext.graph.music
-            val remembered = music.remembered.value
-            /**
-             * 用户口径（2026-11-27，#28）**这一层必须同步返回完整 metadata**。
-             *
-             * ColorOS 的决定性日志（adb 实测）：
-             * ```
-             * OplusMediaControlService: getPlayerInfo, pkgname: xyz.etkn.mobile
-             * OplusMediaControlService: E getTitleAndArtist is null
-             * OplusMediaControlService: E getMediaMetadata is null
-             * OplusMediaControlService: D players is empty      ← 于是不加进自己的栈
-             * ```
-             *
-             * ColorOS 的 `OplusMediaControlService` 会在 MediaButton 到达时
-             * **立刻**去读 Session 的 metadata。如果那一刻是空的（我们还在等
-             * token 恢复队列），它就判定 "players is empty"，
-             * 控制中心的按钮就永远是灰的、点不动。
-             *
-             * 所以这里**同步**用记忆里的字段构造 MediaItem（歌名/歌手/专辑/封面/时长全有），
-             * 一个网络请求都不发。真直链在之后异步 `resumeRemembered()` 里换。
-             */
-            android.util.Log.i(
-                "ETKN-Music",
-                "onPlaybackResumption: 同步返回 metadata title=${remembered?.name} artist=${remembered?.artist} dur=${remembered?.durationMs}",
-            )
-            if (remembered == null) {
-                // 从没播过：返回空列表，系统就不会拉起播放（符合预期）
-                return Futures.immediateFuture(
-                    MediaSession.MediaItemsWithStartPosition(
-                        ImmutableList.of(), 0, 0L,
-                    ),
-                )
-            }
-            /**
-             * 用户口径（2026-11-27，#13）**系统点播放要真的出声**。
-             *
-             * 只返回 `MediaItem` 的话，Media3 会拿占位 URL 去 prepare，
-             * 而 `resolve()` 需要网络换真直链 —— 系统那边的 `PlaybackState`
-             * 会停在 BUFFERING 很久，用户感觉「点了没反应」。
-             *
-             * 这里在返回 item 的同时**主动触发一次真实播放**（异步），
-             * 保证系统卡片点下去之后确实开始播。
-             */
-            applicationContext.graph.scope.launch {
-                runCatching { music.resumeRemembered() }
-            }
-            return Futures.immediateFuture(
-                MediaSession.MediaItemsWithStartPosition(
-                    /* mediaItems = */ ImmutableList.of(
-                        music.resumeMediaItem(remembered),
-                    ),
-                    /* startIndex = */ 0,
-                    /* startPositionMs = */ remembered.positionMs,
-                ),
-            )
-        }
-
-        /**
-         * 系统把 MediaItem 传回来时原样返回。
-         *
-         * 我们的 MediaItem 只带 `itemId`（直链会过期，不塞），
-         * 真正解析在 `MusicConnection.resolve()` 里按 itemId 现取。
-         */
-        override fun onAddMediaItems(
-            mediaSession: MediaSession,
-            controller: MediaSession.ControllerInfo,
-            mediaItems: MutableList<Media3Item>,
-        ): ListenableFuture<MutableList<Media3Item>> = Futures.immediateFuture(mediaItems)
-
-        /**
-         * 用户口径（2026-11-27，#26）**系统/蓝牙/车机发来的「播放/下一首」命令要真执行**。
-         *
-         * 用户实测（车上连着 CarLife）：
-         *  「我在车上播放也一样连接CarLife，点击方向盘的下一曲，就可以直接播放，而且是继续播放」
-         *
-         * adb 实测：App 被 force-stop 后按 KEYCODE_MEDIA_NEXT（keyevent 87），
-         * 进程**能**被拉起（说明自启动白名单生效了），但只恢复到 PAUSED 原曲，
-         * 没有真的跳到下一首 —— 因为命令没人接。
-         *
-         * 这个回调就是接命令的地方：
-         *  · `COMMAND_PLAY_PAUSE` → 播放/暂停（要等登录态 + 真直链）
-         *  · `COMMAND_SEEK_TO_NEXT` / `COMMAND_SEEK_TO_NEXT_MEDIA_ITEM` → 下一首
-         *  · `COMMAND_SEEK_TO_PREVIOUS*` → 上一首
-         *
-         * 关键：这些命令可能在「App 刚被拉起、token 还没恢复」时到达，
-         * 所以统一走 `music.executeSystemCommand()`，它内部会等会话就绪。
-         */
-        override fun onPlayerCommandRequest(
-            session: MediaSession,
-            controller: MediaSession.ControllerInfo,
-            playerCommand: Int,
-        ): Int {
-            android.util.Log.i(
-                "ETKN-Music",
-                "onPlayerCommandRequest: cmd=$playerCommand from=${controller.packageName} " +
-                    "idxNow=${applicationContext.graph.music.player.currentMediaItemIndex}",
-            )
-            /**
-             * 用户口径（#40）**标记"这个键已由 Session 层处理"**，
-             * 让随后到来的 `onStartCommand` 不要再执行一遍（否则一次点击跳两首）。
-             */
-            MediaButtonHint.markHandledBySession()
-            val music = applicationContext.graph.music
-            when (playerCommand) {
-                /**
-                 * 用户口径（2026-11-27，#44）**PLAY_PAUSE 必须真的能暂停**。
-                 *
-                 * 用户报的 bug：「暂停按钮又不好使了」。
-                 *
-                 * 根因（又是我上一版引入的）：
-                 * ```
-                 * COMMAND_PLAY_PAUSE → music.systemPlay()   ← 只会播，永远不暂停
-                 * 而且这里返回 RESULT_SUCCESS（=已处理），
-                 * Media3 内置的 play/pause 切换就不会再执行 → 暂停彻底失效
-                 * ```
-                 *
-                 * 现在：正在播 → 暂停；没在播 → 播（走 systemPlay 保证能出声）。
-                 */
-                Player.COMMAND_PLAY_PAUSE -> {
-                    val player = applicationContext.graph.music.player
-                    if (player.isPlaying) {
-                        music.pause()
-                        android.util.Log.i("ETKN-Music", "PLAY_PAUSE: 正在播 → 暂停")
-                    } else {
-                        applicationContext.graph.scope.launch {
-                            runCatching { music.systemPlay() }
-                        }
-                        android.util.Log.i("ETKN-Music", "PLAY_PAUSE: 未在播 → 播放")
-                    }
-                }
-                /** 停止也当暂停处理（保持卡片状态一致）。 */
-                Player.COMMAND_STOP -> music.pause()
-                /**
-                 * 用户口径（2026-11-27，#46）**下一首/上一首交给 Media3 自己执行**。
-                 *
-                 * 用户报的 bug（这次有实测日志）：
-                 *  「点下一首，播放的是下下首；上一首也一样」
-                 *
-                 * 抓到的日志（`logcat --pid -s ETKN-Music`）：
-                 * ```
-                 * onPlayerCommandRequest: cmd=9 from=com.android.shell   ← 只收到 1 次
-                 * systemNext 完成（切歌） idx=408                        ← 我们也只切了 1 次
-                 * ```
-                 * 但实际播放项从 406 跳到了 410 —— **索引跨了 2**。
-                 *
-                 * 结论：不是两个处理点重复（那个已经修了），而是
-                 * **Media3 的 Session 层自己已经执行了一次「下一首」**，
-                 * 我们在这个回调里又 `seekToNextMediaItem()` 一次 → 共 2 次。
-                 *
-                 * 修法：这几条命令**直接返回 -1 交给 Media3 默认处理**，
-                 * 我们不插手。这样只跳 1 首，播放/暂停仍由我们自己控制（#44）。
-                 */
-                /**
-                 * 用户口径（2026-11-27，#52）**下一首/上一首必须自己执行**。
-                 *
-                 * 踩的坑（两轮）：
-                 * ```
-                 * 第一版：这里调 systemNext() + onStartCommand 也调一次 → 跳 2 首
-                 * 第二版：改成 return -1 交给 Media3     → 完全没反应（点了不动）
-                 * ```
-                 * 第二版为什么没反应：`MediaLibrarySession` 的默认实现里，
-                 * `COMMAND_SEEK_TO_NEXT_MEDIA_ITEM` 并不会去 seek 播放器 ——
-                 * 它期待回调方处理；返回 -1 等于「我不处理」，于是什么都没发生。
-                 *
-                 * 现在：回到「自己执行」，但只执行一次 ——
-                 * `onStartCommand` 那边已有 2 秒去重窗口（#40），
-                 * 不会重复；`systemNext/systemPrevious` 内部也只在"真的在播"时切歌。
-                 */
-                /**
-                 * 用户口径（2026-11-27，#58）**对照实验：只用最纯粹的 seek，不做任何额外动作**。
-                 *
-                 * 已经排除了：
-                 * ```
-                 * ① 全仓库只有 1 处 seekToNextMediaItem
-                 * ② onPlayerCommandRequest 只被调用 1 次
-                 * ③ onStartCommand 在队列非空时已完全跳过（#56）
-                 * ④ 已去掉多余的 prepare()
-                 * 但 idx 仍然 418 → 420 → 422（每次跨 2）
-                 * ```
-                 * 剩下的可能性只有两个：
-                 * ```
-                 * A. Media3 在返回值之外又执行了一次
-                 * B. 队列里本来就有重复项（相邻两条是同一首歌的两个版本）
-                 * ```
-                 * 这次直接调 player.seekToNextMediaItem()（不经 systemNext 那层包装），
-                 * 并打出切歌前后的 idx + id，一次就能判定。
-                 */
-                Player.COMMAND_SEEK_TO_NEXT,
-                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                -> {
-                    dbg("cmd=NEXT 进入")
-                    val p = applicationContext.graph.music.player
-                    val beforeIdx = p.currentMediaItemIndex
-                    val beforeId = p.currentMediaItem?.mediaId
-                    val nextId = p.getMediaItemAt(beforeIdx + 1).mediaId
-                    val nextNextId = runCatching {
-                        p.getMediaItemAt(beforeIdx + 2).mediaId
-                    }.getOrNull()
-                    dbg(
-                        "NEXT: before idx=$beforeIdx id=$beforeId 期望next=$nextId 再下一个=$nextNextId",
-                    )
-                    p.seekToNextMediaItem()
-                    dbg(
-                        "NEXT: after  idx=${p.currentMediaItemIndex} id=${p.currentMediaItem?.mediaId}",
-                    )
-                }
-                Player.COMMAND_SEEK_TO_PREVIOUS,
-                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                -> {
-                    val p = applicationContext.graph.music.player
-                    dbg(
-                        "PREV: before idx=${p.currentMediaItemIndex} id=${p.currentMediaItem?.mediaId}",
-                    )
-                    p.seekToPreviousMediaItem()
-                    dbg(
-                        "PREV: after  idx=${p.currentMediaItemIndex} id=${p.currentMediaItem?.mediaId}",
-                    )
-                }
-                Player.COMMAND_SEEK_TO_MEDIA_ITEM -> {
-                    /** 指定项跳转不做特殊处理。 */
-                    return -1
-                }
-                else -> return android.os.Bundle.EMPTY.let {
-                    /** 不认识的命令：返回 -1 让 Media3 走默认处理。 */
-                    -1
-                }
-            }
-            /** `RESULT_SUCCESS`(=0) 表示"已处理"。 */
-            return androidx.media3.session.SessionResult.RESULT_SUCCESS
-        }
-
-        /**
-         * 内容库浏览：ETKN 不做 MediaBrowser 浏览树（不需要 Android Auto 那套），
-         * 返回空库即可 —— 系统只要求"类型是 MediaLibraryService"，不要求真的有曲库树。
-         */
-        override fun onGetLibraryRoot(
-            session: MediaLibrarySession,
-            browser: MediaSession.ControllerInfo,
-            params: MediaLibraryService.LibraryParams?,
-        ): ListenableFuture<LibraryResult<Media3Item>> =
-            Futures.immediateFuture(LibraryResult.ofItem(rootItem(), params))
-
-        override fun onGetChildren(
-            session: MediaLibrarySession,
-            browser: MediaSession.ControllerInfo,
-            parentId: String,
-            page: Int,
-            pageSize: Int,
-            params: MediaLibraryService.LibraryParams?,
-        ): ListenableFuture<LibraryResult<ImmutableList<Media3Item>>> =
-            Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.of(), params))
-    }
-
-    /** 根节点（空库的占位 root）。 */
-    private fun rootItem(): Media3Item = Media3Item.Builder()
-        .setMediaId("etkn-root")
-        .setMediaMetadata(
-            androidx.media3.common.MediaMetadata.Builder()
-                .setIsBrowsable(true)
-                .setIsPlayable(false)
-                .setMediaType(androidx.media3.common.MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
-                .setTitle("ETKN 音乐")
-                .build(),
-        )
-        .build()
-}
-
-/**
- * 用户口径（2026-11-27，#32）**媒体键事件的中转站**。
- *
- * 为什么需要它：
- * ```
- * ColorOS 按媒体键 → 发 MediaButton 广播 → 拉起进程 → Media3 startService（不带 Intent）
- *                                                        ↑ onStartCommand 拿不到 keyCode
- * ```
- * 我们在自己的 Receiver 里先把 keyCode 存进这个静态变量（同一进程），
- * Service 起来后 `consume()` 读走，就知道「用户刚才按了媒体键」。
- */
-object MediaButtonHint {
-    @Volatile private var keyCode: Int? = null
-    @Volatile private var at: Long = 0L
-
-    /**
-     * 用户口径（2026-11-27，#40）**同一个键只能执行一次**。
-     *
-     * 根因（用户报「下一首点一下跳两首」）：
-     * ```
-     * ① onPlayerCommandRequest（Media3 Session 层）→ systemNext()
-     * ② onStartCommand（我们自己加的）              → systemNext()
-     * ```
-     * 两个处理点都真的执行了 → 一次点击跳两首；上一首同理（连退两首，
-     * 所以用户说「反正不是上一首」）。
-     *
-     * 用这个时间戳做去重：Session 层处理过的键，2 秒内 `onStartCommand` 直接放手。
-     */
-    @Volatile private var handledAt: Long = 0L
-
-    fun markHandledBySession() {
-        handledAt = System.currentTimeMillis()
-    }
-
-    /** 刚刚（2 秒内）是不是已经被 Session 层处理过？ */
-    fun handledRecently(): Boolean =
-        System.currentTimeMillis() - handledAt < 2_000L
-
-    /** Receiver 收到广播时调用。 */
-    fun remember(code: Int) {
-        keyCode = code
-        at = System.currentTimeMillis()
-    }
-
-    /** Service 起来时调用；**只认 8 秒内**的事件，避免误判。 */
-    fun consume(): Int? {
-        val code = keyCode
-        val age = System.currentTimeMillis() - at
-        keyCode = null
-        return if (code != null && age in 0..8_000L) code else null
-    }
-}
-
-/**
- * 用户口径（#32）**自己的 MediaButtonReceiver**。
- *
- * 照 QQ 音乐的做法（它用 `androidx.media.session.MediaButtonReceiver`），
- * 我们在转发给 Media3 之前先记下 keyCode，解决「冷启动时拿不到按键」的问题。
- */
-class EtknMediaButtonReceiver : android.content.BroadcastReceiver() {
-    override fun onReceive(context: android.content.Context, intent: android.content.Intent?) {
-        if (intent?.action != android.content.Intent.ACTION_MEDIA_BUTTON) return
-        val event = @Suppress("DEPRECATION")
-        intent.getParcelableExtra<android.view.KeyEvent>(android.content.Intent.EXTRA_KEY_EVENT)
-        event?.let {
-            MediaButtonHint.remember(it.keyCode)
-            android.util.Log.i("ETKN-Music", "Receiver: 记住媒体键 ${it.keyCode}")
-        }
-        /**
-         * 继续交给 Media3 的标准 Receiver 处理（它负责拉起 Service / 转发 Session）。
-         *
-         * 注意：`MediaButtonReceiver.onReceive` 是**实例方法**（继承自 BroadcastReceiver），
-         * 不是静态的，所以要 new 一个实例来调。
-         */
-        runCatching {
-            androidx.media3.session.MediaButtonReceiver()
-                .onReceive(context, intent)
-        }.onFailure {
-            android.util.Log.w("ETKN-Music", "转发给 Media3 MediaButtonReceiver 失败", it)
-        }
     }
 }

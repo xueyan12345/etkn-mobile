@@ -74,8 +74,6 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     private var reportedId: String? = null
     private var startedId: String? = null
     private var progressJob: Job? = null
-    /** 用户口径（#39）已经为哪首歌预载过下一首（防止重复下好几首）。 */
-    private var prefetchedFor: String? = null
     @Volatile private var session: ActiveSession? = null
 
     private var _player: ExoPlayer? = null
@@ -490,67 +488,23 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                     p.prepare()
                     android.util.Log.i("ETKN-Music", "restore: 真直链已装入，prepare 开始")
                     /**
-                     * 用户口径（#1 最终手段）**静默播 1 帧再暂停，强制走完状态机**。
+                     * 用户口径（2026-11-27，#61）**删掉静默起播，只 prepare 不 play**。
                      *
-                     * 实测规律（反复验证）：
+                     * 「静默起播」是我为了让 ColorOS 系统卡片点亮而加的：
+                     * 把播放器音量设 0 → play() → 暂停 → 还原音量。它造成两个后果：
                      * ```
-                     * 冷启动后 restore（只 prepare）→ Session state=NONE(0), metadata size=2
-                     * 点一次播放                      → state=PLAYING, metadata size=11
-                     * 再暂停                          → state=PAUSED, metadata size=11 ✅ 一直保持
+                     * ① 用户报「手机音量已经调大了，一点声没有」——
+                     *    还原音量写在 pause() 之后，中途抛异常音量就永久停在 0；
+                     *    下次进来 `val realVolume = p.volume` 又读到 0 → 永久静音。
+                     * ② 用户报「上一首/下一首点一次跳两首」——
+                     *    这里额外的 play()/pause() 打乱了 Media3 的状态机。
                      * ```
-                     * Media3 只在 player **真正开始播放过**之后，才把 metadata/queue
-                     * 同步给 MediaSession。仅 prepare 到 PAUSED 不够。
-                     *
-                     * 所以这里：音量置 0（用户听不见）→ play() → 等状态到 READY
-                     * → 立即 pause() 并 seek 回原位置。整个过程约 200~600ms，
-                     * 用户感知不到声音，但 Session 从此有了完整状态，
-                     * 状态栏/车机卡片的播放键就亮了。
+                     * 用户已明确说不需要 App 不在后台时点亮系统卡片，所以整段删掉。
+                     * 只保留上面的 `p.prepare()` —— 让播放器处于可播状态，不主动出声。
                      */
-                    /**
-                     * 用户口径（2026-11-27，#45）**静默起播的音量必须绝对还原**。
-                     *
-                     * 用户报的 bug：「手机音量已经调大了，一点声没有」。
-                     *
-                     * 根因（我这版引入的严重 bug）：
-                     * ```
-                     * val realVolume = p.volume     ← 若上次没还原成功，这里取到的就是 0
-                     * p.volume = 0f
-                     * ... p.pause(); p.volume = realVolume; p.seekTo(...)
-                     *                    ↑ 只要上面任何一步抛异常，音量永远停在 0
-                     * ```
-                     * 上一版就是 `seekTo`/`pause` 中途失败，`p.volume` 卡在 0，
-                     * 而下次进来 `realVolume` 又读到 0 —— **永久静音，调音量键也没用**
-                     * （系统音量是 30，但播放器客户端音量是 0，所以
-                     * `dumpsys audio` 显示 `mutedState:clientVolume`）。
-                     *
-                     * 现在三重保险：
-                     *  · `realVolume` 取到时如果是 0，按 1.0 处理（不能把自己越锁越死）
-                     *  · `try/finally` 保证无论中间怎么失败都把音量还原
-                     *  · 还原后再断言一次
-                     */
-                    val realVolume = if (p.volume <= 0f) 1f else p.volume
-                    try {
-                        p.volume = 0f
-                        p.play()
-                        val deadline = System.currentTimeMillis() + 2_000
-                        while (p.playbackState != Player.STATE_READY &&
-                            System.currentTimeMillis() < deadline
-                        ) {
-                            kotlinx.coroutines.delay(50)
-                        }
-                        p.pause()
-                    } finally {
-                        /** **必须**还原，哪怕上面抛了异常。 */
-                        p.volume = realVolume
-                        android.util.Log.i(
-                            "ETKN-Music",
-                            "restore: 音量还原为 ${p.volume}（原 ${realVolume}）",
-                        )
-                    }
-                    runCatching { p.seekTo(memory.positionMs) }
                     android.util.Log.i(
                         "ETKN-Music",
-                        "restore: 静默起播完成 state=${p.playbackState} pos=${p.currentPosition} vol=${p.volume}",
+                        "restore: 真直链已装入并 prepare（state=${p.playbackState} vol=${p.volume}）",
                     )
                 }.onFailure {
                     android.util.Log.w("ETKN-Music", "restore 解析直链失败", it)
@@ -808,78 +762,13 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val musicCacheMb = MusicCache.limitMb
         val factory = MusicCache.dataSource(context, resolving, musicCacheMb)
         val player = PlayerFactory.music(context, factory)
-        /**
-         * 用户口径（2026-11-27，#45）**播放器音量必须是 1.0**。
-         *
-         * 历史 bug 留下的后遗症：曾经"静默起播"把 `p.volume` 设成 0 却没还原，
-         * 这个状态会跟着进程活着 —— `dumpsys audio` 里显示
-         * `mutedState:clientVolume`，系统音量调到最大也没声音。
-         *
-         * 所以在播放器一创建就显式归位，不依赖任何"还原"逻辑。
-         */
-        player.volume = 1f
-        android.util.Log.i("ETKN-Music", "player 创建，音量归位=${player.volume}")
         player.addListener(object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) = publish()
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                /**
-                 * 用户口径（2026-11-27，#56）**定位「一次跳两首」到底是谁多切了一次**。
-                 *
-                 * 现象：命令只收到 1 次（cmd=9），我们的 systemNext 也只执行 1 次，
-                 * 但 active item id 从 413 跳到 415 —— 跨了 2。
-                 *
-                 * 这里把每次 transition 的 reason 打出来，就能看出：
-                 * ```
-                 * reason=AUTO(1)   Media3 自己前进
-                 * reason=SEEK(2)   我们 seekToNextMediaItem 触发
-                 * ```
-                 * 如果一次按键出现两条记录（AUTO + SEEK），就说明两边各干了一次。
-                 */
-                android.util.Log.i(
-                    "ETKN-Music",
-                    "onMediaItemTransition: reason=$reason idx=${player.currentMediaItemIndex} " +
-                        "id=${mediaItem?.mediaId} count=${player.mediaItemCount}",
-                )
                 finishReport(completed = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
                 // Gapless advance keeps STATE_READY, so start the next track's report here.
                 if (player.playbackState == Player.STATE_READY) startReport()
-
-                /**
-                 * 用户口径（2026-11-27，#46）**切歌后如果没在播，补一次 play**。
-                 *
-                 * 背景：上一首/下一首已交给 Media3 默认处理（避免跳两首，
-                 * 详见 MusicService.onPlayerCommandRequest 里的说明）。
-                 * 但 Media3 默认的 seek 只移动索引，某些情况（占位 URL / 未 prepare）
-                 * 不会真的开始播 —— 这里兜一次，保证「点了下一首就真的在放」。
-                 *
-                 * 只在 `reason == SEEK`（用户主动切歌）时补，
-                 * 避免把用户手动暂停的状态又播起来。
-                 */
-                /**
-                 * 用户口径（2026-11-27，#50）**歌词要在播放层加载，不能依赖 UI**。
-                 *
-                 * 问题（用户问「CarLife 车机上现在能正常显示歌词吗」）：
-                 * ```
-                 * publishLyrics() 只在 UI 的 SeekerLyrics 里调用
-                 * → 没打开播放页 = 没歌词 = 车机卡片只有歌名
-                 * ```
-                 * 所以把加载挪到这里：每次切歌就主动拉一次，喂给歌词缓存，
-                 * 之后 `refreshLyricMetadata()` 就会把它写进 MediaMetadata.subtitle，
-                 * 车机自然就有了。UI 打开时直接复用，不再重复请求。
-                 */
-                mediaItem?.mediaId?.let { id -> ensureLyrics(id) }
-
-                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK && !player.isPlaying) {
-                    android.util.Log.i(
-                        "ETKN-Music",
-                        "切歌后未播放 → 补 play（idx=${player.currentMediaItemIndex} state=${player.playbackState}）",
-                    )
-                    runCatching {
-                        if (player.playbackState == Player.STATE_IDLE) player.prepare()
-                        player.play()
-                    }
-                }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -926,26 +815,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             _state.value = _state.value.copy(sourceId = entry.sourceId)
             runCatching { saveMemory() }
         }
-        /**
-         * 用户口径（2026-11-27，#39 修正）**必须给 DataSpec 设一个稳定 key**。
-         *
-         * 根因（实测）：
-         * ```
-         * 播放侧  resolve() 只做了 withUri(url)，没设 key
-         *         → MusicCache 退回用 spec.key ?: uri  → key = 带签名的直链 URL
-         * 预载侧  用 source.id|sessionId 或 url        → key 完全不同
-         * 结果    预载下完了，播放时永远命中不了
-         * ```
-         * 而且直链 URL 每次刷新签名都不一样 —— 同一首歌每次 key 都变，
-         * 连"播过的下次复用"都做不到。
-         *
-         * 现在用 `版本ID + 流ID` 组一个稳定 key，播放侧和预载侧共用。
-         */
-        val stableKey = "${entry.sourceId}|${id}"
-        return spec.buildUpon()
-            .setUri(Uri.parse(entry.url))
-            .setKey(stableKey)
-            .build()
+        return spec.withUri(Uri.parse(entry.url))
     }
 
     /**
@@ -1027,138 +897,6 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      *    （它会等登录态就绪再解析）
      *  · 其他情况 → prepare + play
      */
-    /**
-     * 用户口径（2026-11-27，#26）**系统/蓝牙/车机的播放命令**。
-     *
-     * 场景（用户实测）：
-     *  · 连着 CarLife，按方向盘「下一曲」→ 应该直接开始播
-     *  · 蓝牙耳机双击 → 同理
-     *  · App 没启动时也要能拉起并播
-     *
-     * 共同前提：**必须等登录态就绪**，否则 token 没恢复、直链解析失败，
-     * 表现就是「进程起来了但没声音」。
-     */
-    fun systemPlay() {
-        graph.scope.launch {
-            withTimeoutOrNull(10_000L) {
-                graph.sessions.state.first { it is SessionState.SignedIn }
-            }
-            /**
-             * 用户口径（#45）**播放前确保音量不是 0**。
-             * 防止历史"静默起播"留下的 0 音量让用户以为播放坏了。
-             */
-            _player?.let { if (it.volume <= 0f) it.volume = 1f }
-            val p = _player
-            if (p != null && p.mediaItemCount > 0 && p.playbackState != Player.STATE_IDLE) {
-                /** 已有内容：直接播（可能停在占位 URL，先尝试 prepare）。 */
-                val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
-                if (uri.startsWith("$SCHEME://") && _remembered.value != null) {
-                    resumeRemembered()
-                } else {
-                    runCatching { p.prepare() }
-                    p.play()
-                }
-            } else if (_remembered.value != null) {
-                /** 没有内容：从记忆恢复整个队列再播。 */
-                resumeRemembered()
-            }
-            android.util.Log.i("ETKN-Music", "systemPlay 完成 state=${_player?.playbackState}")
-        }
-    }
-
-    /**
-     * 用户口径（2026-11-27，#27）**「下一曲」键在没播放时 = 开始播放**。
-     *
-     * 用户原话：
-     *  「我要求是APP如果没在后台的话，播放和下一曲都要唤醒APP的音乐播放的开始播放，
-     *    下一曲这个按键也是播放，只有真的在播放的时候，下一曲才是下一曲」
-     *
-     * 规则：
-     * ```
-     * App 没在后台 / 没在播 → 下一曲键 = 开始播放（接着上次的进度，不跳歌）
-     * App 正在播放        → 下一曲键 = 真的切到下一首
-     * ```
-     *
-     * 为什么这么设计（用户场景）：车上/蓝牙耳机只有一个「下一曲」物理键，
-     * 想听歌时按它，期望的是「开始放」，而不是「跳过上次那首」。
-     */
-    fun systemNext() {
-        graph.scope.launch {
-            withTimeoutOrNull(10_000L) {
-                graph.sessions.state.first { it is SessionState.SignedIn }
-            }
-            val p = _player
-            /** 现在真的在播放吗？（决定「下一首」还是「开始播」） */
-            val actuallyPlaying = p != null && p.isPlaying
-            if (!actuallyPlaying) {
-                /** 没在播 → 等同于"开始播放"，续上次进度。 */
-                android.util.Log.i("ETKN-Music", "systemNext: 当前没在播 → 当作开始播放")
-                if (p != null && p.mediaItemCount > 0) {
-                    val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
-                    if (uri.startsWith("$SCHEME://") && _remembered.value != null) {
-                        resumeRemembered()
-                    } else {
-                        runCatching { p.prepare() }
-                        p.play()
-                    }
-                } else if (_remembered.value != null) {
-                    resumeRemembered()
-                }
-                return@launch
-            }
-            /**
-             * 用户口径（2026-11-27，#52）**切歌只做「seek + play」，不要 prepare**。
-             *
-             * 「点一次跳两首」的真凶就是这里的 `prepare()`：
-             * `seekToNextMediaItem()` 已经让播放器进入 BUFFERING 并自动准备，
-             * 紧跟的 `prepare()` 会重置播放器内部状态机，在某些队列状态下
-             * 触发一次隐式的「前进」—— 所以索引跨了 2。
-             * 日志里 `onPlayerCommandRequest` 只出现 1 次，
-             * 但 `idx` 从 406 变成 410，正是这个原因。
-             */
-            runCatching {
-                player.seekToNextMediaItem()
-                player.play()
-            }
-            android.util.Log.i(
-                "ETKN-Music",
-                "systemNext 完成（切歌） idx=${player.currentMediaItemIndex}",
-            )
-        }
-    }
-
-    /** 系统「上一首」：规则同 [systemNext] —— 没在播就当开始播放（#27）。 */
-    fun systemPrevious() {
-        graph.scope.launch {
-            withTimeoutOrNull(10_000L) {
-                graph.sessions.state.first { it is SessionState.SignedIn }
-            }
-            val p = _player
-            val actuallyPlaying = p != null && p.isPlaying
-            if (!actuallyPlaying) {
-                android.util.Log.i("ETKN-Music", "systemPrevious: 当前没在播 → 当作开始播放")
-                if (p != null && p.mediaItemCount > 0) {
-                    val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
-                    if (uri.startsWith("$SCHEME://") && _remembered.value != null) {
-                        resumeRemembered()
-                    } else {
-                        runCatching { p.prepare() }
-                        p.play()
-                    }
-                } else if (_remembered.value != null) {
-                    resumeRemembered()
-                }
-                return@launch
-            }
-            /** 同 systemNext：不 prepare，避免多退一首。 */
-            runCatching {
-                player.seekToPreviousMediaItem()
-                player.play()
-            }
-            android.util.Log.i("ETKN-Music", "systemPrevious 完成（切歌） idx=${player.currentMediaItemIndex}")
-        }
-    }
-
     fun toggle() {
         val p = _player ?: return
         if (p.isPlaying) {
@@ -1380,60 +1118,6 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      *
      * 只预载下一首；同一首不重复提交（`MusicPrefetch` 内部去重）。
      */
-    /**
-     * 用户口径（2026-11-27，#42）**按需补取 sourceId**。
-     *
-     * 歌词接口必须带 `MediaSourceId`，而它只在解析直链时才拿到。
-     * 冷启动 / 刚切歌那一刻 `state.sourceId` 是 null，
-     * 界面那边就需要一个「立刻帮我取一下」的入口。
-     */
-    /** 已加载过歌词的曲目（避免重复请求）。 */
-    private val lyricsLoaded = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-
-    /**
-     * 用户口径（#50）**切歌时主动把歌词拉下来**（不依赖播放页是否打开）。
-     *
-     * 拉完喂给 `publishLyrics()`，之后进度变化就会把当前行写进
-     * `MediaMetadata.subtitle` —— 车机 / 系统控制中心都能显示。
-     */
-    private fun ensureLyrics(itemId: String) {
-        if (lyricsLoaded[itemId] == true) return
-        lyricsLoaded[itemId] = true
-        graph.scope.launch {
-            runCatching {
-                /**
-                 * 用户口径（#54）**直接拿曲目 ID 当 MediaSourceId**。
-                 *
-                 * 实测服务端：`/api/tv/Music/{id}/Lyrics?MediaSourceId={id}` 直接返回歌词，
-                 * 而 `/api/tv/Items/{id}/PlaybackInfo` 返 404 ——
-                 * 所以不要再依赖 `ensureSourceId()`，它必然失败。
-                 */
-                val sid = _state.value.sourceId?.takeIf { it.isNotBlank() } ?: itemId
-                val text = graph.api.lyrics(itemId, sid)
-                if (text.isBlank()) {
-                    lyricsLoaded.remove(itemId)
-                    return@launch
-                }
-                val parsed = Lyrics.parse(text)
-                publishLyrics(itemId, parsed.lines.map { it.timeMs to it.text })
-                android.util.Log.i(
-                    "ETKN-Music",
-                    "歌词已预载 item=$itemId 行数=${parsed.lines.size}",
-                )
-            }.onFailure {
-                lyricsLoaded.remove(itemId)
-                android.util.Log.w("ETKN-Music", "歌词预载失败 item=$itemId", it)
-            }
-        }
-    }
-
-    suspend fun ensureSourceId(itemId: String): String? {
-        resolved[itemId]?.sourceId?.let { return it }
-        return runCatching {
-            graph.api.playbackInfo(itemId, audio = true).sources.firstOrNull()?.id
-        }.getOrNull()
-    }
-
     private fun maybePrefetchNext(p: androidx.media3.common.Player) {
         if (p.mediaItemCount == 0) return
         val nextIndex = p.currentMediaItemIndex + 1
@@ -1441,57 +1125,24 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val cur = p.currentPosition
         val dur = p.duration
         if (dur <= 0) return
-        /**
-         * 用户口径（#39 修正）**只预载下一首，不要一次下好几首**。
-         *
-         * 实测问题：条件里带了 `cur > dur * 7/10`（已播 70%），
-         * 而 `publish()` 每次进度变化都会调用本方法 → 70% 之后每 500ms 触发一次，
-         * 加上 `musicPrefetch` 的去重是按 key（每首 key 不同）→ 连下了 5 首。
-         *
-         * 现在：
-         *  · 只保留「缓存追上播放位置」这一个条件（说明当前这首已经稳了）
-         *  · 用 `prefetchedFor` 记住「已经为哪首歌预载过下一首」，同一首只做一次
-         */
         val cached = _state.value.cachedPosition
-        if (cached <= 0 || (cached - cur) > 20_000L) {
-            return
-        }
-        android.util.Log.i(
-            "ETKN-Music",
-            "预载条件成立 cur=$cur cached=$cached dur=$dur nextIndex=$nextIndex",
-        )
+        val cacheFull = cached > 0 && (cached - cur) < 20_000L
+        val nearlyDone = cur > dur * 7 / 10
+        if (!cacheFull && !nearlyDone) return
+
         val nextId = p.getMediaItemAt(nextIndex).mediaId
-        /** 当前这首已经为它预载过了，就不再重复。 */
-        val curId = p.currentMediaItem?.mediaId ?: return
-        if (prefetchedFor == curId) return
-        prefetchedFor = curId
-        android.util.Log.i("ETKN-Music", "开始预载下一首 cur=$curId next=$nextId")
         graph.scope.launch {
             runCatching {
-                android.util.Log.i("ETKN-Music", "预载协程启动 next=$nextId")
+                /** 已经在预载/已解析过就不重复请求。 */
                 if (MusicPrefetch.lastKey?.endsWith(nextId) == true) return@launch
-                val active = session
-                if (active == null) {
-                    android.util.Log.w("ETKN-Music", "预载中止：session 为空")
-                    return@launch
-                }
+                val active = session ?: return@launch
                 val info = graph.api.playbackInfo(nextId, audio = true)
-                val source = info.sources.firstOrNull()
-                if (source == null) {
-                    android.util.Log.w("ETKN-Music", "预载中止：无 source")
-                    return@launch
-                }
+                val source = info.sources.firstOrNull() ?: return@launch
                 val url = PlaybackAddress.music(
                     source, active.server, active.token, active.userId, info.playSessionId,
                 )
-                /**
-                 * 用户口径（#39）**cache key 必须与播放侧 resolve() 完全一致**：
-                 * `"${source.id}|${曲目ID}"`。
-                 *
-                 * 曾用 URL 当 key —— 但直链带签名，每次刷新都不同，
-                 * 同一首歌的 key 都稳定不了，缓存等于白存。
-                 */
-                val key = "${source.id}|${nextId}"
+                /** 缓存 key 用 source.id + session，和播放侧保持一致才能命中。 */
+                val key = "${source.id}|${info.playSessionId}"
                 val upstream = androidx.media3.datasource.DefaultHttpDataSource.Factory()
                     .setUserAgent("ETKN-Mobile")
                 MusicPrefetch.prefetch(
