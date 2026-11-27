@@ -270,6 +270,21 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        /**
+         * 用户口径（2026-11-27，#125）**进入视频播放器时，音乐让出媒体键和系统卡片**。
+         *
+         * 用户原话：
+         * ```
+         * 「当切换到播放视频时候第一应该屏蔽蓝牙控制器对音乐的控制，可以控制视频暂停，
+         *   现在我用蓝牙暂停视频暂停然后音乐就从暂停状态转为播放状态了」
+         * 「播放视频时候应该把系统状态栏的那个音乐播放卡片停掉了，就是恢复到纯灰色的状态」
+         * ```
+         *
+         * 音乐和视频各有一个 MediaSession，同时 active 时按键会串。
+         * 这里在视频页进入前台时让音乐失活，媒体键就只会落到视频会话上，
+         * 系统卡片也回到无播放的灰态。
+         */
+        xyz.etkn.mobile.music.MusicSessionHolder.yieldToVideo()
         if (wasPlaying) session?.player?.play()
     }
 
@@ -282,6 +297,15 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        /**
+         * 用户口径（#125）**视频结束/离开后，把媒体键还给音乐**。
+         *
+         * 用户原话：「播放视频结束之后应该就把蓝牙对音乐的控制恢复了」
+         *
+         * 放在 onStop 而不是 onDestroy：PiP 和后台播放时页面也可能 stop，
+         * 但那时视频会话自己还在管按键，恢复音乐由 onDestroy 负责更准确 ——
+         * 见下面的 onDestroy。
+         */
         val player = session?.player ?: return
         // With 后台播放 the sound goes on (the media notification controls it, so coming back
         // leaves it as it is); closing PiP or leaving the app otherwise pauses, and the progress
@@ -296,6 +320,8 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         close()
+        /** 用户口径（#125）视频彻底退出，把媒体键还给音乐。 */
+        xyz.etkn.mobile.music.MusicSessionHolder.resumeFromVideo()
         super.onDestroy()
     }
 }

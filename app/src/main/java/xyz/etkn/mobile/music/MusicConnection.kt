@@ -67,7 +67,17 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     private val _library = MutableStateFlow<String?>(null)
     val libraryId: StateFlow<String?> = _library.asStateFlow()
 
-    private data class Resolved(val url: String, val playSession: String, val sourceId: String, val runTimeTicks: Long)
+    /**
+     * 解析结果。`size` 是文件总字节，只用于把「已缓存字节」换算成「已缓存时长」
+     * 显示在缓冲条上（见 [cachedAheadMs]），不参与播放。
+     */
+    private data class Resolved(
+        val url: String,
+        val playSession: String,
+        val sourceId: String,
+        val runTimeTicks: Long,
+        val size: Long,
+    )
 
     private val resolved = ConcurrentHashMap<String, Resolved>()
     private val items = ConcurrentHashMap<String, Item>()
@@ -362,20 +372,67 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     }
 
     /**
-     * 用户口径（#32⑤）**进度条的缓存段用播放器真实 bufferedPosition**。
+     * 用户口径（2026-11-27，#124）**缓冲条必须反映「真正下载到磁盘的量」**。
      *
-     * 一开始我想自己按 SimpleCache 的落盘字节换算，但那需要「文件总字节」，
-     * 而我们没有可靠来源（直链是 302 到 115 CDN，长度得额外 HEAD 一次）。
+     * 历史（#32⑤ 当时的判断，已被实证推翻）：
+     * ```
+     * 一开始按 Player.bufferedPosition 实现，理由是「SimpleCache 落盘字节换算
+     * 需要文件总字节，而直链 302 到 115 CDN，长度得额外 HEAD 一次」
+     * ```
+     * 那条理由不成立 —— `SimpleCache.getCachedBytes(key, position, length)`
+     * 不需要知道总字节，给 `Long.MAX_VALUE` 就是「从 position 到底」。
+     * 视频侧（`VideoCache`）和 `CacheWriter` 自己都用这个口径。
      *
-     * 直接用 `Player.bufferedPosition` 更准也简单：它反映「当前已能连续播放到的位置」，
-     * 在有 SimpleCache 的情况下就等于「已缓存的末尾」。
-     * 视频播放器那条缓冲条最终也是这个语义。
+     * 用户原话：
+     * ```
+     * 「现在那个缓存小条应该是假的，它是自己瞎乱跳的」
+     * 「我看到缓冲条是一会满一会又不满，一会满又一会不满」
+     * ```
+     *
+     * 原来读的是 `p.bufferedPosition` —— 那是 **Exo 的内存缓冲窗口**，
+     * 会随播放位置滑动而回退（快退时立刻掉回去），跟磁盘缓存无关，
+     * 所以看起来永远在跳。
+     *
+     * 现在改用官方的 `SimpleCache.getCachedBytes(key, position, length)`
+     * —— 视频侧（`VideoCache`）就是用这个统计进度，也是 `CacheWriter` 自己用的口径。
+     * 从**当前播放位置往后**量已经落盘的字节，换算成毫秒。
+     *
+     * 拿不到时长/缓存实例时退回内存缓冲，保证不会更差。
      */
     private fun cachedAheadMs(itemId: String?, positionMs: Long, durationMs: Long): Long {
-        val p = _player ?: return 0L
-        val buffered = p.bufferedPosition
+        val store = MusicCache.get(context)
+        if (itemId != null && store != null && durationMs > 0) {
+            runCatching {
+                val key = MusicCache.cacheKeyFor(itemId)
+                /**
+                 * 用户口径（#124）**缓存条 = 真正落盘多少**。
+                 *
+                 * `getCachedBytes(key, 0, Long.MAX_VALUE)` 返回从 0 开始连续可读的字节数，
+                 * 也就是「这首歌本地到底存了多少」。
+                 *
+                 * 换算成毫秒需要文件总字节：`resolve()` 拿到 `MediaSource.size` 时会记进
+                 * [sourceBytes]（115 直链给的就是真实文件大小）。有它就按比例算，
+                 * 没有就退回内存缓冲 —— 宁可显示得少，也不瞎跳。
+                 */
+                val cachedBytes = store.getCachedBytes(key, 0L, Long.MAX_VALUE)
+                val total = sourceBytes[itemId] ?: 0L
+                if (cachedBytes > 0L && total > 0L) {
+                    val ratio = (cachedBytes.toDouble() / total.toDouble()).coerceIn(0.0, 1.0)
+                    return (durationMs * ratio).toLong().coerceAtMost(durationMs)
+                }
+            }
+        }
+        /** 退回内存缓冲（保证不会比改动前更差）。 */
+        val buffered = _player?.bufferedPosition ?: 0L
         return if (buffered > positionMs) buffered else positionMs
     }
+
+    /**
+     * `itemId → 文件总字节`，`resolve()` 里从 `MediaSource.size` 填。
+     *
+     * 只用来把「已缓存字节」换算成「已缓存时长」，不影响播放本身。
+     */
+    private val sourceBytes = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * 用户口径（2026-11-27，#35）**给系统 MediaSession 用的「续播 MediaItem」**。
@@ -559,7 +616,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                     val url = PlaybackAddress.music(
                         source, active.server, active.token, active.userId, info.playSessionId,
                     )
-                    resolved[memory.itemId] = Resolved(url, info.playSessionId, source.id, source.runTimeTicks)
+                    resolved[memory.itemId] = Resolved(url, info.playSessionId, source.id, source.runTimeTicks, source.size)
                     /** 用真 URL 重建 MediaItem，替换掉占位那条。 */
                     val real = resumeMediaItem(memory).buildUpon().setUri(Uri.parse(url)).build()
                     val idx = p.currentMediaItemIndex.coerceAtLeast(0)
@@ -979,37 +1036,31 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     private fun create(): ExoPlayer {
         val upstream = PlayerFactory.dataSource(graph.http.media, graph.identity.userAgent)
         /**
-         * 用户口径（2026-11-27，#116）**音乐缓存必须能命中，不能每次都回源**。
+         * 用户口径（2026-11-27，#124）**音乐缓存链路：缓存必须在最外层**。
          *
-         * 用户实测（adb 抓的流量与缓冲点）：
+         * ## 为什么缓存必须在最外层
+         *
+         * `CacheDataSource` 的 `CacheKeyFactory` 拿到的是**它自己收到的那个 DataSpec**。
+         * 如果 `ResolvingDataSource` 包在缓存外面：
          * ```
-         * 快退到开头 → buffered position 从 183459 掉回 82425
-         *             → 已下过的部分也失效，重新拉
-         * 40 秒流量涨了约 1 GB
-         * 「缓冲条一会满一会不满，网速一直跑」
+         * ResolvingDataSource → CacheDataSource → HttpDataSource
+         *      ↑ 先解析，缓存根本看不到 etkn-music://
          * ```
+         * 缓存拿到的 `spec.uri` 已经是**带 token 的真实直链**，
+         * token 每次播放都换 → cache key 每次不同 → **命中率恒为 0**。
+         * 这就是用户看到的「一直往手机里写，但从来不读，用完就废」。
          *
-         * 根因：**缓存和直链解析的顺序错了**。
+         * 正确的顺序：
          * ```
-         * 原来：upstream → ResolvingDataSource(换 token 直链) → MusicCache
-         *        ↑ 缓存看到的是带 token 的真实 URL
-         *        每次播放 token 都变 → cache key 每次不同 → 永远未命中
-         *
-         * 现在：upstream → MusicCache(用 etkn-music://track/<id> 做 key) → ResolvingDataSource
-         *        ↑ 缓存 key 是稳定的 itemId，播过一次就命中
+         * CacheDataSource → ResolvingDataSource → HttpDataSource
+         *      ↑ 缓存先拿到稳定的 etkn-music://track/<id>
          * ```
-         *
-         * `MediaItem` 的 URI 本来就是 `etkn-music://track/<id>`（见 toMediaItem），
-         * 这个地址跨会话恒定，正是理想的 cache key。
-         *
-         * 注意：`CacheDataSource` 会把上游请求的 DataSpec 原样传下去，
-         * 所以 `ResolvingDataSource` 依然能拿到 `etkn-music://` 地址并解析成真实直链，
-         * 两者顺序对调不破坏解析逻辑。
+         * 命中 → 直接读本地，一个字节都不回源；
+         * 未命中 → 交给 `ResolvingDataSource` 解析成真实直链去下载。
          */
-        val cacheKey = MusicCache.limitMb
-        val cached = MusicCache.dataSource(context, upstream, cacheKey)
-        val resolving = ResolvingDataSource.Factory(cached) { spec -> resolve(spec) }
-        val player = PlayerFactory.music(context, resolving)
+        val resolving = ResolvingDataSource.Factory(upstream) { spec -> resolve(spec) }
+        val cached = MusicCache.dataSource(context, resolving, MusicCache.limitMb)
+        val player = PlayerFactory.music(context, cached)
         /**
          * 用户口径（2026-11-27，#83）**播放进度必须定期落盘**。
          *
@@ -1097,7 +1148,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             val info = graph.api.playbackInfo(id, audio = true)
             val source = info.sources.firstOrNull() ?: throw IllegalStateException("这首歌暂无可播放版本")
             val url = PlaybackAddress.music(source, active.server, active.token, active.userId, info.playSessionId)
-            Resolved(url, info.playSessionId, source.id, source.runTimeTicks)
+            Resolved(url, info.playSessionId, source.id, source.runTimeTicks, source.size)
         }.also { resolved[id] = it }
         /**
          * 用户口径（2026-11-27，#2）**sourceId 一解析出来就立刻补存一次记忆**。
@@ -1115,6 +1166,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             _state.value = _state.value.copy(sourceId = entry.sourceId)
             runCatching { saveMemory() }
         }
+        /** 记下文件总字节，缓冲条换算「已缓存字节 → 已缓存时长」要用。 */
+        if (entry.size > 0L) sourceBytes[id] = entry.size
         return spec.withUri(Uri.parse(entry.url))
     }
 
@@ -1477,52 +1530,33 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     }
 
     /**
-     * 用户口径（2026-11-27，#39）**预载下一首**。
+     * 用户口径（2026-11-27，#124）**停止「服务端以为好多歌同时在播」**。
      *
-     * 用户原话：
-     *  「把视频的预加载下一集也应用到音乐上，相当于进度条缓存满了之后，
-     *    就预加载下一首，这样下一首播放的时候能秒播放，不用再等待加载」
+     * 原来（#39）这里为了「下一首秒播」，会调 `graph.api.playbackInfo(nextId)` 拿直链再自己下载。
+     * 但 `playbackInfo` 是**播放会话接口** —— 每调一次，ETKN 服务端就登记一次「这首歌开始播放」。
      *
-     * 触发条件（满足任一）：
-     *  · 已缓存位置距离播放位置 < 20 秒（缓存追得很近，说明这首稳了）
-     *  · 已播过 70%
+     * 用户实测到的现象：
+     * ```
+     * 「有时候它好像还会持续请求好多个歌，我在 ETK 后台能看到播放好多好多歌同时」
+     * ```
+     * 根因就是这里：一首歌播到 70% 或缓冲快满时，就替**下一首**发一次 playbackInfo，
+     * 服务端就多出一条播放记录。
      *
-     * 只预载下一首；同一首不重复提交（`MusicPrefetch` 内部去重）。
+     * 而且预取用的 cache key（`source.id|playSessionId`）和播放侧（`music-<itemId>`）
+     * 根本对不上 —— 下下来的字节播放时永远读不到，纯属白花流量。
+     *
+     * 现在只做**本地巡检**：不发任何网络请求，只打一行日志说明「下一首在不在缓存里」。
+     * 「秒播」交给播放器自己的顺序预读（Exo 播到尾部会提前读下一段）。
      */
     private fun maybePrefetchNext(p: androidx.media3.common.Player) {
         if (p.mediaItemCount == 0) return
         val nextIndex = p.currentMediaItemIndex + 1
         if (nextIndex >= p.mediaItemCount) return
-        val cur = p.currentPosition
-        val dur = p.duration
-        if (dur <= 0) return
-        val cached = _state.value.cachedPosition
-        val cacheFull = cached > 0 && (cached - cur) < 20_000L
-        val nearlyDone = cur > dur * 7 / 10
-        if (!cacheFull && !nearlyDone) return
-
         val nextId = p.getMediaItemAt(nextIndex).mediaId
-        graph.scope.launch {
-            runCatching {
-                /** 已经在预载/已解析过就不重复请求。 */
-                if (MusicPrefetch.lastKey?.endsWith(nextId) == true) return@launch
-                val active = session ?: return@launch
-                val info = graph.api.playbackInfo(nextId, audio = true)
-                val source = info.sources.firstOrNull() ?: return@launch
-                val url = PlaybackAddress.music(
-                    source, active.server, active.token, active.userId, info.playSessionId,
-                )
-                /** 缓存 key 用 source.id + session，和播放侧保持一致才能命中。 */
-                val key = "${source.id}|${info.playSessionId}"
-                val upstream = androidx.media3.datasource.DefaultHttpDataSource.Factory()
-                    .setUserAgent("ETKN-Mobile")
-                MusicPrefetch.prefetch(
-                    context = graph.app,
-                    key = key,
-                    uri = android.net.Uri.parse(url),
-                    upstream = upstream,
-                )
-            }
+        val cache = MusicCache.get(context) ?: return
+        runCatching {
+            val cached = cache.isCached(MusicCache.cacheKeyFor(nextId), 0L, Long.MAX_VALUE)
+            android.util.Log.i("ETKN-Music", "下一首 $nextId 本地缓存=$cached（不发网络请求）")
         }
     }
 

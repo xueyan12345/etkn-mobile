@@ -360,14 +360,57 @@ object WifiExitGuard {
 }
 
 /**
- * 用户口径（#77）**让 WifiExitGuard 能主动释放 MediaSession**，卡片才会立刻消失。
+ * 音乐 `MediaSession` 的全局引用。
  *
+ * 用户口径（#77）**让 WifiExitGuard 能主动释放 MediaSession**，卡片才会立刻消失：
  * MusicService 创建会话后 attach 进来；退出时 release。
+ *
+ * 用户口径（2026-11-27，#125）**播视频时音乐要让出媒体键和系统卡片**。
+ *
+ * 用户原话：
+ * ```
+ * 「假如我用蓝牙耳机听音乐，然后我暂停掉音乐，转去播放视频，
+ *   那么我在耳机点击下一首这个操作，还会触发音乐下一集，但是是暂停状态的下一集音乐没播放」
+ * 「当切换到播放视频时候第一应该屏蔽蓝牙控制器对音乐的控制，可以控制视频暂停，
+ *   现在我用蓝牙暂停视频暂停然后音乐就从暂停状态转为播放状态了」
+ * 「播放视频时候应该把系统状态栏的那个音乐播放卡片停掉了，就是恢复到纯灰色的状态」
+ * 「播放视频结束之后应该就把蓝牙对音乐的控制恢复了」
+ * ```
+ *
+ * 根因：音乐和视频各有一个 `MediaSession`（视频那个 id="video"），
+ * 两个同时 active，系统按「最近活跃」分发媒体键 → 按键会串到音乐。
+ *
+ * 修法：视频开始播放时 `setActive(false)`，视频结束时 `setActive(true)`。
+ *
+ * **注意**：`setActive(false)` 只影响「媒体键分发」和「系统卡片是否展示」，
+ * 不影响 `MediaButtonReceiver` 的静态注册 —— 蓝牙冷启动唤醒那条路
+ * 靠的是 `EtknMediaButtonReceiver` + Manifest，跟这个开关无关。
  */
 object MusicSessionHolder {
     @Volatile private var session: androidx.media3.session.MediaSession? = null
 
     fun attach(s: androidx.media3.session.MediaSession) { session = s }
+
+    /**
+     * 让音乐会话让出媒体键（视频开始播放时调）。
+     *
+     * 同时把系统卡片切换成「无播放」的灰态 —— 这就是用户要的
+     * 「恢复到纯灰色的状态」。
+     */
+    fun yieldToVideo() {
+        val s = session ?: return
+        runCatching { s.setActive(false) }
+            .onSuccess { android.util.Log.i("ETKN-Music", "session 让出媒体键（视频开始）") }
+            .onFailure { android.util.Log.w("ETKN-Music", "让出媒体键失败", it) }
+    }
+
+    /** 视频结束，把媒体键还给音乐（用户明确要求）。 */
+    fun resumeFromVideo() {
+        val s = session ?: return
+        runCatching { s.setActive(true) }
+            .onSuccess { android.util.Log.i("ETKN-Music", "session 收回媒体键（视频结束）") }
+            .onFailure { android.util.Log.w("ETKN-Music", "收回媒体键失败", it) }
+    }
 
     fun release() {
         runCatching { session?.release() }

@@ -28,6 +28,21 @@ fun PillToggle(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     icon: ImageVector? = null,
+    /**
+     * 用户口径（2026-11-27，#127）**胶囊体积可调**。
+     *
+     * 用户原话：
+     * ```
+     * 「那个胶囊体积有点大，结合这个16，稍微改一下胶囊体积」
+     * ```
+     * 音乐页那排胶囊字缩到 16sp 后，默认内边距（`ToggleButton` 自带的
+     * 24dp 横向 / 8dp 纵向）显得太厚，收成 16dp / 4dp。
+     *
+     * 默认值保持 `ButtonDefaults.ContentPadding`，
+     * 其他页面（设置页、选集区间等）行为完全不变 —— 只改音乐页那一处调用。
+     */
+    contentPadding: androidx.compose.foundation.layout.PaddingValues =
+        ButtonDefaults.ContentPadding,
     content: @Composable RowScope.() -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -37,6 +52,7 @@ fun PillToggle(
         modifier = modifier,
         enabled = enabled,
         shapes = PillShapes,
+        contentPadding = contentPadding,
         colors = ToggleButtonDefaults.colors(
             containerColor = scheme.secondaryContainer,
             contentColor = scheme.onSecondaryContainer,

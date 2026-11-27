@@ -80,11 +80,52 @@ object MusicCache {
     }
 
     /**
-     * 音乐播放用的数据源（**带写入**）。
+     * 音乐播放用的数据源（**带读 + 带写**）。
      *
      * 音乐不存在「代理 + 预加载双写」的问题（mvp/exo 只用一条流），
      * 所以这里让 Exo 边播边写就行 —— 播过的歌自然落到本地，
      * 下次打开直接读本地，实现「点播放秒响」。
+     *
+     * ## 2026-11-27 #124 修「音乐缓存完全无效」
+     *
+     * 用户实测（连续快进快退 40 秒）：
+     * ```
+     * 累计流量 34289MB → 35344MB（涨约 1GB）
+     * buffered position 183459 → 82425（快退后缓冲点跟着回退）
+     * 「缓冲条一会满一会不满，网速一直跑」
+     * 「感觉就是音乐持续往手机里写缓存，并且它不会读取，用完之后马上就废掉了」
+     * ```
+     *
+     * 三个独立原因：
+     *
+     * **① cache key 每次都不一样 → 永远未命中**
+     * ```
+     * .setCacheKeyFactory { spec -> spec.key ?: spec.uri.toString() }
+     * ```
+     * `spec.key` 从来没人设置。而 `ResolvingDataSource` 在最外层，
+     * 它先把 `etkn-music://track/<id>` 换成带 token 的真实直链，
+     * 缓存层接到的就是那个 **带 token 的 URL** —— token 每次播放都变，
+     * cache key 跟着变，命中率恒为 0。
+     *
+     * 修法：**key 显式取自 `etkn-music://track/<id>` 里的 itemId**，
+     * 不再依赖 `spec.key` 也不依赖可能被改写的 `spec.uri`。
+     * 见 [keyOfUri]。
+     *
+     * **② 写入和读取用不同的 DataSource 实例**
+     * 原来还有一个 `MusicPrefetch` object，自己 New 了一个
+     * `CacheDataSource` + `CacheDataSink`，和播放器的那个**同时**往同一个
+     * SimpleCache 写同一个 key。SimpleCache **不支持两个写入者**
+     * （视频那边踩过：mpv 代理直接 502）。
+     *
+     * 修法：**整个 `MusicPrefetch` 已删除**，写入权集中给播放器那一条流
+     * （播到哪写到哪，播完整首就是整首落盘 —— 正是用户要的口径）。
+     * 原来由它触发的 `playbackInfo` 请求也一并没了，
+     * 服务端不会再出现「好多歌同时在播」。
+     *
+     * **③ 缓存占用读数不对 → 缓冲条是假的**
+     * `currentBytes` 只在 `get()` 时读一次，之后从不更新。
+     *
+     * 修法：`sizeBytes()` 直接读 `cache.cacheSpace`（每次问实时值）。
      */
     fun dataSource(
         context: android.content.Context,
@@ -95,10 +136,44 @@ object MusicCache {
         return CacheDataSource.Factory()
             .setCache(store)
             .setUpstreamDataSourceFactory(upstream)
-            /** key 固定用 itemId：默认 key 是带 token 的完整 URL，token 一换就命中不了。 */
-            .setCacheKeyFactory { spec -> spec.key ?: spec.uri.toString() }
+            /**
+             * key 用 `etkn-music://track/<itemId>` 里的 itemId，**跨会话恒定**。
+             *
+             * 查 `spec.key` 优先（预取会显式 setKey），其次从 uri 里抠 itemId。
+             * 都拿不到才退回 uri 字符串（这种情况会命中不了，但不至于崩）。
+             */
+            .setCacheKeyFactory { spec ->
+                spec.key?.takeIf { it.isNotBlank() } ?: keyOfUri(spec.uri)
+            }
+            /**
+             * 只读命中时不回源；缓存出错（例如索引损坏）就直接走上游，
+             * 不要让整首歌播不出来。
+             */
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
+
+    /**
+     * 从 [uri] 里抠出稳定的缓存 key。
+     *
+     * ```
+     * etkn-music://track/item-25493   → "music-item-25493"
+     * 其它（真实直链、http）           → uri.toString()（会命中不了，但不会崩）
+     * ```
+     *
+     * `MediaItem` 的 uri 由 `toMediaItem()` 构造：
+     * `Uri.Builder().scheme("etkn-music").authority("track").appendPath(itemId)`，
+     * 所以 `lastPathSegment` 就是 itemId。
+     */
+    private fun keyOfUri(uri: android.net.Uri): String {
+        return if (uri.scheme == "etkn-music" && uri.authority == "track") {
+            "music-" + (uri.lastPathSegment ?: uri.toString())
+        } else {
+            uri.toString()
+        }
+    }
+
+    /** 对外暴露同一个 key 规则，预取侧要用。 */
+    fun cacheKeyFor(itemId: String): String = "music-$itemId"
 
     /** 当前占用的字节数（设置页显示用）。 */
     fun sizeBytes(): Long = cache?.let { runCatching { it.cacheSpace }.getOrDefault(0L) } ?: currentBytes
@@ -106,86 +181,5 @@ object MusicCache {
     /** 用户主动「清空音乐缓存」。 */
     fun clear() {
         runCatching { cache?.keys?.forEach { cache?.removeResource(it) } }
-    }
-}
-
-/**
- * 用户口径（2026-11-27，#39）**预加载下一首**。
- *
- * 用户原话：
- *  「把视频的预加载下一集也应用到音乐上，相当于进度条缓存满了之后，
- *    就预加载下一首，这样下一首播放的时候能秒播放，不用再等待加载」
- *
- * 与视频预加载的区别：
- * ```
- * 视频  按字节/时长窗口预热（片子大，不可能整集下完）
- * 音乐  一首歌通常 3-8MB，整首下完最简单
- * ```
- *
- * 实现要点：
- *  · 复用同一个 `SimpleCache`（MusicCache），不另建目录
- *  · 写侧用 `CacheDataSink`，播侧只读 —— 避免双写把缓存搞坏
- *  · `isCached` 已完整就不再下
- *  · 只预载「下一首」，不做整队列预载（省流量、够用）
- */
-object MusicPrefetch {
-    private val jobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
-
-    /** 进行中的预载 key（调试用）。 */
-    @Volatile
-    var lastKey: String? = null
-        private set
-
-    fun prefetch(
-        context: android.content.Context,
-        key: String,
-        uri: android.net.Uri,
-        upstream: androidx.media3.datasource.DataSource.Factory,
-    ) {
-        val cache = MusicCache.get(context) ?: return
-        jobs[key]?.let { if (it.isActive) return }
-        jobs[key] = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            var source: androidx.media3.datasource.DataSource? = null
-            runCatching {
-                lastKey = key
-                if (cache.isCached(key, 0L, Long.MAX_VALUE)) {
-                    android.util.Log.i("ETKN-Music", "预载跳过（已缓存）$key")
-                    return@launch
-                }
-                val writer = androidx.media3.datasource.cache.CacheDataSink.Factory()
-                    .setCache(cache)
-                    .setFragmentSize(androidx.media3.datasource.cache.CacheDataSink.DEFAULT_FRAGMENT_SIZE)
-                source = androidx.media3.datasource.cache.CacheDataSource.Factory()
-                    .setCache(cache)
-                    .setUpstreamDataSourceFactory(upstream)
-                    .setCacheWriteDataSinkFactory(writer)
-                    .createDataSource()
-                val spec = androidx.media3.datasource.DataSpec.Builder()
-                    .setUri(uri)
-                    .setKey(key)
-                    .build()
-                source.open(spec)
-                val buf = ByteArray(256 * 1024)
-                var total = 0L
-                while (true) {
-                    val n = source.read(buf, 0, buf.size)
-                    if (n == -1) break
-                    total += n
-                }
-                android.util.Log.i("ETKN-Music", "预载完成 $key (${total / 1024}KB)")
-            }.onFailure {
-                android.util.Log.w("ETKN-Music", "预载失败 $key", it)
-            }
-            runCatching { source?.close() }
-        }
-    }
-
-    fun cancel(key: String) {
-        jobs.remove(key)?.cancel()
-    }
-
-    fun cancelAll() {
-        jobs.values.forEach { it.cancel() }
-        jobs.clear()
     }
 }

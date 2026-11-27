@@ -178,7 +178,20 @@ fun MusicHomeScreen() {
                         horizontalArrangement = Arrangement.spacedBy(PillGap),
                     ) {
                         items(MusicTab.entries.toList()) { t ->
-                            PillToggle(checked = t == tab, onClick = { tab = t }) {
+                            PillToggle(
+                                checked = t == tab,
+                                onClick = { tab = t },
+                                /**
+                                 * 用户口径（#127）**胶囊体积收一档**（字 16sp 后再配 16/4dp 内边距）。
+                                 *
+                                 * 只改这一处 —— 音乐库选择那排、设置页等其它 PillToggle
+                                 * 仍用默认内边距，不受影响。
+                                 */
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                    horizontal = 16.dp,
+                                    vertical = 4.dp,
+                                ),
+                            ) {
                                 /**
                                  * 用户口径（2026-11-27，#120）**胶囊从 19 收到 17**。
                                  *
@@ -192,8 +205,18 @@ fun MusicHomeScreen() {
                                  */
                                 Text(
                                     t.label,
+                                    /**
+                                     * 用户口径（2026-11-27，#127）**胶囊字号改回 16**。
+                                     *
+                                     * 用户原话：
+                                     * ```
+                                     * 「音乐上面那个4个胶囊，字号改成16吧，
+                                     *   然后那个胶囊体积有点大，结合这个16，稍微改一下胶囊体积」
+                                     * ```
+                                     * 17 → 16sp；体积（上下内边距）往下收，见 PillToggle 的改动。
+                                     */
                                     style = MaterialTheme.typography.bodyLarge,
-                                    fontSize = 17.sp,
+                                    fontSize = 16.sp,
                                     fontWeight = FontWeight.Medium,
                                 )
                             }

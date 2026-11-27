@@ -61,8 +61,18 @@ fun SectionHeader(
              * 配合胶囊提到 19sp Medium：胶囊比标题大 2sp（用户要的层级），
              * 标题靠 SemiBold 字重维持"区块标题"的身份，不再是 19sp Bold 压全场。
              */
+            /**
+             * 用户口径（2026-11-27，#126）**区块标题要加粗**。
+             *
+             * 用户原话：
+             * ```
+             * 「首页我画圈的标题好像不是加粗的效果不好，给我加粗」
+             * ```
+             * 指「媒体库」「继续观看」「国产剧集」「华语电影」这些区块标题。
+             * SemiBold → Bold，17sp 不变（字号上次已经定过）。
+             */
             style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp),
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = if (arrow) Modifier else Modifier.weight(1f),
