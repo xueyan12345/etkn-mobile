@@ -464,14 +464,24 @@ fun PersonCard(
     person: PersonRef,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    /** 用户口径（#100）演员卡 112dp（参考图 0.9 倍率量得 163px → 112dp）。 */
-    width: Dp = Etkn.space.castCard,
+    /**
+     * 用户口径（2026-11-27，#109）**演员卡跟季卡一样大**。
+     *
+     * 用户原话：「演职人员的卡片大小，现在应该跟季的那个大小不太一样，改成跟季的大小一样」
+     *
+     * 季卡现在是 113dp 宽、比例 0.673（参考图 165×245px 量得）。
+     * 演员卡原来是 112dp + 0.78 比例 → 112×144，
+     * 比季卡的 113×168 矮 24dp，所以看着「演员卡明显比季卡小一圈」。
+     * 现在两处都用同一组值：宽 113dp、比例 0.673。
+     */
+    width: Dp = Etkn.space.seasonCard,
 ) {
     val url = images().person(person, width.px())
     Column(modifier.width(width), horizontalAlignment = Alignment.CenterHorizontally) {
         Artwork(
             url,
-            Modifier.width(width).aspectRatio(0.78f).clip(Corner.card).clickable(onClick = onClick),
+            /** 跟季卡同一个比例（#109）。 */
+            Modifier.width(width).aspectRatio(0.673f).clip(Corner.card).clickable(onClick = onClick),
             person.name,
             placeholder = Icons.Rounded.Person,
         )
