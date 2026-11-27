@@ -512,7 +512,18 @@ fun NowPlayingScreen() {
              * 唯一受限：`sourceId` 为空时不加载 —— 但服务端实测
              * `/api/tv/Music/{id}/Lyrics?MediaSourceId={id}` 传曲目 ID 即可，见 LyricsPane 内注释。
              */
-            Box(Modifier.fillMaxWidth().weight(1f)) {
+            /**
+             * 用户口径（2026-11-27，#80）**底部控件往上移一行歌词的距离**。
+             *
+             * 用户原话：
+             * ```
+             * 「这个下面的播放控件稍微往上移一点，压缩一行歌词的距离」
+             * ```
+             * 做法：给歌词区加 `padding(bottom = 44.dp)`（正好一行歌词的高度），
+             * 歌词可见行数少一行，进度条 + 控制按钮整体上移同样的距离。
+             * 只动这一处，其它布局参数不变。
+             */
+            Box(Modifier.fillMaxWidth().weight(1f).padding(bottom = 44.dp)) {
                 LyricsPane(track = track, sourceId = state.sourceId)
             }
 
