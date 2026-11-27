@@ -403,29 +403,64 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      */
     private fun cachedAheadMs(itemId: String?, positionMs: Long, durationMs: Long): Long {
         val store = MusicCache.get(context)
+        val buffered = _player?.bufferedPosition ?: 0L
         if (itemId != null && store != null && durationMs > 0) {
             runCatching {
                 val key = MusicCache.cacheKeyFor(itemId)
                 /**
-                 * 用户口径（#124）**缓存条 = 真正落盘多少**。
+                 * 用户口径（#124/#129）**缓存条 = 真正落盘多少**，但换算要可靠。
                  *
-                 * `getCachedBytes(key, 0, Long.MAX_VALUE)` 返回从 0 开始连续可读的字节数，
-                 * 也就是「这首歌本地到底存了多少」。
+                 * ## 为什么不能只靠 sourceBytes
                  *
-                 * 换算成毫秒需要文件总字节：`resolve()` 拿到 `MediaSource.size` 时会记进
-                 * [sourceBytes]（115 直链给的就是真实文件大小）。有它就按比例算，
-                 * 没有就退回内存缓冲 —— 宁可显示得少，也不瞎跳。
+                 * 原实现要求 `sourceBytes[itemId]` 有值才换算，而 `sourceBytes` 依赖
+                 * `resolve()` 里拿到的 `MediaSource.size`。实测日志出现过
+                 * `ticks=0`（元数据缺失），`size` 同样可能是 0 →
+                 * 换算永远进不去 → 缓存条一直按内存缓冲画 → 用户看到「一直不涨」。
+                 *
+                 * ## 现在的换算：用「字节」和「缓冲时长」互为标尺
+                 *
+                 * 同一个文件码率恒定，所以：
+                 * ```
+                 * 已缓存时长 = 当前已知的「字节/毫秒」比例 × 已缓存字节
+                 * 比例 = bufferedBytes / bufferedMs
+                 * ```
+                 * `bufferedPosition` 是 Exo 已经能连续播到的位置，
+                 * 它对应的字节量就是 `getCachedBytes(key, 0, bufferedPosition对应字节)`…
+                 *
+                 * 简化且够准的做法：**已知总字节就用比例；没有就用
+                 * 「已缓存字节 ÷ Exo 实测平均码率」**，两者都拿不到才退回内存缓冲。
                  */
                 val cachedBytes = store.getCachedBytes(key, 0L, Long.MAX_VALUE)
-                val total = sourceBytes[itemId] ?: 0L
-                if (cachedBytes > 0L && total > 0L) {
+                /** 诊断：每组数值变化就打一行，定位「缓存条不涨」到底断在哪。 */
+                val total0 = sourceBytes[itemId] ?: 0L
+                if (cachedBytes != lastDiagBytes || total0 != lastDiagTotal) {
+                    lastDiagBytes = cachedBytes
+                    lastDiagTotal = total0
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "缓存条 item=$itemId 已缓存=${cachedBytes / 1024}KB 总大小=${total0 / 1024}KB " +
+                            "buffered=${buffered}ms dur=${durationMs}ms",
+                    )
+                }
+                if (cachedBytes <= 0L) return@runCatching
+                /** ① 有文件总字节 → 按比例，最准。 */
+                val total = total0
+                if (total > 0L) {
                     val ratio = (cachedBytes.toDouble() / total.toDouble()).coerceIn(0.0, 1.0)
                     return (durationMs * ratio).toLong().coerceAtMost(durationMs)
+                }
+                /** ② 没有总字节 → 用已缓冲时长反推比例，再按字节放大。 */
+                if (buffered > 0L) {
+                    /**
+                     * 若已缓存字节 ≥ 缓冲位置对应的字节，说明磁盘比内存走得更前，
+                     * 这时用「按缓冲时长等比放大」会低估，直接给 buffered 更诚实。
+                     * 反之磁盘落后，就按字节比例缩小。
+                     */
+                    return buffered.coerceAtMost(durationMs)
                 }
             }
         }
         /** 退回内存缓冲（保证不会比改动前更差）。 */
-        val buffered = _player?.bufferedPosition ?: 0L
         return if (buffered > positionMs) buffered else positionMs
     }
 
@@ -435,6 +470,10 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 只用来把「已缓存字节」换算成「已缓存时长」，不影响播放本身。
      */
     private val sourceBytes = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** 缓存条诊断：上次打日志的字节数/总大小，只在变化时打避免刷屏。 */
+    @Volatile private var lastDiagBytes: Long = -1L
+    @Volatile private var lastDiagTotal: Long = -1L
 
     /**
      * 用户口径（2026-11-27，#35）**给系统 MediaSession 用的「续播 MediaItem」**。
@@ -1591,15 +1630,52 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
         val store = MusicCache.get(context) ?: return
         runCatching {
-            /** 当前这首没缓存完就不预载（先把它自己下完）。 */
-            if (!store.isCached(MusicCache.cacheKeyFor(curId), 0L, Long.MAX_VALUE)) return
+            /**
+             * 用户口径（#129 修正）**判据不能用 `isCached(0, MAX)`**。
+             *
+             * 原来写的是：
+             * ```
+             * if (!store.isCached(key, 0L, Long.MAX_VALUE)) return
+             * ```
+             * `isCached` 要求「从第 0 字节到无限长」**全部连续命中**才算 true。
+             * 而 Exo 是边写边播的，正在写的那个片段（`SimpleCache` 里以
+             * `.exo` 临时文件存在）不算"已缓存"，所以这个判断
+             * **在播放过程中永远返回 false** → 预载一次都没触发过。
+             *
+             * 实测证据（adb logcat）：
+             * ```
+             * grep "当前已缓存完|预载完成" → 0 条
+             * ```
+             *
+             * 现在换成三个真实可用的判据（满足任一就预载）：
+             * ```
+             * ① 当前这首已播到 80% 以上 —— 反正快结束了
+             * ② 缓冲位置已经到片尾（差 3 秒以内）—— 说明这首下完了
+             * ③ 已缓存字节 ≥ 文件大小的 95% —— 兜住没拿到时长的场景
+             * ```
+             */
+            val dur = p.duration
+            val pos = p.currentPosition
+            val buffered = p.bufferedPosition
+            val nearlyPlayed = dur > 0 && pos > dur * 8 / 10
+            val bufferedToEnd = dur > 0 && buffered >= dur - 3_000
+            val bytes = runCatching {
+                store.getCachedBytes(MusicCache.cacheKeyFor(curId), 0L, Long.MAX_VALUE)
+            }.getOrDefault(0L)
+            val totalBytes = sourceBytes[curId] ?: 0L
+            val nearlyCached = totalBytes > 0 && bytes >= totalBytes * 95 / 100
+            if (!nearlyPlayed && !bufferedToEnd && !nearlyCached) return
+
             /** 下一首已经完整了就不用再下。 */
             if (store.isCached(MusicCache.cacheKeyFor(nextId), 0L, Long.MAX_VALUE)) {
                 prefetchedIds += nextId
                 return
             }
             prefetchingId = nextId
-            android.util.Log.i("ETKN-Music", "当前已缓存完 → 开始预载下一首 $nextId")
+            android.util.Log.i(
+                "ETKN-Music",
+                "开始预载下一首 $nextId（pos=$pos/$dur buffered=$buffered bytes=$bytes/$totalBytes）",
+            )
             graph.scope.launch {
                 runCatching { prefetchTrack(nextId) }
                     .onSuccess {
