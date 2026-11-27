@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.Canvas
 import xyz.etkn.mobile.ui.common.responsiveCardWidth
+import androidx.compose.foundation.layout.wrapContentSize
 
 val CardShape = Corner.card
 
