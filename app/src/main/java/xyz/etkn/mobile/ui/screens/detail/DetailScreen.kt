@@ -1680,10 +1680,19 @@ private fun MediaTechPopup(
      * 与 Popup 坐标系一致，直接 offset 即可贴住被点那一行的下沿。
      */
     androidx.compose.ui.window.Popup(
-        popupPositionProvider = androidx.compose.ui.window.PopupPositionProvider { _, windowSize, _ ->
-            androidx.compose.ui.unit.IntOffset(
+        /**
+         * `PopupPositionProvider` 是**接口**不是 fun interface，不能用 lambda 构造，
+         * 必须 `object : ...` 显式实现 calculatePosition。
+         */
+        popupPositionProvider = object : androidx.compose.ui.window.PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: androidx.compose.ui.unit.IntRect,
+                windowSize: androidx.compose.ui.unit.IntSize,
+                layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+                popupContentSize: androidx.compose.ui.unit.IntSize,
+            ): androidx.compose.ui.unit.IntOffset = androidx.compose.ui.unit.IntOffset(
                 x = anchorX.toInt().coerceIn(0, (windowSize.width - width).coerceAtLeast(0)),
-                y = anchorY.toInt().coerceAtMost((windowSize.height - 60).coerceAtLeast(0)),
+                y = anchorY.toInt().coerceAtMost((windowSize.height - popupContentSize.height).coerceAtLeast(0)),
             )
         },
         onDismissRequest = onDismiss,
