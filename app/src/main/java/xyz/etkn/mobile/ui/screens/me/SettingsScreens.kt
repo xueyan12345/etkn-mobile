@@ -691,15 +691,43 @@ private fun WifiExitSettings(settings: Settings) {
                         }) { Text("去授权") }
                     }
                     ssids.isEmpty() -> Column {
-                        Text("没有读到系统保存的 WiFi。")
+                        Text("没有读到 WiFi 列表。")
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "可能需要打开手机「定位开关」，或先手动连接一次该 WiFi。",
+                            "可能需要：①打开手机「定位开关」 ②在设置里允许本应用获取位置 ③先连接一次该 WiFi。\n扫不到的也可以直接手打。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     else -> Column(Modifier.verticalScroll(rememberScrollState())) {
+                        /**
+                         * 用户口径（#78 补充）**扫不到的可以手打**。
+                         *
+                         * 真实情况：车上的 WiFi 熄火后就不广播了，扫描列表里没有；
+                         * 系统保存列表又因 targetSdk 收紧读不到。
+                         * 所以两者都拿不到时，必须能手动补 —— 否则这个功能没法用。
+                         */
+                        var manual by remember { mutableStateOf("") }
+                        Row(
+                            Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.compose.material3.OutlinedTextField(
+                                value = manual,
+                                onValueChange = { manual = it },
+                                label = { Text("扫不到？手动输入 WiFi 名") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            TextButton(
+                                enabled = manual.isNotBlank(),
+                                onClick = {
+                                    scope.launch { graph.settings.setWifiExitSsid(manual.trim()) }
+                                    pickerOpen = false
+                                },
+                            ) { Text("确定") }
+                        }
                         ssids.forEach { ssid ->
                             Row(
                                 Modifier.fillMaxWidth().clickable {
