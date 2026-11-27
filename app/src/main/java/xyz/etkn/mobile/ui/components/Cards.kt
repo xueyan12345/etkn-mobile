@@ -460,7 +460,13 @@ fun libraryIcon(type: String?) = when (type) {
  *   SeasonCard 104 → 132
  *   章节卡/分集卡 160 → 132（横版 16:9，所以视觉面积相近）
  */
-fun PersonCard(person: PersonRef, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp = 132.dp) {
+fun PersonCard(
+    person: PersonRef,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** 用户口径（#100）演员卡 112dp（参考图 0.9 倍率量得 163px → 112dp）。 */
+    width: Dp = Etkn.space.castCard,
+) {
     val url = images().person(person, width.px())
     Column(modifier.width(width), horizontalAlignment = Alignment.CenterHorizontally) {
         Artwork(

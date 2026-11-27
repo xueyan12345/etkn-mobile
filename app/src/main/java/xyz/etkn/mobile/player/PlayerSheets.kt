@@ -95,26 +95,57 @@ internal fun PlayerSheet(
     PlayerSidePanel(onDismiss) {
         when (sheet) {
             /**
-             * 用户口径（#96）**音轨不再是"只有列表"的面板**。
+             * 用户口径（#96/#98/#99）**三行固定不动，点任一行都在它下面浮出小菜单**。
              *
-             * 改成「固定行（视频/音频当前值）+ 点音频行展开下拉列表」，
-             * 见 AvSettingsPanel 的类注释。
-             * 视频行只展示当前画质（参考图里它没有下拉箭头）。
+             * 三行：视频（画质/版本）/ 音频（音轨）/ 字幕。
+             * 每行有选项就能点开，没选项就不显示箭头、点不动。
+             * 浮层不是插进布局里，而是用 offset 叠在那一行下沿覆盖下层 ——
+             * 三行的位置永远不动（第一版我做成了布局内展开，被指「整个三行跳起来」）。
              */
             Sheet.Audio -> AvSettingsPanel(
                 videoTitle = ui.sources.getOrNull(ui.sourceIndex)?.let { describeQuality(it) } ?: "未知",
                 videoSubtitle = ui.sources.getOrNull(ui.sourceIndex)?.let { describeBitrate(it) },
+                videoOptions = ui.sources.mapIndexed { i, s -> s.name.ifEmpty { s.slotLabel } to (i == ui.sourceIndex) },
+                onSelectVideo = { i -> session.selectSource(i) },
                 audioTitle = ui.audio.firstOrNull { it.selected }?.label
                     ?: ui.audio.firstOrNull()?.label ?: "无音轨",
                 audioSubtitle = ui.audio.firstOrNull { it.selected }?.stream?.let { describeAudioSub(it) },
                 audioOptions = ui.audio.map { it.label to it.selected },
-            ) { i -> session.selectTrack(ui.audio[i]) }
+                onSelectAudio = { i -> session.selectTrack(ui.audio[i]) },
+                subtitleTitle = if (!ui.textEnabled) "无字幕"
+                else ui.text.firstOrNull { it.selected }?.label ?: "无字幕",
+                subtitleSubtitle = if (!ui.textEnabled) null else "当前",
+                subtitleOptions = listOf("关闭" to !ui.textEnabled) +
+                    ui.text.map { it.label to (ui.textEnabled && it.selected) },
+                onSelectSubtitle = { i ->
+                    if (i == 0) session.disableSubtitles() else session.selectTrack(ui.text[i - 1])
+                },
+            )
+            /**
+             * 字幕面板复用同一个三行面板（用户点字幕按钮直接落在这一页，
+             * 三行结构一致，不另做一套）。
+             */
             Sheet.Subtitle -> Column {
                 ui.subtitleOffset?.let { SubtitleOffsetRow(it, session) }
-                OptionList(
-                    "字幕",
-                    listOf("关闭" to !ui.textEnabled) + ui.text.map { it.label to (ui.textEnabled && it.selected) },
-                ) { i -> if (i == 0) session.disableSubtitles() else session.selectTrack(ui.text[i - 1]); onDismiss() }
+                AvSettingsPanel(
+                    videoTitle = ui.sources.getOrNull(ui.sourceIndex)?.let { describeQuality(it) } ?: "未知",
+                    videoSubtitle = ui.sources.getOrNull(ui.sourceIndex)?.let { describeBitrate(it) },
+                    videoOptions = ui.sources.mapIndexed { i, s -> s.name.ifEmpty { s.slotLabel } to (i == ui.sourceIndex) },
+                    onSelectVideo = { i -> session.selectSource(i) },
+                    audioTitle = ui.audio.firstOrNull { it.selected }?.label
+                        ?: ui.audio.firstOrNull()?.label ?: "无音轨",
+                    audioSubtitle = ui.audio.firstOrNull { it.selected }?.stream?.let { describeAudioSub(it) },
+                    audioOptions = ui.audio.map { it.label to it.selected },
+                    onSelectAudio = { i -> session.selectTrack(ui.audio[i]) },
+                    subtitleTitle = if (!ui.textEnabled) "无字幕"
+                    else ui.text.firstOrNull { it.selected }?.label ?: "无字幕",
+                    subtitleSubtitle = if (!ui.textEnabled) null else "当前",
+                    subtitleOptions = listOf("关闭" to !ui.textEnabled) +
+                        ui.text.map { it.label to (ui.textEnabled && it.selected) },
+                    onSelectSubtitle = { i ->
+                        if (i == 0) session.disableSubtitles() else session.selectTrack(ui.text[i - 1])
+                    },
+                )
             }
             Sheet.Speed -> OptionList("播放速度", Speeds.map { "${it}×" to (it == ui.speed) }) { i -> session.setSpeed(Speeds[i]); onDismiss() }
             Sheet.Versions -> OptionList("版本", ui.sources.mapIndexed { i, s -> s.name.ifEmpty { s.slotLabel } to (i == ui.sourceIndex) }) { i ->
