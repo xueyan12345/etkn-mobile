@@ -1155,7 +1155,50 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                  * SharedPreferences.apply() 是异步落盘，不阻塞播放。
                  */
                 delay(1_000L)
-                if (player.isPlaying) runCatching { saveMemory() }
+                if (player.isPlaying) {
+                    runCatching { saveMemory() }
+                    /**
+                     * 用户口径（2026-11-28，#136）**预载检查必须每秒跑，不能只挂在播放器事件上**。
+                     *
+                     * 用户实测反馈：
+                     * ```
+                     * 「现在没有小气泡，播放已经过1/3了，缓存的进度条已经满了」
+                     * 「然后我点下一首，小气泡又出来了」
+                     * ```
+                     *
+                     * 根因：`maybePrefetchNext` 只在 `publish()` 里被调用，
+                     * 而 `publish()` 挂在 `Player.Listener.onEvents` 上 ——
+                     * **播放过程中位置推进不产生任何事件**（这是 Exo 的既定行为，
+                     * 当年修「进度条不落盘」时踩过一模一样的坑）。
+                     *
+                     * 于是时序变成：
+                     * ```
+                     * 开播那一刻触发检查 → buffered 还没到片尾 → 条件不满足，不预载
+                     * 缓冲满了（几秒后）   → 没有任何事件 → 不会再检查一次
+                     * 一直不预载           → 气泡永远不亮
+                     * 用户点下一首         → 产生事件 → 这时才检查 → 预载 → 气泡亮
+                     * ```
+                     * 这完全对应用户看到的现象。
+                     *
+                     * 现在：每秒随进度写盘一起检查一次（内部有去重，
+                     * 同一首预载过就不会重复触发）。
+                     */
+                    runCatching { maybePrefetchNext(player) }
+                    /**
+                     * 用户口径（#136）**气泡状态也要每秒同步**。
+                     *
+                     * `prefetchedIds` 在预载完成那一刻更新，但界面读的是
+                     * `MusicState.nextReady` —— 它只在 `publish()` 里写。
+                     * 如果不同步推一次，就会出现「预载已经完成、`prefetchedIds` 里有，
+                     * 但界面要等到下一次播放器事件才亮气泡」。
+                     *
+                     * 只在值真的变化时才写 StateFlow，避免每秒触发一次无意义重组。
+                     */
+                    val ready = runCatching { nextBlockReady(player) }.getOrDefault(false)
+                    if (ready != _state.value.nextReady) {
+                        _state.value = _state.value.copy(nextReady = ready)
+                    }
+                }
             }
         }
 
