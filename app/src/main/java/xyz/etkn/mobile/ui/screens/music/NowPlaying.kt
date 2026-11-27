@@ -182,7 +182,7 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                     animationSpec = infiniteRepeatable(tween(20_000, easing = LinearEasing)),
                     label = "angle",
                 )
-                Box(Modifier.size(44.dp).clip(CircleShape)) {
+                Box(Modifier.size(48.dp).clip(CircleShape)) {
                     /**
                      * 用户口径（2026-11-27，#38）**重启后也要显示封面**。
                      *
@@ -220,12 +220,33 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                  *
                  * 没有歌词/没有歌时显示歌名+歌手（保证这条永远有内容，不会空成一条）。
                  */
-                Box(Modifier.weight(1f).height(52.dp).padding(horizontal = 10.dp)) {
+                Box(Modifier.weight(1f).height(56.dp).padding(horizontal = 10.dp)) {
                     /** 用户口径（#38）：把 remembered 也传进去，重启后仍能取歌词。 */
                     MiniLyrics(track, remembered, position)
                 }
-                /** 播放键：**环形进度**（外圈走一圈=一首歌）。 */
-                Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                /**
+                 * 用户口径（2026-11-27，#79）**迷你条右侧三个按钮放大**。
+                 *
+                 * 用户原话：
+                 * ```
+                 * 「播放那个小的控制条右面的按钮不太好看，有点太小了，你看看这个参考」
+                 * ```
+                 * 参考图（G.E.M.《倒数》那个播放器）的实测比例：
+                 * ```
+                 * 播放键  44dp 外圈环 + 内部图标约 24dp
+                 * 下一首  图标约 26dp，无环
+                 * 列表    图标约 26dp，无环
+                 * 三者等距，整体占条宽约 35~40%
+                 * ```
+                 * 我们原来是 40dp 环 + 20dp 图标，视觉偏小。改成：
+                 * ```
+                 * 播放键  46dp 环 + 26dp 图标
+                 * 下一首  26dp
+                 * 列表    26dp
+                 * 间距    用 IconButton 默认 48dp 触摸区，不额外挤
+                 * ```
+                 */
+                Box(Modifier.size(46.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(
                         progress = { if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f },
                         modifier = Modifier.fillMaxSize(),
@@ -233,20 +254,23 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                         color = MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                     )
-                    IconButton(onClick = { if (state.current != null) music.toggle() else music.resumeRemembered() }) {
+                    IconButton(
+                        onClick = { if (state.current != null) music.toggle() else music.resumeRemembered() },
+                        modifier = Modifier.size(46.dp),
+                    ) {
                         Icon(
                             if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                             if (state.isPlaying) "暂停" else "播放",
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(26.dp),
                         )
                     }
                 }
                 IconButton(onClick = music::next, enabled = state.current != null) {
-                    Icon(Icons.Rounded.SkipNext, "下一首", modifier = Modifier.size(20.dp))
+                    Icon(Icons.Rounded.SkipNext, "下一首", modifier = Modifier.size(26.dp))
                 }
                 /** 播放列表：点开显示当前队列。 */
                 IconButton(onClick = { queueOpen = true }) {
-                    Icon(Icons.AutoMirrored.Rounded.QueueMusic, "播放列表", modifier = Modifier.size(20.dp))
+                    Icon(Icons.AutoMirrored.Rounded.QueueMusic, "播放列表", modifier = Modifier.size(26.dp))
                 }
             }
             /**
