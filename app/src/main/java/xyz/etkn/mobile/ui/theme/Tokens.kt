@@ -208,8 +208,18 @@ object Spacing {
     val castCard: Dp = 112.dp
     val castCardHeight: Dp = 168.dp
 
-    /** 章节卡 / 分集卡（横版 16:9）：跟演员卡同宽。 */
-    val episodeCard: Dp = 112.dp
+    /**
+     * 章节卡 / 分集卡（横版 16:9）：跟演员卡同宽。
+     *
+     * 用户口径（2026-11-27，#106）**这两个图要放大一倍**：
+     * ```
+     * 「你把分集图和章节图，放大一倍」
+     * ```
+     * 112 → 224dp（正好一倍），高度按 16:9 自动变 126dp。
+     * 这两处共用同一个常量（EpisodeShelf 的分集卡、DetailScreen 的章节卡），
+     * 改一处两边同时生效。
+     */
+    val episodeCard: Dp = 224.dp
 
     val dockBottomInset: Dp = 104.dp
     /** Tablet side dock: its width, and the space tab pages leave for it (margin + dock + gap). */

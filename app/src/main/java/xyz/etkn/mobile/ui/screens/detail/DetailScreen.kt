@@ -1318,7 +1318,14 @@ private fun SeasonCard(
         Box(
             Modifier
                 .width(width)
-                .aspectRatio(0.78f)
+                /**
+                 * 用户口径（2026-11-27，#107）**季卡高度按参考图比例**。
+                 *
+                 * 参考图实测：165 × 245 px → 比例 165/245 = 0.673。
+                 * 原来写死 0.78，渲染出来 113 × 145 —— 比参考图矮 25dp，
+                 * 看着就是「季卡扁扁的、跟演员卡不一样高」。
+                 */
+                .aspectRatio(0.673f)
                 .clip(Corner.card)
                 .then(
                     if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, Corner.card)
