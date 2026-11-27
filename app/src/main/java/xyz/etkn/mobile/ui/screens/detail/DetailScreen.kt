@@ -147,6 +147,7 @@ import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.boundsInWindow
 
 @Composable
 fun DetailScreen(id: String) {
@@ -1663,9 +1664,28 @@ private fun MediaTechPopup(
     content: @Composable () -> Unit,
 ) {
     val density = androidx.compose.ui.platform.LocalDensity.current
+    /**
+     * 用户口径（2026-11-27，#108）**菜单必须紧贴弹出的那一行**。
+     *
+     * 用户原话：
+     * ```
+     * 「这个你弹出的框位置也不对呀，不应该挨着那个三行那块吗，谁弹出来的，不应该挨着谁吗」
+     * ```
+     *
+     * 上一版的 bug：`positionInRoot()` 是**根视图**坐标，
+     * 而 Popup 的 offset 相对**窗口** —— 差一个状态栏高度，
+     * 菜单就飘到屏幕右下角去了。
+     *
+     * 现在锚点由 `MediaTechRow` 用 `boundsInWindow()` 给出（窗口坐标），
+     * 与 Popup 坐标系一致，直接 offset 即可贴住被点那一行的下沿。
+     */
     androidx.compose.ui.window.Popup(
-        alignment = Alignment.TopStart,
-        offset = androidx.compose.ui.unit.IntOffset(anchorX.toInt(), anchorY.toInt()),
+        popupPositionProvider = androidx.compose.ui.window.PopupPositionProvider { _, windowSize, _ ->
+            androidx.compose.ui.unit.IntOffset(
+                x = anchorX.toInt().coerceIn(0, (windowSize.width - width).coerceAtLeast(0)),
+                y = anchorY.toInt().coerceAtMost((windowSize.height - 60).coerceAtLeast(0)),
+            )
+        },
         onDismissRequest = onDismiss,
         properties = androidx.compose.ui.window.PopupProperties(
             focusable = true,
@@ -1676,10 +1696,7 @@ private fun MediaTechPopup(
             Modifier
                 .width(with(density) { width.toDp() })
                 .clip(RoundedCornerShape(12.dp))
-                /**
-                 * 浮层必须有不透明底，否则下面几行的文字会透上来
-                 * （这个页面是压在海报上的半透明信息区）。
-                 */
+                /** 浮层必须有不透明底，否则下面几行的文字会透上来。 */
                 .background(Color(0xF21A1A1E))
                 .padding(vertical = 4.dp),
         ) {
@@ -1712,8 +1729,17 @@ private fun MediaTechRow(
             .then(
                 if (onPositioned == null) Modifier
                 else Modifier.onGloballyPositioned { c ->
-                    val pos = c.positionInRoot()
-                    onPositioned(pos.y + c.size.height, pos.x, c.size.width)
+                    /**
+                     * 用户口径（#108）**用窗口坐标，不要 positionInRoot()**。
+                     *
+                     * 上一版用 `positionInRoot()`（根视图坐标），而 Popup 的
+                     * offset 走窗口坐标 —— 两套坐标系差一个状态栏高度，
+                     * 结果菜单飘到屏幕右下角（用户实测）。
+                     *
+                     * `boundsInWindow()` 直接给窗口坐标，Popup 用它会刚好贴住。
+                     */
+                    val b = c.boundsInWindow()
+                    onPositioned(b.bottom, b.left, c.size.width)
                 }
             )
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
