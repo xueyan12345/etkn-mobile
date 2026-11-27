@@ -38,6 +38,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.round
 
 /**
  * 用户口径（2026-11-27，#98）**三行固定不动，点开时小菜单「浮」在第二行下面覆盖下层**。
@@ -113,6 +116,24 @@ internal fun AvSettingsPanel(
      */
     var openRow by remember { mutableStateOf(0) }
 
+    /**
+     * 三行区块在屏幕上的位置，用来把 Popup 精确锚到被点那一行的下沿。
+     *
+     * 用户口径（#102）**上一版还是没固定住**：
+     * ```
+     * 「三行媒体信息也没固定住，跟上个版本一样」
+     * ```
+     * 上一版用的是 `Modifier.offset` —— 我搞错了一个关键点：
+     * **`offset` 只改变绘制位置，不改变测量尺寸**。
+     * 浮层比三行本身高，`Box` 的高度取 `max(子项)`，
+     * 于是 Box 被撑高 → 面板变高 → 三行往上跳。
+     *
+     * 真正不参与父布局测量的只有 **Popup / Dialog**（各自独立窗口）。
+     * 所以改用 `Popup`：三行区块的高度跟 openRow 完全无关，一动不动。
+     */
+    var anchorInRoot by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var anchorSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         Text(
             "播放设置",
@@ -121,7 +142,18 @@ internal fun AvSettingsPanel(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
         )
 
-        Box(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                /**
+                 * 记录区块左上角在窗口中的绝对位置。Popup 用窗口坐标，
+                 * 必须把本区块的偏移和尺寸都算进去，否则菜单会飘到别处。
+                 */
+                .onGloballyPositioned { coords ->
+                    anchorInRoot = coords.positionInRoot()
+                    anchorSize = coords.size
+                },
+        ) {
             Column(Modifier.fillMaxWidth()) {
                 /** ① 视频行：有可选画质时才可点开浮层。 */
                 InfoRow(
@@ -178,28 +210,49 @@ internal fun AvSettingsPanel(
             }
 
             /**
-             * 浮层菜单：叠在被点那一行的下沿，**覆盖**下面几行。
-             * 它不参与 Column 测量，所以三行本身一动不动。
+             * 浮层菜单：用 **Popup** 渲染，独立窗口，**完全不参与父布局测量**。
+             *
+             * 被点那一行的下沿（相对区块顶部）：
+             * ```
+             * 第 1 行 → ROW_HEIGHT × 1
+             * 第 2 行 → ROW_HEIGHT × 2
+             * 第 3 行 → ROW_HEIGHT × 3
+             * ```
+             * Popup 的 offset 是相对窗口的，所以 = 区块在窗口里的 y + 行偏移。
              */
-            when (openRow) {
-                1 -> OptionOverlay(
-                    options = videoOptions,
-                    onPick = onSelectVideo,
-                    topOffset = ROW_HEIGHT * 1,
-                    modifier = Modifier.align(Alignment.TopStart),
-                )
-                2 -> OptionOverlay(
-                    options = audioOptions,
-                    onPick = onSelectAudio,
-                    topOffset = ROW_HEIGHT * 2,
-                    modifier = Modifier.align(Alignment.TopStart),
-                )
-                3 -> OptionOverlay(
-                    options = subtitleOptions,
-                    onPick = onSelectSubtitle,
-                    topOffset = ROW_HEIGHT * 3,
-                    modifier = Modifier.align(Alignment.TopStart),
-                )
+            if (openRow != 0) {
+                val opts = when (openRow) {
+                    1 -> videoOptions
+                    2 -> audioOptions
+                    else -> subtitleOptions
+                }
+                val pick: (Int) -> Unit = when (openRow) {
+                    1 -> onSelectVideo
+                    2 -> onSelectAudio
+                    else -> onSelectSubtitle
+                }
+                androidx.compose.ui.window.Popup(
+                    alignment = Alignment.TopStart,
+                    offset = androidx.compose.ui.unit.IntOffset(
+                        x = anchorInRoot.x.toInt(),
+                        y = anchorInRoot.y.toInt() + (ROW_HEIGHT * openRow).roundToPx(),
+                    ),
+                    /** 点浮层外面就收起 —— 但不要关掉整个面板。 */
+                    onDismissRequest = { openRow = 0 },
+                    properties = androidx.compose.ui.window.PopupProperties(
+                        focusable = true,
+                        dismissOnClickOutside = true,
+                    ),
+                ) {
+                    OptionOverlay(
+                        options = opts,
+                        onPick = pick,
+                        /** Popup 有自己窗口，宽度用区块宽度算，跟卡片对齐。 */
+                        width = with(androidx.compose.ui.platform.LocalDensity.current) {
+                            anchorSize.width.toDp()
+                        },
+                    )
+                }
             }
         }
     }
@@ -256,30 +309,28 @@ private fun InfoRow(
 }
 
 /**
- * 下拉选项浮层：**覆盖式**，不占布局空间。
+ * 下拉选项浮层：**覆盖式**，本身不占三行区块的布局空间（外层是 Popup 独立窗口）。
  *
  * 参考图形态：浅色圆角浮层、宽度与卡片对齐、勾在左边、选中行整行高亮。
- * 必须有实底（`surfaceContainerHigh`），否则下层字幕行的文字会透上来。
+ * 必须有实底（`surfaceContainerHigh`），否则下层文字会透上来。
  */
 @Composable
 private fun OptionOverlay(
     options: List<Pair<String, Boolean>>,
     onPick: (Int) -> Unit,
-    topOffset: Dp,
+    /** Popup 有独立窗口，拿不到父宽度，由调用方传入区块宽度。 */
+    width: Dp,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier
-            .padding(start = 12.dp, end = 12.dp)
-            .offset(y = topOffset)
-            .fillMaxWidth()
+            .width(width)
             .clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(vertical = 6.dp),
     ) {
-        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp)) {
-            items(options.size) { i ->
-                val (label, selected) = options[i]
+        Column(Modifier.fillMaxWidth()) {
+            options.forEachIndexed { i, (label, selected) ->
                 Row(
                     Modifier
                         .fillMaxWidth()
