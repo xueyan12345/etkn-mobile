@@ -105,6 +105,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.sp
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
@@ -438,10 +439,16 @@ fun NowPlayingScreen() {
                 if (state.buffering) LoadingIndicator(Modifier.align(Alignment.Center))
             }
             Spacer(Modifier.height(18.dp))
-            /** ② 歌名 + 歌手（#49 整体下移） */
+            /**
+             * ② 歌名 + 歌手
+             *
+             * 用户口径（2026-11-27，#64）**歌名大一点点，不要太多**。
+             * `headlineSmall` 默认 24sp → 用 `copy(fontSize = 26.sp)` 微调 +2sp，
+             * 不跳到 headlineMedium（28sp，用户会觉得"太多"）。
+             */
             Text(
                 track.name,
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.headlineSmall.copy(fontSize = 26.sp),
                 fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -656,9 +663,34 @@ private fun LyricsPane(track: Item, sourceId: String?) {
          * ```
          * （上游用的是 `animateScrollToItem(active - 3)`，把它排在第 4 行 → 视觉偏下。）
          */
+        /**
+         * 用户口径（2026-11-27，#63）**滚动偏移必须扣掉 contentPadding**。
+         *
+         * 用户反馈（带截图）：「歌词定位有问题，正在播放的那句在下面看不到」
+         * 实测截图：8 句可见，高亮句排在第 7 行（倒数第 2）——明显偏下。
+         *
+         * 我上一版写的是：
+         * ```
+         * list.scrollToItem(active, (boxPx - rowPx) / 2)
+         * ```
+         * 但 `LazyColumn` 这里设了 `contentPadding.top = padPx`
+         * （= boxPx/2 - rowPx/2，为了让首尾行也能滚到中间）。
+         * `scrollToItem` 的 `scrollOffset` 是**相对内容起点**算的，
+         * 而内容起点已经在 padPx 之下 —— 两段偏移叠加，
+         * 结果高亮行被顶到了 padPx + (boxPx-rowPx)/2 ≈ 接近整个容器高，
+         * 所以看起来在底部。
+         *
+         * 正确：目标位置是「第 active 行中心压着容器中线」，
+         * 它需要的可见偏移 = (boxPx - rowPx)/2，
+         * 而 contentPadding 已经贡献了 padPx，
+         * 所以 scrollOffset 应为 `((boxPx - rowPx) / 2 - padPx)`。
+         * 又因为 padPx = boxPx/2 - rowPx/2，所以刚好等于 0 —— 即
+         * **只要滚到 active 项、偏移 0，它就正好在正中**。
+         */
         LaunchedEffect(active, dragging, boxPx, rowPx) {
             if (!dragging && active >= 0) {
-                list.scrollToItem(active, ((boxPx - rowPx) / 2).toInt().coerceAtLeast(0))
+                val want = ((boxPx - rowPx) / 2 - padPx).toInt()
+                list.scrollToItem(active, want.coerceAtLeast(0))
             }
         }
 
@@ -700,8 +732,13 @@ private fun LyricsPane(track: Item, sourceId: String?) {
                     ) {
                         Text(
                             line.text,
-                            style = if (highlighted) MaterialTheme.typography.headlineSmall
-                            else MaterialTheme.typography.titleLarge,
+                            /**
+                             * 用户口径（#63）**字号稍微小一点点**。
+                             * 原：highlighted=headlineSmall / 其他=titleLarge
+                             * 现：highlighted=titleLarge    / 其他=titleMedium
+                             */
+                            style = if (highlighted) MaterialTheme.typography.titleLarge
+                            else MaterialTheme.typography.titleMedium,
                             fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
                             color = color,
                             /** ① 居中（原为 TextAlign.Start，"歪"就是它）。 */
