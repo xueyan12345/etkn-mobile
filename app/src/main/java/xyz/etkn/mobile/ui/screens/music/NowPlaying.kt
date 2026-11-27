@@ -106,6 +106,9 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 /** Polls the shared player position at [intervalMs] while composed. */
 @Composable
@@ -618,32 +621,27 @@ private fun LyricsPane(track: Item, sourceId: String?) {
     }
     val (position, _) = rememberPlayerClock(200)
     val active = current.indexAt(position)
-    val list = rememberLazyListState()
 
     /**
-     * 用户口径（2026-11-27，#62）**在官方实现上改 4 处，不重写**。
+     * 用户口径（2026-11-27，#71）**放弃 LazyColumn 滚动，改成"固定窗口"渲染**。
      *
-     * 用户反馈（带截图）：
+     * 背景：我前面用 `scrollToItem` 算的偏移，数学上是对的
+     * （`padPx = boxPx/2 - rowPx/2`，所以 `(boxPx-rowPx)/2 - padPx ≡ 0`），
+     * 但用户在真机上看到的仍是"高亮句在下面、看不到"。
+     * 说明这条路（LazyColumn + scrollToItem 求偏移）在实机上有未预料的行为
+     * （可能是首帧未测量、或 scrollToItem 的 offset 语义与我理解不同）。
+     *
+     * 我不再跟它较劲。改成**根本不需要滚动**的写法：
      * ```
-     * ①「这个歪了」—— 歌词左对齐，跟上方居中的封面/歌名不在一条轴上
-     * ②「正在播放的那一句不应该在最中间的最大字吗」—— 高亮句偏下
-     * ③「活动歌词的时候那个横线没显示，还有那个小按钮播放」—— 定位播放没了
-     * ④「定位播放的那个功能没了」
+     * 按可用高度算出能放几行 rows（奇数，保证有正中间）
+     * 直接把 [active - half, active + half] 这一窗口画出来
+     * Column + Arrangement.Center 自然垂直居中
+     * 当前句永远在窗口正中间那一格 —— 恒等式，没有滚动计算
      * ```
      *
-     * ①② 是上游 `LyricsPane` 的固有样式（原来在双栏右侧窄栏里写的，
-     *    `TextAlign.Start` + `animateScrollToItem(active - 3)`），
-     *    现在歌词区铺满整屏，这两点就显出来了。
-     * ③④ 是上游本来就没有，我之前写过但在"回归上游"时删掉了。
-     *
-     * 下面只动这几处，取词/高亮/颜色动画/点击跳播全部沿用官方：
-     * ```
-     * TextAlign.Start → Center                              （解决"歪"）
-     * 滚动改为「让当前行落在容器正中」的恒等式                  （解决"偏下"）
-     * 新增：拖动时显示定位线 + 右侧小播放按钮；停手 1 秒回位     （③④）
-     * ```
+     * 代价：失去手指滑动的惯性滚动。但定位播放（滑动 + 中线 + 跳播）
+     * 可以用 `verticalScroll` 的偏移量做定位，仍然支持。
      */
-    /** 固定行高：居中算法依赖它是常量。 */
     val rowHeight = 44.dp
     var dragging by remember { mutableStateOf(false) }
     var pinnedIndex by remember { mutableIntStateOf(-1) }
@@ -652,75 +650,69 @@ private fun LyricsPane(track: Item, sourceId: String?) {
         val density = LocalDensity.current
         val rowPx = with(density) { rowHeight.toPx() }
         val boxPx = with(density) { maxHeight.toPx() }
-        /** 上下留白让首尾行也能滚到正中。 */
-        val padPx = (boxPx / 2 - rowPx / 2).coerceAtLeast(0f)
+        /**
+         * 能放几行：向下取整，并强制为奇数 ——
+         * 奇数才能保证有唯一的正中间那一格。
+         */
+        val fitted = (boxPx / rowPx).toInt().coerceAtLeast(3)
+        val rows = if (fitted % 2 == 0) fitted - 1 else fitted
+        val half = rows / 2
 
         /**
-         * 自动跟随：当前行垂直中心 ≡ 容器中心。
-         * ```
-         * scrollToItem(active, offset) 语义 = 第 active 项顶部落在容器顶往下 offset 处
-         * offset = (容器高 - 行高) / 2  →  该行中心正好压在容器中线上
-         * ```
-         * （上游用的是 `animateScrollToItem(active - 3)`，把它排在第 4 行 → 视觉偏下。）
+         * 用户手动滑动时，用「偏移的行数」来移动窗口：
+         * `shift = 0` 表示窗口跟随当前播放句；`shift > 0` 表示往后看。
          */
-        /**
-         * 用户口径（2026-11-27，#63）**滚动偏移必须扣掉 contentPadding**。
-         *
-         * 用户反馈（带截图）：「歌词定位有问题，正在播放的那句在下面看不到」
-         * 实测截图：8 句可见，高亮句排在第 7 行（倒数第 2）——明显偏下。
-         *
-         * 我上一版写的是：
-         * ```
-         * list.scrollToItem(active, (boxPx - rowPx) / 2)
-         * ```
-         * 但 `LazyColumn` 这里设了 `contentPadding.top = padPx`
-         * （= boxPx/2 - rowPx/2，为了让首尾行也能滚到中间）。
-         * `scrollToItem` 的 `scrollOffset` 是**相对内容起点**算的，
-         * 而内容起点已经在 padPx 之下 —— 两段偏移叠加，
-         * 结果高亮行被顶到了 padPx + (boxPx-rowPx)/2 ≈ 接近整个容器高，
-         * 所以看起来在底部。
-         *
-         * 正确：目标位置是「第 active 行中心压着容器中线」，
-         * 它需要的可见偏移 = (boxPx - rowPx)/2，
-         * 而 contentPadding 已经贡献了 padPx，
-         * 所以 scrollOffset 应为 `((boxPx - rowPx) / 2 - padPx)`。
-         * 又因为 padPx = boxPx/2 - rowPx/2，所以刚好等于 0 —— 即
-         * **只要滚到 active 项、偏移 0，它就正好在正中**。
-         */
-        LaunchedEffect(active, dragging, boxPx, rowPx) {
-            if (!dragging && active >= 0) {
-                val want = ((boxPx - rowPx) / 2 - padPx).toInt()
-                list.scrollToItem(active, want.coerceAtLeast(0))
-            }
-        }
+        var shift by remember { mutableIntStateOf(0) }
 
-        /** 拖动时把「最靠近中线的那一行」作为定位行。 */
-        LaunchedEffect(list.isScrollInProgress, list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) {
-            if (!list.isScrollInProgress) return@LaunchedEffect
-            dragging = true
-            val centered = list.firstVisibleItemScrollOffset + (boxPx - rowPx) / 2
-            pinnedIndex = ((centered / rowPx).toInt() + list.firstVisibleItemIndex)
-                .coerceIn(0, current.lines.lastIndex)
-        }
-
-        /** 停手 1 秒：隐藏定位线/按钮，回落到正在播的那句（不自动跳播）。 */
-        LaunchedEffect(dragging, pinnedIndex) {
-            if (dragging && !list.isScrollInProgress) {
+        /** 拖动结束后 1 秒，shift 归零（回到正在播的那句）。 */
+        LaunchedEffect(dragging, shift) {
+            if (dragging && !listScrollInProgressIgnore()) {
                 kotlinx.coroutines.delay(1_000)
                 dragging = false
+                shift = 0
                 pinnedIndex = -1
             }
         }
 
+        /** 窗口中心对应的歌词行。 */
+        val centerIndex = (active.coerceAtLeast(0) + shift)
+            .coerceIn(0, current.lines.lastIndex)
+
+        /** 拖动时把「窗口中心那行」当定位行。 */
+        if (dragging) pinnedIndex = centerIndex
+
         Box(Modifier.fillMaxSize()) {
-            LazyColumn(
-                state = list,
-                contentPadding = PaddingValues(top = padPx.dp, bottom = padPx.dp),
-                modifier = Modifier.fillMaxSize(),
+            /**
+             * 垂直滑动：整个歌词区可拖动，拖动量换算成 shift（一行一档）。
+             */
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState(0), enabled = false)
+                    .pointerInput(rows) {
+                        detectVerticalDragGestures(
+                            onDragStart = { dragging = true },
+                            onDragEnd = { },
+                            onDragCancel = { dragging = false; shift = 0 },
+                        ) { change, dragAmount ->
+                            change.consume()
+                            /** 每拖动 rowPx 像素移动一行。 */
+                            val delta = (-dragAmount / rowPx)
+                            if (kotlin.math.abs(delta) >= 0.5f) {
+                                shift = (shift + if (delta > 0) 1 else -1)
+                                    .coerceIn(-active.coerceAtLeast(0), current.lines.lastIndex - active)
+                            }
+                        }
+                    },
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                itemsIndexed(current.lines, key = { i, _ -> i }) { i, line ->
-                    val isPinned = dragging && i == pinnedIndex
-                    val highlighted = isPinned || (!dragging && i == active)
+                /** 画 rows 行：从 centerIndex - half 到 centerIndex + half。 */
+                for (offset in -half..half) {
+                    val idx = centerIndex + offset
+                    val line = current.lines.getOrNull(idx)
+                    val isCenter = offset == 0
+                    val highlighted = isCenter
                     val color by animateColorAsState(
                         if (highlighted || !current.synced) MaterialTheme.colorScheme.onSurface
                         else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
@@ -731,27 +723,27 @@ private fun LyricsPane(track: Item, sourceId: String?) {
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            line.text,
-                            /**
-                             * 用户口径（#63）**字号稍微小一点点**。
-                             * 原：highlighted=headlineSmall / 其他=titleLarge
-                             * 现：highlighted=titleLarge    / 其他=titleMedium
-                             */
+                            line?.text.orEmpty(),
                             style = if (highlighted) MaterialTheme.typography.titleLarge
                             else MaterialTheme.typography.titleMedium,
                             fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
                             color = color,
-                            /** ① 居中（原为 TextAlign.Start，"歪"就是它）。 */
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().clip(Corner.card)
-                                .clickable(enabled = current.synced) { graph.music.seekTo(line.timeMs) }
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(Corner.card)
+                                .clickable(enabled = current.synced && line != null) {
+                                    line?.let { graph.music.seekTo(it.timeMs) }
+                                }
                                 .padding(horizontal = 24.dp),
                         )
                     }
                 }
             }
 
-            /** ③ 定位线：只在手动滑动时出现。 */
+            /** 定位线：只在手动滑动时显示，正好落在中间那一格。 */
             if (dragging) {
                 Box(
                     Modifier.align(Alignment.Center).fillMaxWidth(0.72f).height(1.dp)
@@ -759,13 +751,14 @@ private fun LyricsPane(track: Item, sourceId: String?) {
                 )
             }
 
-            /** ④ 定位线右侧的小播放按钮：点它跳到该句。 */
-            if (dragging && pinnedIndex >= 0) {
-                current.lines.getOrNull(pinnedIndex)?.let { target ->
+            /** 定位线右侧的小播放按钮：点它跳到中间那行。 */
+            if (dragging) {
+                current.lines.getOrNull(centerIndex)?.let { target ->
                     FilledIconButton(
                         onClick = {
                             graph.music.seekTo(target.timeMs)
                             dragging = false
+                            shift = 0
                             pinnedIndex = -1
                         },
                         modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp).size(40.dp),
@@ -784,6 +777,9 @@ private fun LyricsPane(track: Item, sourceId: String?) {
         }
     }
 }
+
+/** 占位：固定窗口方案不需要滚动状态，保留签名方便以后切换。 */
+private fun listScrollInProgressIgnore(): Boolean = false
 
 @Composable
 private fun QueuePane(queue: List<Item>, index: Int) {
