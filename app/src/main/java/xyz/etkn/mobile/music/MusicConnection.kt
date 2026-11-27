@@ -1813,13 +1813,37 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val nextId = p.getMediaItemAt(nextIndex).mediaId
         if (nextId.isBlank()) return false
         /** 正在预载 → 还没好，别亮。 */
-        if (prefetchingId == nextId) return false
+        if (prefetchingId == nextId) { diagBubble(nextId, false, "预载中"); return false }
         /** 预载成功过的直接算就绪（省一次 isCached 调用）。 */
-        if (prefetchedIds.contains(nextId)) return true
-        val store = MusicCache.get(context) ?: return false
-        return runCatching {
+        if (prefetchedIds.contains(nextId)) { diagBubble(nextId, true, "本次已预载"); return true }
+        val store = MusicCache.get(context) ?: run { diagBubble(nextId, false, "无缓存实例"); return false }
+        val hit = runCatching {
             store.isCached(MusicCache.cacheKeyFor(nextId), 0L, Long.MAX_VALUE)
         }.getOrDefault(false)
+        diagBubble(nextId, hit, if (hit) "磁盘已完整" else "未缓存")
+        return hit
+    }
+
+    /**
+     * 气泡判据诊断（用户报「下一首气泡这首歌为啥没亮」时用）。
+     *
+     * 只在**结果变化**时打一行，避免每秒刷屏。
+     */
+    @Volatile private var lastBubbleDiag: String = ""
+
+    private fun diagBubble(nextId: String, ready: Boolean, why: String) {
+        val line = "$nextId ready=$ready($why)"
+        if (line == lastBubbleDiag) return
+        lastBubbleDiag = line
+        val p = _player
+        val cur = p?.currentMediaItem?.mediaId
+        val idx = p?.currentMediaItemIndex ?: -1
+        val total = p?.mediaItemCount ?: 0
+        android.util.Log.i(
+            "ETKN-Music",
+            "气泡 $line | cur=$cur idx=$idx/$total next=$nextId " +
+                "prefetching=${prefetchingId} done=${prefetchedIds.size}",
+        )
     }
 
 
