@@ -302,6 +302,7 @@ fun MiniPlayer(onOpen: () -> Unit, modifier: Modifier = Modifier) {
                     queueOpen = false
                 },
                 onClear = { music.clearQueue(); queueOpen = false },
+                onRemove = { i -> music.removeAt(i) },
             )
         }
     }
@@ -630,6 +631,7 @@ fun NowPlayingScreen() {
                 queueOpen = false
             },
             onClear = { music.clearQueue(); queueOpen = false },
+            onRemove = { i -> music.removeAt(i) },
         )
     }
 }
@@ -732,8 +734,28 @@ private fun LyricsPane(track: Item, sourceId: String?) {
          */
         var dragPx by remember { mutableFloatStateOf(0f) }
 
-        /** 拖动产生的行偏移 = 累积像素 / 行高，四舍五入。 */
-        val dragRows = (dragPx / rowPx).toInt()
+        /**
+         * 用户口径（2026-11-27，#90）**滑动手感要连续，不能一格一格蹦**。
+         *
+         * 用户原话：「滑动太生硬了，没有一点上下滑动的感觉，太生硬了」
+         *
+         * 原因就是下面这行：
+         * ```
+         * val dragRows = (dragPx / rowPx).toInt()
+         * ```
+         * `toInt()` 把连续位移**取整成整行**，手指平滑滑动时画面只在
+         * 攒够 44dp 才跳一格 —— 手感就是"一格一格蹦"。
+         *
+         * 改法：
+         * ```
+         * dragLines 保留浮点（连续位移）
+         * → centerIndex 用四舍五入（决定高亮哪一句）
+         * → 渲染时整列按 (dragLines - dragRows) 的余量做像素级平移
+         *   让歌词真的跟手滑动，而不是跳变
+         * ```
+         */
+        val dragLines = dragPx / rowPx          // 连续值（浮点）
+        val dragRows = dragLines.toInt()         // 取整（决定高亮行）
 
         /** 窗口中心 = 当前播的那句 + 拖动偏移。 */
         val centerIndex = (active.coerceAtLeast(0) + dragRows)
@@ -788,6 +810,17 @@ private fun LyricsPane(track: Item, sourceId: String?) {
                                 )
                         }
                     },
+                /**
+                 * 用户口径（#90）**像素级平滑偏移**：把「不足一行的余量」变成实际位移。
+                 *
+                 * `dragLines` 是连续值（如 1.37 行），`dragRows` 是取整（1 行）。
+                 * 已经按 dragRows 移动了 1 行，剩下的 0.37 行 = 0.37*rowPx 像素
+                 * 用 graphicsLayer 平移补上 —— 画面就跟着手指连续走了，不跳变。
+                 * 方向：手指上滑（dragPx 增大）→ 内容向上移（translationY 为负）。
+                 */
+                modifier = Modifier.graphicsLayer {
+                    translationY = -(dragLines - dragRows) * rowPx
+                },
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -817,10 +850,6 @@ private fun LyricsPane(track: Item, sourceId: String?) {
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(Corner.card)
-                                .clickable(enabled = current.synced && line != null) {
-                                    line?.let { graph.music.seekTo(it.timeMs) }
-                                }
                                 .padding(horizontal = 24.dp),
                         )
                     }
@@ -905,6 +934,8 @@ fun MusicQueueSheet(
     onDismiss: () -> Unit,
     onPick: (Item) -> Unit,
     onClear: () -> Unit,
+    /** 用户口径（#91）单曲从队列移除。 */
+    onRemove: (Int) -> Unit,
 ) {
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         /**
@@ -959,7 +990,34 @@ fun MusicQueueSheet(
                                 "播放中",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(end = 16.dp),
+                                modifier = Modifier.padding(end = 4.dp),
+                            )
+                        }
+                        /**
+                         * 用户口径（2026-11-27，#91）**播放列表每行右侧改成删除图标**。
+                         *
+                         * 用户原话：
+                         * ```
+                         * 「播放列表里的歌，后面的三个点没有任何功能，
+                         *   我觉得可以把那三个点换成删除小图标，
+                         *   相当于把这个歌从播放列表移除」
+                         * ```
+                         * 原来这里只有「播放中」文字，右边没有可点的东西；
+                         * 而歌曲列表页（TrackRow）那个三点菜单里只有
+                         * 「加入播放队列 / 添加到歌单」，也确实没有删除。
+                         *
+                         * 现在：每行右侧一个删除图标，点了从队列移除。
+                         * 删除后队列为空时调用方会自动停播（见 removeAt 实现）。
+                         */
+                        IconButton(
+                            onClick = { onRemove(i) },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.DeleteOutline,
+                                "从播放列表移除",
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }

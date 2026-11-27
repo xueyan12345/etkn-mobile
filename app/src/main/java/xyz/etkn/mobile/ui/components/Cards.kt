@@ -205,12 +205,43 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
          *   4 位以上 → 宽限 8.4          → 7.5sp（极端情况）
          * 每档都比上一版放大 2-3sp，数字在圆里更匀称。
          */
-        val size = when {
+        /**
+         * 用户口径（2026-11-27，#94）**角标数字在大平板上不能超格**。
+         *
+         * 用户原话：
+         * ```
+         * 「剧集右上角角标的剧集数量数字，在大平板上显示是出格的，
+         *   他貌似不受设置里面的封面缩放倍率控制」
+         * ```
+         *
+         * 根因：上面字号是**写死的 sp**（15 / 12.5 / 9.5 / 7.5），
+         * 而圆圈是 `size(24.dp)`。
+         * 设置里的「显示比例」改的是全局 density —— dp 和 sp 会一起缩放，
+         * 所以理论上比例不变；但**系统字体大小设置会额外放大 sp 而不放大 dp**，
+         * 大平板上用户常把字体调大 → 数字撑破 24dp 圆。
+         *
+         * 改法：**字号按「圆的 dp 尺寸」换算，不再用固定 sp**。
+         * ```
+         * 圆 24dp；可用内径约 18.7dp（留呼吸空间）
+         * 单字宽 ≈ 0.556 × 字号、高 ≈ 0.72 × 字号
+         * 1 位 → 高限 18.7/0.72 = 26dp，取宽限也行 → 15dp
+         * 2 位 → 15.6/2/0.556+... → 12.5dp
+         * 3 位 → 9.5dp
+         * 4 位+ → 7.5dp
+         * ```
+         * 用 `.dp` 转成 sp 时**按当前 fontScale 反算**，抵消掉系统字体放大：
+         * 这样无论用户把字体调多大，数字始终占圆的固定比例，不会出格。
+         */
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val baseDp = when {
             digits <= 1 -> 15f
             digits == 2 -> 12.5f
             digits == 3 -> 9.5f
             else -> 7.5f
         }
+        /** fontScale 越大，实际 sp 要越小，才能保持同样的物理尺寸。 */
+        val fontScale = density.fontScale.coerceAtLeast(0.5f)
+        val size = baseDp / fontScale
         Text(
             text,
             fontSize = size.sp,
@@ -239,11 +270,14 @@ fun WideCard(
     // 用户口径（2026-11-23）：继续观看卡**宽屏不许比手机更宽**。
     // 前两版一直错在「屏越宽卡越大」，平板上反而更挤。现在封顶就是手机尺寸，
     // 平板靠「一行多放几张」来利用空间，而不是把单张放大。
-    width: Dp = responsiveCardWidth(
-        base = Etkn.space.wideCard,
-        maxWidth = Etkn.space.wideCard,
-        fractionOfScreen = 0.26f,
-    ),
+    /**
+     * 用户口径（#93）**横版卡宽度按「与竖版海报面积相同」反推**。
+     *
+     * 不再用 responsiveCardWidth（它按屏幕比例/列数算，结果跟海报对不上），
+     * 直接取常量：手机 193dp、宽屏 245dp。
+     * 见 Tokens.kt 的推导注释。
+     */
+    width: Dp = if (LocalWindowLayout.current.wide) Etkn.space.wideCardWide else Etkn.space.wideCard,
     /** Continue-watching cards add 从继续观看移除 to the long-press menu. */
     resume: Boolean = false,
     /** Set: the centre button plays and the rest of the card does [onClick]; else the whole card plays. */
@@ -309,6 +343,30 @@ fun WideCard(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, bottom = 6.dp),
             )
+        } else {
+            /**
+             * 用户口径（2026-11-27，#95）**电影也要有第二行，放年份**。
+             *
+             * 用户原话：
+             * ```
+             * 「我画圈的那块，剧集的下面有剧集信息，但是电影是空的，
+             *   把年份放在电影名的下面」
+             * ```
+             * 原来只有 `if (item.isEpisode)` 分支 → 电影第二行是空的，
+             * 「继续观看」那一排里电影比剧集矮一截，视觉不齐。
+             *
+             * 现在电影补一行年份（ProductionYear），没有年份就留空但占位，
+             * 保证同期卡片高度一致。
+             */
+            val year = item.productionYear
+            Text(
+                if (year != null && year > 0) "${year}" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, bottom = 6.dp),
+            )
         }
     }
 }
@@ -324,7 +382,8 @@ fun LibraryCard(
     modifier: Modifier = Modifier,
     // 用户口径（2026-11-23）：媒体库分类卡按「一行放几张」反推宽度。
     // 平板一行要能完整放下 3 张以上（之前固定 200dp 在竖屏平板上只能放 2 张，第 3 张被切一半）。
-    width: Dp = responsiveCardWidth(base = 200.dp, maxWidth = 200.dp, fractionOfScreen = 0.40f),
+    /** 用户口径（#93）媒体库入口卡与海报/继续观看同面积（193 / 宽屏 245）。 */
+    width: Dp = if (LocalWindowLayout.current.wide) Etkn.space.libraryCardWide else Etkn.space.libraryCard,
     /** 用户口径（2026-11-23）：长按弹服务端功能菜单（只有管理员给）。 */
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -388,7 +447,20 @@ fun libraryIcon(type: String?) = when (type) {
  * 竖向圆角矩形大卡（不是圆形头像），下面两行居中：姓名 / 「饰 角色名」。
  */
 @Composable
-fun PersonCard(person: PersonRef, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp = 104.dp) {
+/**
+ * 用户口径（2026-11-27，#92）**电视剧详情页的演职人员要放大**。
+ *
+ * 用户原话：
+ * ```
+ * 「把电视剧的详情界面里面的演职人员放大点，
+ *   季图也放大到跟演员一样大，章节图和集图也放大到那么大，只不过是横版」
+ * ```
+ * 三处尺寸统一到 132dp（原来 104dp，人物和季图偏小）：
+ *   PersonCard 104 → 132
+ *   SeasonCard 104 → 132
+ *   章节卡/分集卡 160 → 132（横版 16:9，所以视觉面积相近）
+ */
+fun PersonCard(person: PersonRef, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp = 132.dp) {
     val url = images().person(person, width.px())
     Column(modifier.width(width), horizontalAlignment = Alignment.CenterHorizontally) {
         Artwork(

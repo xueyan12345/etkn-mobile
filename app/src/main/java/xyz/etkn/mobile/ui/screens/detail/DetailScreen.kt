@@ -455,7 +455,8 @@ private fun ChapterCard(chapter: Chapter, item: Item, onPlay: () -> Unit) {
     }
     Column(
         Modifier
-            .width(160.dp)   // 用户口径（2026-11-24）：和分集卡一起缩到 160dp
+            /** 用户口径（#92）：放大到跟演员图一样大，横版 16:9。 */
+            .width(132.dp)
             .clip(Corner.card)
             .clickable(onClick = onPlay),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1303,7 +1304,8 @@ private fun SeasonCard(
     onClick: () -> Unit,
 ) {
     val urls = images()
-    val width = 104.dp
+    /** 用户口径（#92）季图放大到跟演职人员一样大（104 → 132）。 */
+    val width = 132.dp
     val count = (season.recursiveItemCount ?: 0).takeIf { it > 0 } ?: (season.childCount ?: 0)
     val rating = season.communityRating
     Column(

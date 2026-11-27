@@ -1328,7 +1328,22 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     /** 兼容旧调用：切到下一个循环模式。 */
     fun cycleRepeat() = cyclePlayMode()
 
-    fun removeAt(index: Int) { _player?.removeMediaItem(index) }
+    /**
+     * 用户口径（#91）**从播放列表移除一首**。
+     *
+     * 边界：删到队列空了要顺手停播 + 清状态，
+     * 否则播放器停在 IDLE，系统卡片还在那里挂着。
+     */
+    fun removeAt(index: Int) {
+        val p = _player ?: return
+        if (index < 0 || index >= p.mediaItemCount) return
+        p.removeMediaItem(index)
+        if (p.mediaItemCount == 0) {
+            p.stop()
+            _state.value = _state.value.copy(current = null, queue = emptyList(), index = -1, isPlaying = false)
+            android.util.Log.i("ETKN-Music", "removeAt: 队列已空 → 停止播放")
+        }
+    }
 
     /**
      * 用户口径（2026-11-27，#85 真根因）**stop() 不能把进度写回 0**。

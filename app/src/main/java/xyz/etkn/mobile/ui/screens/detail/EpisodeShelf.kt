@@ -114,7 +114,8 @@ internal fun EpisodeShelf(
     }
 
     /** 分集卡尺寸：和章节卡一致（历史口径 160dp）。 */
-    val cardWidth = 160.dp
+    /** 用户口径（#92）分集卡放大到跟演员图一样大（160 → 132，横版 16:9）。 */
+    val cardWidth = 132.dp
 
     val ranges = if (state.items.size > RANGE + RANGE / 2) (state.items.size + RANGE - 1) / RANGE else 0
 
