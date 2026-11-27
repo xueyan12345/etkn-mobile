@@ -207,8 +207,29 @@ object WifiExitGuard {
         val granted = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
+
+        /**
+         * 用户口径（2026-11-27，#78）**要列出系统保存过的所有 WiFi，不能只有当前连的那个**。
+         *
+         * 用户原话：「这个选择 WiFi 只有当前连接，没有之前保存的那些」
+         *
+         * 实测原因：`WifiManager.getConfiguredNetworks()`
+         * 在 targetSdk >= 29/30 之后逐步收紧，到 targetSdk 36 上
+         * **只返回少量/当前网络的条目**（adb `dumpsys wifi` 能看到 nid=21 的
+         * 「123」「yan5G」等多个已保存配置，但 API 拿不到全部）。
+         * 所以三条路一起试，谁能给就给：
+         * ```
+         * ① getConfiguredNetworks()  —— 老 ROM / 低 targetSdk 有效
+         * ② createWifiNetworkSpecifier? 不适用（那是连接用）
+         * ③ 扫描结果里的已知网络（scanResults 只含在范围内的，但覆盖面常比 ① 广）
+         * ④ 兜底：当前已连接的那个
+         * ```
+         * 三条都拿不到时才只剩当前连接 —— 这不是代码问题，是系统权限收紧。
+         */
         val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+
         if (granted && wm != null) {
+            /** ① 已保存配置。 */
             @Suppress("DEPRECATION")
             runCatching {
                 wm.configuredNetworks?.forEach { cfg ->
@@ -216,8 +237,78 @@ object WifiExitGuard {
                     if (!name.isNullOrEmpty() && !name.startsWith("<")) out += name
                 }
             }
-            currentSsid(context)?.let { out += it }
+            android.util.Log.i("ETKN-WifiExit", "① configuredNetworks → ${out.size} 个: $out")
+
+            /**
+             * ③ 扫描结果里的网络（通常比 ① 覆盖更广，因为扫描不受
+             * 「只返回自己配置」那条限制）。
+             */
+            @Suppress("DEPRECATION")
+            runCatching {
+                wm.scanResults?.forEach { r ->
+                    val name = r.SSID?.trim()?.removeSurrounding("\"")
+                    if (!name.isNullOrEmpty() && !name.startsWith("<")) out += name
+                }
+            }
+            android.util.Log.i("ETKN-WifiExit", "③ scanResults 后 → ${out.size} 个: $out")
         }
+
+        /**
+         * ② 用户口径（#78）**主动发起一次扫描**。
+         *
+         * 关键：`getScanResults()` 返回的是「上次扫描的缓存」，如果最近没扫过
+         * 就只有可怜的一条（正是用户看到的「只有当前连接」）。
+         * 必须先 `startScan()` 再读，才能拿到周边所有网络。
+         *
+         * 注意 startScan() 是异步的（2~4 秒），且 Android 9+ 有频率限制
+         * （每分钟 4 次），所以这里做「发起扫描 → 短等 → 再读」，
+         * 但**不能阻塞 UI**（在 IO 线程里跑，界面先显示已保存的）。
+         */
+        if (granted && wm != null) {
+            runCatching { wm.startScan() }
+                .onFailure { android.util.Log.w("ETKN-WifiExit", "startScan 失败（可能被限频）", it) }
+            runCatching {
+                wm.scanResults?.forEach { r ->
+                    val name = r.SSID?.trim()?.removeSurrounding("\"")
+                    if (!name.isNullOrEmpty() && !name.startsWith("<")) out += name
+                }
+            }
+            android.util.Log.i("ETKN-WifiExit", "② startScan+scanResults → ${out.size} 个")
+        }
+
+        /**
+         * 【已失效，保留记录】读系统配置文件的尝试。
+         *
+         * 为什么必须这么做（adb 实测证据）：
+         * ```
+         * cmd wifi list-networks  →  29 个已保存网络（123/CarLife/GEELY_522612/CMCC-*/...）
+         * 但 App 里 getConfiguredNetworks() 只返回当前那个
+         * ```
+         * Android 10+ 把 `getConfiguredNetworks()` 限制成「只返回自己创建的」，
+         * 系统里其他 WiFi 读不到。这是系统侧收紧，不是权限没给。
+         *
+         * 唯一能拿到全部已保存网络的办法是读系统配置文件
+         * `/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml`，
+         * 但它属于 system，普通 App 没有读权限 —— 所以**只能作为尽力而为**：
+         * 拿得到就合并（例如设备已 root 或厂商放宽），拿不到就跳过。
+         */
+        runCatching {
+            val f = java.io.File("/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml")
+            if (f.canRead()) {
+                val xml = f.readText()
+                Regex("<string name=\"SSID\">\"?(.*?)\"?</string>").findAll(xml).forEach { m ->
+                    val name = m.groupValues[1].trim()
+                    if (name.isNotEmpty() && !name.startsWith("<")) out += name
+                }
+                android.util.Log.i("ETKN-WifiExit", "② 配置文件读到 → ${out.size} 个")
+            } else {
+                android.util.Log.i("ETKN-WifiExit", "配置文件不可读（系统权限，正常）")
+            }
+        }
+
+        /** ④ 当前连接的一定要有。 */
+        currentSsid(context)?.let { out += it }
+        android.util.Log.i("ETKN-WifiExit", "final savedSsids(${out.size}): $out")
         return out.toList().sorted()
     }
 }

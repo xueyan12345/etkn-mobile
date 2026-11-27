@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 用户口径 #74：离开指定 WiFi 且正在放歌时彻底退出。必须 FINE+COARSE 成对声明。 -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- 用户口径 #78：要主动 startScan() 才能列出周边所有 WiFi，需要此权限。 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- 投屏: SSDP discovery of DLNA renderers on the Wi-Fi. -->

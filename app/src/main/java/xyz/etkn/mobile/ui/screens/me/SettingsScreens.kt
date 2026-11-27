@@ -625,6 +625,19 @@ private fun WifiExitSettings(settings: Settings) {
     var ssids by remember { mutableStateOf<List<String>>(emptyList()) }
     var granted by remember { mutableStateOf(false) }
 
+    /**
+     * 用户口径（#78）**扫描是异步的**：startScan() 之后要等 2~4 秒结果才回来。
+     * 弹窗先显示能拿到的，随后自动补两轮（1.5s / 3.5s），
+     * 这样用户不用关掉重开才能看到周边 WiFi。
+     */
+    LaunchedEffect(pickerOpen) {
+        if (!pickerOpen) return@LaunchedEffect
+        repeat(3) { round ->
+            if (round > 0) kotlinx.coroutines.delay(if (round == 1) 1_500 else 2_000)
+            ssids = xyz.etkn.mobile.music.WifiExitGuard.savedSsids(context.applicationContext)
+        }
+    }
+
     Row(
         Modifier.fillMaxWidth().padding(horizontal = ROW_INSET, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
