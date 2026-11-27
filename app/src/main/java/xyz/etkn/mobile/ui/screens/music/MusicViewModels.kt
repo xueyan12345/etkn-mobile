@@ -59,15 +59,76 @@ class MusicLibrariesViewModel(private val graph: AppGraph) : ViewModel() {
     }
 }
 
+/**
+ * 用户口径（2026-11-27，#89）**推荐页也要先显示缓存，不要每次进来都转圈**。
+ *
+ * 用户原话：
+ * ```
+ * 「现在播放记录正常了，可以续播了，但是首页还是转圈，转一会才能有」
+ * 「说错了，推荐页啊」
+ * ```
+ *
+ * 根因（原来只有 7 行）：
+ * ```
+ * private val _state = MutableStateFlow(Load.Loading)   ← 进来必定是 Loading
+ * init { load() }                                       ← 每次都等网络
+ * ```
+ * 没有任何本地缓存 → 每次进推荐页都要等一次 `musicHome` 网络请求。
+ *
+ * 现在：
+ * ```
+ * init → 先读本地缓存（IO）
+ *        有缓存 → 立刻 Ready(缓存)，界面秒出
+ *        → 后台再拉最新，拿到后覆盖并回写缓存
+ *        没缓存 → 保持 Loading，走正常网络请求
+ * ```
+ */
 class MusicRecommendedViewModel(private val graph: AppGraph, private val parentId: String) : ViewModel() {
     private val _state = MutableStateFlow<Load<MusicHome>>(Load.Loading)
     val state: StateFlow<Load<MusicHome>> = _state.asStateFlow()
 
-    init { load() }
+    init {
+        /**
+         * ① 先读缓存（IO 线程），有就立刻显示。
+         *    用 runCatching 兜住：缓存格式变了/读坏了不能影响正常加载。
+         */
+        viewModelScope.launch {
+            val cached = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { MusicHomeCache.read(graph.app, parentId) }.getOrNull()
+            }
+            if (cached != null && _state.value is Load.Loading) {
+                _state.value = Load.Ready(cached)
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "推荐页缓存命中：${cached.sections.size} 个分区",
+                )
+            }
+        }
+        /** ② 后台拉最新（不管有没有缓存都拉，保证数据新鲜）。 */
+        load()
+    }
 
     fun load() {
         viewModelScope.launch {
-            _state.value = runCatching { graph.api.musicHome(parentId, 12) }.fold({ Load.Ready(it) }, { Load.Failed(it.userMessage()) })
+            runCatching { graph.api.musicHome(parentId, 12) }
+                .onSuccess { home ->
+                    _state.value = Load.Ready(home)
+                    /** 回写缓存，下次进来秒开。 */
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { MusicHomeCache.write(graph.app, parentId, home) }
+                    }
+                }
+                .onFailure { e ->
+                    /**
+                     * 拉失败时：**如果已经有缓存内容，就别把界面打回错误页**。
+                     * 用户在地铁/弱网时看到一堆错误比看到旧数据难受得多。
+                     */
+                    if (_state.value !is Load.Ready) {
+                        _state.value = Load.Failed(e.userMessage())
+                    } else {
+                        android.util.Log.w("ETKN-Music", "推荐页刷新失败，保留缓存内容", e)
+                    }
+                }
         }
     }
 }
