@@ -240,7 +240,14 @@ object Spacing {
      * ```
      * 224 × 0.7 = 157dp，高度按 16:9 变 88dp。
      */
-    val episodeCard: Dp = 157.dp
+    /**
+     * 用户口径（2026-11-27，#114）**再放大到 1.07 倍**：
+     * ```
+     * 「把具体详情页里边的集图片和章节图片的大小，改成现在的1.07倍」
+     * ```
+     * 157 × 1.07 = 168dp（16:9 → 高 94.5dp）。
+     */
+    val episodeCard: Dp = 168.dp
 
     val dockBottomInset: Dp = 104.dp
     /** Tablet side dock: its width, and the space tab pages leave for it (margin + dock + gap). */
