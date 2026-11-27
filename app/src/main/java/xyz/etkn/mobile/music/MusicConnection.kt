@@ -232,6 +232,41 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val s = _state.value
         val item = s.current ?: return
         val pos = _player?.currentPosition ?: 0L
+
+        /**
+         * 用户口径（2026-11-27，#85 真根因，第五次才找对）**不能用 0 覆盖已有的有效进度**。
+         *
+         * 用户原话：
+         * ```
+         * 「播放记录也没保留住啊，每次打开还是从头播放，你这一个版本在这干啥呢？」
+         * 「闹了半天你在这干啥呢」
+         * ```
+         *
+         * 前面几版我都在修 `seekTo`（等就绪、守护位置…），方向全错。
+         * 真正的原因在**启动恢复阶段**：
+         * ```
+         * restoreForResumption()
+         *    ├─ 第 456 行  publish()      ← 里面 saveMemory()
+         *    └─ 第 499 行  p.prepare()    ← 位置此时是 0
+         *
+         * publish() 时 player 还没 prepare，currentPosition = 0
+         *   → saveMemory 把 pos=0 写进磁盘
+         *   → 磁盘上的真实进度被抹掉
+         *   → 之后无论怎么 seek，memory.positionMs 已经是 0 了
+         * ```
+         * 所以每次打开都是「从头播放」—— 因为磁盘上压根就是 0。
+         *
+         * 修法：**位置为 0 且已有一条有效记忆时，不覆盖位置字段**。
+         * 真的要重头播（用户自己拖回开头）由 seekMemory(0) 显式写入。
+         */
+        val existing = _remembered.value?.positionMs ?: 0L
+        if (pos <= 500L && existing > 2_000L) {
+            android.util.Log.i(
+                "ETKN-Music",
+                "saveMemory: 跳过写入（pos=$pos 太小，已有记忆=${existing}ms）",
+            )
+            return
+        }
         /**
          * 用户口径（#1 终极根因）**duration 不能只信 player.duration**。
          *
@@ -896,7 +931,15 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
          */
         graph.scope.launch {
             while (true) {
-                delay(3_000L)
+                /**
+                 * 用户口径（#85）**间隔缩到 1 秒**。
+                 *
+                 * 用户从后台划掉 App 时是系统直接杀进程，`onTaskRemoved` 不一定来得及跑，
+                 * 所以只能靠"勤写盘"把损失压到最小：1 秒一次，
+                 * 退出时最多丢 1 秒进度（用户感知不到）。
+                 * SharedPreferences.apply() 是异步落盘，不阻塞播放。
+                 */
+                delay(1_000L)
                 if (player.isPlaying) runCatching { saveMemory() }
             }
         }
@@ -1194,11 +1237,52 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
     fun removeAt(index: Int) { _player?.removeMediaItem(index) }
 
+    /**
+     * 用户口径（2026-11-27，#85 真根因）**stop() 不能把进度写回 0**。
+     *
+     * 用户原话：
+     * ```
+     * 「播放记录也没保留住啊，每次打开还是从头播放」
+     * 「闹了半天你在这干啥呢」
+     * ```
+     *
+     * 原实现：
+     * ```
+     * it.stop()               ← 位置变 0
+     * it.clearMediaItems()    ← current 变 null
+     * publish()               ← 里面 saveMemory()，pos=0 写进磁盘
+     * ```
+     * 而 `MusicService.onTaskRemoved()`（用户从后台划掉 App 时触发）
+     * 会调用这个 `stop()` —— 于是每次退出都把进度抹成 0。
+     *
+     * 修法：**停止前先把当前位置存下来，清完队列后按存的值写回**。
+     */
     fun stop() {
         finishReport(completed = false)
+        /** ① 先记住真实位置（清队列前！）。 */
+        val keepId = _state.value.current?.id
+        val keepPos = _player?.currentPosition ?: 0L
+        val keepDur = _player?.duration ?: 0L
+        val keep = if (keepPos > 500L && keepId != null) {
+            keepId to keepPos
+        } else null
+
         _player?.let {
             it.stop()
             it.clearMediaItems()
+        }
+
+        /**
+         * ② 不走 publish()（它会把 0 写盘），而是直接按保留的值写一次。
+         */
+        if (keep != null && prefs.getString("m_id", null) == keep.first) {
+            prefs.edit().putLong("m_pos", keep.second).apply()
+            /** 内存里的记忆也一起更新，否则下次 saveMemory 又用旧值。 */
+            _remembered.value = _remembered.value?.copy(positionMs = keep.second)
+            android.util.Log.i(
+                "ETKN-Music",
+                "stop: 保留进度 id=${keep.first} pos=${keep.second}（不写0）",
+            )
         }
         publish()
     }
