@@ -612,23 +612,138 @@ private fun LyricsPane(track: Item, sourceId: String?) {
     val (position, _) = rememberPlayerClock(200)
     val active = current.indexAt(position)
     val list = rememberLazyListState()
-    LaunchedEffect(active) { if (active >= 0) list.animateScrollToItem((active - 3).coerceAtLeast(0)) }
-    LazyColumn(state = list, contentPadding = PaddingValues(vertical = 120.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        itemsIndexed(current.lines, key = { i, _ -> i }) { i, line ->
-            val highlighted = i == active
-            val color by animateColorAsState(
-                if (highlighted || !current.synced) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                label = "lyric",
-            )
-            Text(
-                line.text,
-                style = if (highlighted) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
-                fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
-                color = color,
-                textAlign = TextAlign.Start,
-                modifier = Modifier.fillMaxWidth().clip(Corner.card)
-                    .clickable(enabled = current.synced) { graph.music.seekTo(line.timeMs) }.padding(vertical = 2.dp),
-            )
+
+    /**
+     * 用户口径（2026-11-27，#62）**在官方实现上改 4 处，不重写**。
+     *
+     * 用户反馈（带截图）：
+     * ```
+     * ①「这个歪了」—— 歌词左对齐，跟上方居中的封面/歌名不在一条轴上
+     * ②「正在播放的那一句不应该在最中间的最大字吗」—— 高亮句偏下
+     * ③「活动歌词的时候那个横线没显示，还有那个小按钮播放」—— 定位播放没了
+     * ④「定位播放的那个功能没了」
+     * ```
+     *
+     * ①② 是上游 `LyricsPane` 的固有样式（原来在双栏右侧窄栏里写的，
+     *    `TextAlign.Start` + `animateScrollToItem(active - 3)`），
+     *    现在歌词区铺满整屏，这两点就显出来了。
+     * ③④ 是上游本来就没有，我之前写过但在"回归上游"时删掉了。
+     *
+     * 下面只动这几处，取词/高亮/颜色动画/点击跳播全部沿用官方：
+     * ```
+     * TextAlign.Start → Center                              （解决"歪"）
+     * 滚动改为「让当前行落在容器正中」的恒等式                  （解决"偏下"）
+     * 新增：拖动时显示定位线 + 右侧小播放按钮；停手 1 秒回位     （③④）
+     * ```
+     */
+    /** 固定行高：居中算法依赖它是常量。 */
+    val rowHeight = 44.dp
+    var dragging by remember { mutableStateOf(false) }
+    var pinnedIndex by remember { mutableIntStateOf(-1) }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val rowPx = with(density) { rowHeight.toPx() }
+        val boxPx = with(density) { maxHeight.toPx() }
+        /** 上下留白让首尾行也能滚到正中。 */
+        val padPx = (boxPx / 2 - rowPx / 2).coerceAtLeast(0f)
+
+        /**
+         * 自动跟随：当前行垂直中心 ≡ 容器中心。
+         * ```
+         * scrollToItem(active, offset) 语义 = 第 active 项顶部落在容器顶往下 offset 处
+         * offset = (容器高 - 行高) / 2  →  该行中心正好压在容器中线上
+         * ```
+         * （上游用的是 `animateScrollToItem(active - 3)`，把它排在第 4 行 → 视觉偏下。）
+         */
+        LaunchedEffect(active, dragging, boxPx, rowPx) {
+            if (!dragging && active >= 0) {
+                list.scrollToItem(active, ((boxPx - rowPx) / 2).toInt().coerceAtLeast(0))
+            }
+        }
+
+        /** 拖动时把「最靠近中线的那一行」作为定位行。 */
+        LaunchedEffect(list.isScrollInProgress, list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) {
+            if (!list.isScrollInProgress) return@LaunchedEffect
+            dragging = true
+            val centered = list.firstVisibleItemScrollOffset + (boxPx - rowPx) / 2
+            pinnedIndex = ((centered / rowPx).toInt() + list.firstVisibleItemIndex)
+                .coerceIn(0, current.lines.lastIndex)
+        }
+
+        /** 停手 1 秒：隐藏定位线/按钮，回落到正在播的那句（不自动跳播）。 */
+        LaunchedEffect(dragging, pinnedIndex) {
+            if (dragging && !list.isScrollInProgress) {
+                kotlinx.coroutines.delay(1_000)
+                dragging = false
+                pinnedIndex = -1
+            }
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = list,
+                contentPadding = PaddingValues(top = padPx.dp, bottom = padPx.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                itemsIndexed(current.lines, key = { i, _ -> i }) { i, line ->
+                    val isPinned = dragging && i == pinnedIndex
+                    val highlighted = isPinned || (!dragging && i == active)
+                    val color by animateColorAsState(
+                        if (highlighted || !current.synced) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                        label = "lyric",
+                    )
+                    Box(
+                        Modifier.fillMaxWidth().height(rowHeight),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            line.text,
+                            style = if (highlighted) MaterialTheme.typography.headlineSmall
+                            else MaterialTheme.typography.titleLarge,
+                            fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
+                            color = color,
+                            /** ① 居中（原为 TextAlign.Start，"歪"就是它）。 */
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().clip(Corner.card)
+                                .clickable(enabled = current.synced) { graph.music.seekTo(line.timeMs) }
+                                .padding(horizontal = 24.dp),
+                        )
+                    }
+                }
+            }
+
+            /** ③ 定位线：只在手动滑动时出现。 */
+            if (dragging) {
+                Box(
+                    Modifier.align(Alignment.Center).fillMaxWidth(0.72f).height(1.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.45f), Corner.pill),
+                )
+            }
+
+            /** ④ 定位线右侧的小播放按钮：点它跳到该句。 */
+            if (dragging && pinnedIndex >= 0) {
+                current.lines.getOrNull(pinnedIndex)?.let { target ->
+                    FilledIconButton(
+                        onClick = {
+                            graph.music.seekTo(target.timeMs)
+                            dragging = false
+                            pinnedIndex = -1
+                        },
+                        modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp).size(40.dp),
+                    ) {
+                        Icon(Icons.Rounded.PlayArrow, "跳到这句播放", Modifier.size(22.dp))
+                    }
+                    Box(Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) {
+                        Text(
+                            formatClock(target.timeMs),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
         }
     }
 }
