@@ -231,11 +231,13 @@ internal fun AvSettingsPanel(
                     2 -> onSelectAudio
                     else -> onSelectSubtitle
                 }
+                /** `roundToPx` 是 Density 的扩展，必须先取 LocalDensity。 */
+                val density = androidx.compose.ui.platform.LocalDensity.current
                 androidx.compose.ui.window.Popup(
                     alignment = Alignment.TopStart,
                     offset = androidx.compose.ui.unit.IntOffset(
                         x = anchorInRoot.x.toInt(),
-                        y = anchorInRoot.y.toInt() + (ROW_HEIGHT * openRow).roundToPx(),
+                        y = anchorInRoot.y.toInt() + with(density) { (ROW_HEIGHT * openRow).roundToPx() },
                     ),
                     /** 点浮层外面就收起 —— 但不要关掉整个面板。 */
                     onDismissRequest = { openRow = 0 },

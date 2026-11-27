@@ -542,7 +542,25 @@ private fun ArtistBio(text: String) {
 }
 
 @Composable
-fun TrackRow(track: Item, onClick: () -> Unit, horizontalPadding: androidx.compose.ui.unit.Dp = Etkn.space.screen) {
+/**
+ * 用户口径（2026-11-27，#103）**播放列表里用垃圾桶「替换」三点，不是并存**。
+ *
+ * 用户原话：
+ * ```
+ * 「我是让你把原来的播放列表里的音乐后面的3个点删掉，换成那个小垃圾桶删除的图标，
+ *   不是共存的关系，因为那三个点没有任何用，里边点不开，没有任何东西」
+ * 「删除按钮，三个点都在，你拿我说话当放屁啊」
+ * ```
+ *
+ * `trailing` 为 null 时保持原样（其它页继续用三点菜单：加入队列/添加到歌单）；
+ * 传了 `trailing` 就**整个不渲染 MoreVert**，右边只画传进来的那个。
+ */
+fun TrackRow(
+    track: Item,
+    onClick: () -> Unit,
+    horizontalPadding: androidx.compose.ui.unit.Dp = Etkn.space.screen,
+    trailing: (@Composable () -> Unit)? = null,
+) {
     val graph = LocalContext.current.graph
     val music by graph.music.state.collectAsStateWithLifecycle()
     val playing = music.current?.id == track.id
@@ -575,7 +593,12 @@ fun TrackRow(track: Item, onClick: () -> Unit, horizontalPadding: androidx.compo
         }
         if (playing && music.isPlaying) Icon(Icons.Rounded.Equalizer, "正在播放", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
         else if (track.runtimeMs > 0) Text(formatClock(track.runtimeMs), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        IconButton(onClick = { more.open(choices()) }, modifier = more.modifier) { Icon(Icons.Rounded.MoreVert, "更多") }
+        /** 有 trailing 就不画三点（#103）。 */
+        if (trailing == null) {
+            IconButton(onClick = { more.open(choices()) }, modifier = more.modifier) { Icon(Icons.Rounded.MoreVert, "更多") }
+        } else {
+            trailing()
+        }
     }
     if (picker) PlaylistPicker(track, onDismiss = { picker = false })
 }
