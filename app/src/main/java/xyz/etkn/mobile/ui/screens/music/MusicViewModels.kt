@@ -322,13 +322,28 @@ class MusicListViewModel(
              * ① 同步读磁盘缓存（几毫秒）→ 立刻渲染出来
              * ② 后台拉服务端全量 → 和缓存比对，内容变了才替换
              */
-            val cached = xyz.etkn.mobile.music.MusicListCache.read(
-                graph.app, parentId, tab,
-            )
-            if (cached.isNotEmpty()) {
-                _sortedTracks.value = applySort(cached, _sort.value)
-                _allLoaded.value = true
-                android.util.Log.i("ETKN-Music", "列表缓存命中 ${cached.size} 首")
+            /**
+             * 用户口径（#88）**读缓存放到 IO 线程，不能阻塞主线程**。
+             *
+             * 原来这里是同步调用（在 ViewModel init 里 = 主线程）：
+             * ```
+             * read() → SharedPreferences 载入整个 XML
+             *        → 601 段 split
+             *        → 601 次 Item 构造
+             * ```
+             * 用户看到的就是「每次打开都转圈」，转完才出列表。
+             *
+             * 现在放到 viewModelScope + Dispatchers.IO，读完再回主线程更新 state，
+             * UI 立刻能画出骨架，列表在几十毫秒内填上。
+             */
+            viewModelScope.launch {
+                val cached = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    xyz.etkn.mobile.music.MusicListCache.read(graph.app, parentId, tab)
+                }
+                if (cached.isNotEmpty()) {
+                    _sortedTracks.value = applySort(cached, _sort.value)
+                    _allLoaded.value = true
+                }
             }
             /** 后台刷新（不管有没有缓存都拉一次，保证数据是最新的）。 */
             viewModelScope.launch {
@@ -338,9 +353,11 @@ class MusicListViewModel(
                         _sortedTracks.value = applySort(all, _sort.value)
                         _allLoaded.value = true
                         /** 写回缓存（下次进页面秒开）。 */
-                        xyz.etkn.mobile.music.MusicListCache.write(
-                            graph.app, parentId, tab, all,
-                        )
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            xyz.etkn.mobile.music.MusicListCache.write(
+                                graph.app, parentId, tab, all,
+                            )
+                        }
                         android.util.Log.i("ETKN-Music", "列表已刷新并落盘 ${all.size} 首")
                     }
                 }

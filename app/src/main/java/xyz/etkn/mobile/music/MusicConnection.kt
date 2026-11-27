@@ -128,6 +128,15 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      */
     private val prefs by lazy { context.getSharedPreferences("etkn_music_memory", Context.MODE_PRIVATE) }
 
+    /**
+     * 用户口径（#87）**本次进程是否真的播放过**。
+     *
+     * 启动恢复阶段 `prepare()` 会让位置变 0，此时若允许 saveMemory 写盘，
+     * 磁盘上的真实进度就被抹了。只有真的 `onIsPlayingChanged(true)` 之后
+     * 才认为"用户可以接受被覆盖"。
+     */
+    @Volatile private var playedSinceBoot = false
+
     private val _remembered = MutableStateFlow<MusicMemory?>(null)
     val remembered: StateFlow<MusicMemory?> = _remembered.asStateFlow()
 
@@ -259,8 +268,32 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
          * 修法：**位置为 0 且已有一条有效记忆时，不覆盖位置字段**。
          * 真的要重头播（用户自己拖回开头）由 seekMemory(0) 显式写入。
          */
+        /**
+         * 用户口径（#87）**判据要用磁盘真值和"本次会话是否真的播过"，不能用 _remembered**。
+         *
+         * 实测发现的坑：`_remembered` 在启动恢复阶段自己也会被 saveMemory 写成 0，
+         * 用它当判据 → 第一次写 0 之后判据就废了，后面一路写 0。
+         *
+         * 两条独立判据（任一成立就跳过本次写入）：
+         * ```
+         * ① 磁盘上（prefs）已有的 m_pos > 2 秒，而本次要写 <= 0.5 秒
+         *    → 说明是"启动瞬间位置还没恢复"，不许覆盖
+         * ② 本次会话从未真正播放过（playedSinceBoot == false）
+         *    → prepare 阶段的 0 一律不写
+         * ```
+         * 用户自己拖回开头（真在播）不受影响：那时 playedSinceBoot = true。
+         */
+        val diskPos = prefs.getLong("m_pos", 0L)
+        val diskId = prefs.getString("m_id", null)
+        if (pos <= 500L && diskPos > 2_000L && diskId == item.id && !playedSinceBoot) {
+            android.util.Log.i(
+                "ETKN-Music",
+                "saveMemory: 跳过（pos=$pos 太小，磁盘已记 ${diskPos}ms，本次会话未播放过）",
+            )
+            return
+        }
         val existing = _remembered.value?.positionMs ?: 0L
-        if (pos <= 500L && existing > 2_000L) {
+        if (pos <= 500L && existing > 2_000L && !playedSinceBoot) {
             android.util.Log.i(
                 "ETKN-Music",
                 "saveMemory: 跳过写入（pos=$pos 太小，已有记忆=${existing}ms）",
@@ -552,6 +585,65 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                         "ETKN-Music",
                         "restore: 真直链已装入并 prepare（state=${p.playbackState} vol=${p.volume}）",
                     )
+                    /**
+                     * 用户口径（2026-11-27，#87 真根因，实测日志铁证）**prepare 之后必须 seek 回记忆位置**。
+                     *
+                     * adb 实测（冷启动）：
+                     * ```
+                     * 15:18:02.182  init: remembered pos=1770        ← 磁盘记着 1.77 秒
+                     * 15:18:02.379  restore: 真直链已装入，prepare 开始
+                     * 15:18:02.380  saveMemory: pos=0                ← 1ms 后立刻被写成 0！
+                     * ```
+                     * 两个问题：
+                     * ① `restoreForResumption()` 只 prepare，**从来没 seek 回记忆位置** ——
+                     *    我前几版改的是 `resumeRemembered()`（按播放键那条路），
+                     *    但开机自动恢复走的是这里，两条路不一样。
+                     * ② prepare() 会触发 `publish()` → `saveMemory()`，
+                     *    此时位置是 0 → 把磁盘上的 1770 覆盖成 0。
+                     *
+                     * 所以：**先 seek 到记忆位置，再让它 prepare 完成**，
+                     * 这样后面所有 saveMemory 写的都是真实位置。
+                     */
+                    val target = memory.positionMs
+                    if (target > 1_000L) {
+                        /** 等 prepare 走到 READY/BUFFERING（最多 6 秒）。 */
+                        var waited = 0L
+                        while (waited < 6_000L) {
+                            if (p.playbackState == Player.STATE_READY ||
+                                p.playbackState == Player.STATE_BUFFERING
+                            ) break
+                            kotlinx.coroutines.delay(100L)
+                            waited += 100L
+                        }
+                        runCatching { p.seekTo(target) }
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "restore: 已 seek 回记忆位置 目标=${target}ms 实际=${p.currentPosition}ms",
+                        )
+                        /**
+                         * 守护 8 秒：`replaceMediaItem`/prepare 完成可能再次把位置清零。
+                         * 掉回 1 秒内就补回来。
+                         */
+                        val guardStart = System.currentTimeMillis()
+                        var fixes = 0
+                        while (System.currentTimeMillis() - guardStart < 8_000L) {
+                            kotlinx.coroutines.delay(350L)
+                            val cur = p.currentPosition
+                            if (cur < 1_000L && fixes < 6) {
+                                runCatching { p.seekTo(target) }
+                                fixes++
+                                android.util.Log.i(
+                                    "ETKN-Music",
+                                    "restore: 位置被清零($cur) → 补 seek #$fixes 目标=${target}ms",
+                                )
+                            }
+                            if (cur > target + 1_000L) break
+                        }
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "restore: 守护结束 位置=${p.currentPosition}ms 补了${fixes}次",
+                        )
+                    }
                 }.onFailure {
                     android.util.Log.w("ETKN-Music", "restore 解析直链失败", it)
                 }
@@ -967,6 +1059,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                  * 这里**不能再静默吞异常**（`runCatching{}` 会把真实错误吃掉，
                  * 导致"看起来跑过了但没生效"），改成捕获后打日志。
                  */
+                if (isPlaying) playedSinceBoot = true
                 try {
                     WifiExitGuard.onPlaybackChanged(context.applicationContext, isPlaying)
                 } catch (t: Throwable) {
