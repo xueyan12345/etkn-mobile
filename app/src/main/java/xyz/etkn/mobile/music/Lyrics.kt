@@ -87,36 +87,24 @@ data class Lyrics(val lines: List<LyricLine>, val synced: Boolean) {
                     if (m != null && m.groupValues[1].length < 30) return@forEach
                 }
                 /**
-                 * 用户口径（2026-11-27，#55）**空内容的时间戳行不能直接丢掉**。
+                 * 用户口径（2026-11-27，#67）**空行直接删掉，不要占位**。
                  *
-                 * 实测「天地离歌」的原始歌词：
-                 * ```
-                 * [00:02.41]        ← 只有时间戳，没文字（表示这段时间是间奏）
-                 * [00:52.98]离了远了 别了忘了 不记了
-                 * [01:29.77]        ← 同上
-                 * [01:30.55]若再把笛音吹落
-                 * ```
-                 * 旧代码 `if (content.isEmpty()) return@forEach` 把这些行删了，
-                 * 于是 `[00:02.41]` 之后直接跳到 `[00:52.98]` ——
-                 * 播放到 2~53 秒时界面还停在前一句，用户看到的就是「延迟特别严重」。
+                 * 用户原话：「我的歌词文件里面有空行的，空行给我删掉」
                  *
-                 * 修法：空内容行**保留为空白行**（占位），
-                 * 这样时间轴连续，高亮句能正确推进。
+                 * 演进过程（我绕了一圈）：
+                 * ```
+                 * 上游原版    if (content.isEmpty()) return@forEach   → 空行被丢弃
+                 * 我改成保留  空行变成 text="" 的占位行               → 界面上出现空档
+                 * 现在回到    return@forEach                          → 空行真的不出现
+                 * ```
+                 *
+                 * 之前我担心「丢掉空行会让时间轴断裂、高亮卡住」，
+                 * 那是误判 —— `Lyrics.indexAt()` 是二分查找「最后一个 timeMs <= 当前位置」，
+                 * 丢掉中间的空行后它依然会正确落到下一句的起点，
+                 * 不存在卡住的问题。（真正的"歌词延迟"根因是制作信息行被当歌词，
+                 * 那个已经由下面的 CREDIT 过滤解决。）
                  */
-                if (content.isEmpty()) {
-                    tags.forEach { m ->
-                        out += LyricLine(
-                            m.groupValues[1].toLong() * 60_000 +
-                                m.groupValues[2].toLong() * 1_000 +
-                                run {
-                                    val f = m.groupValues[3]
-                                    when (f.length) { 0 -> 0L; 1 -> f.toLong() * 100; 2 -> f.toLong() * 10; else -> f.take(3).toLong() }
-                                },
-                            "",
-                        )
-                    }
-                    return@forEach
-                }
+                if (content.isEmpty()) return@forEach
                 tags.forEach { m ->
                     val min = m.groupValues[1].toLong()
                     val sec = m.groupValues[2].toLong()

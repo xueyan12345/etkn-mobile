@@ -21,8 +21,22 @@ class LyricsTest {
      *
      * 现在的行为：空内容行保留为 `text = ""` 的占位行，时间轴连续。
      */
+    /**
+     * 用户口径（2026-11-27，#67）**空时间戳行直接丢弃，不占位**。
+     *
+     * 用户原话：「我的歌词文件里面有空行的，空行给我删掉」
+     *
+     * 这条用例在 #55 曾改成"保留空行"，#67 又改回丢弃 —— 最终行为：
+     * ```
+     * [00:01.50]第一句
+     * [00:03.00]                       ← 丢掉
+     * [00:05.2][00:20.25]重复句
+     * ```
+     * 解析出 3 行：1.5s / 5.2s / 20.25s。
+     * 索引仍正确：1s→-1、2s→0、6s→1、60s→2。
+     */
     @Test
-    fun parsesSyncedLinesAndKeepsEmptyTimestamps() {
+    fun parsesSyncedLinesAndDropsEmptyTimestamps() {
         val lyrics = Lyrics.parse(
             """
             [ti:Song]
@@ -32,15 +46,13 @@ class LyricsTest {
             """.trimIndent(),
         )
         assertTrue(lyrics.synced)
-        /** 空时间戳行不再被丢弃：1.5s / 3.0s(空) / 5.2s / 20.25s。 */
-        assertEquals(listOf(1_500L, 3_000L, 5_200L, 20_250L), lyrics.lines.map { it.timeMs })
-        assertEquals("", lyrics.lines[1].text)
-        assertEquals("重复句", lyrics.lines[2].text)
+        assertEquals(listOf(1_500L, 5_200L, 20_250L), lyrics.lines.map { it.timeMs })
+        assertEquals("重复句", lyrics.lines[1].text)
         assertEquals(-1, lyrics.indexAt(1_000))
         assertEquals(0, lyrics.indexAt(2_000))
-        /** 3~5.2 秒落在空行上（间奏），不再是上一句。 */
-        assertEquals(1, lyrics.indexAt(4_000))
-        assertEquals(3, lyrics.indexAt(60_000))
+        /** 3~5.2 秒之间仍停在第 1 句（空行已丢，二分查找落到上一句）。 */
+        assertEquals(0, lyrics.indexAt(4_000))
+        assertEquals(2, lyrics.indexAt(60_000))
     }
 
     /**
