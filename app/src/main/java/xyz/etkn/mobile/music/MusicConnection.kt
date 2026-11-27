@@ -767,33 +767,78 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
              * 用 `publish` 里的监听不方便，这里直接轮询等待，最多 8 秒。
              */
             val target = memory.positionMs
-            if (target > 0) {
+            /**
+             * 用户口径（2026-11-27，#84 真根因）**补齐详情的 replaceMediaItem 会把位置清零**。
+             *
+             * 用户原话：
+             * ```
+             * 「都改多少回了？你是不是又看着拿大补丁？」
+             * 「我记得以前这个功能是好用的，不知道来不把你给改错了」
+             * ```
+             * 用户判断是对的。git 追溯：
+             * ```
+             * v1.12.0（80a5856）resumeRemembered =
+             *     play(listOf(item), 0, ...); _player?.seekTo(pos)   ← 两行紧挨着，好用
+             *
+             * aea85d1 引入 replaceMediaItem（后台补齐详情）
+             *     play() 里 graph.scope.launch { ... p.replaceMediaItem(i, ...) }
+             *     → 替换当前曲目 = 播放位置重置为 0
+             *     → 即使先 seek 成功，之后也被它清零 → 「每次打开都重新播放」
+             * ```
+             *
+             * 所以光「等就绪再 seek」不够 —— 补齐详情的协程随时可能跑完并替换。
+             * 正确做法：**盯住位置，被清零就补回来**。
+             * 恢复后 12 秒内每 400ms 检查一次：位置掉到 1 秒以内就重新 seek。
+             * 12 秒后（详情早已补完）自然停止。
+             */
+            if (target > 2_000L) {
                 val p = _player
                 if (p != null) {
-                    var waited = 0L
-                    while (waited < 8_000L) {
-                        val ready = p.playbackState == Player.STATE_READY ||
-                            (p.playbackState == Player.STATE_BUFFERING && p.duration > 0)
-                        if (ready && p.duration > target) break
-                        kotlinx.coroutines.delay(120L)
-                        waited += 120L
-                    }
-                    /**
-                     * **二次确认**：seek 后读回 currentPosition，
-                     * 若被覆盖（通常发生在准备过程中）再补一次。
-                     */
-                    runCatching { p.seekTo(target) }
-                    kotlinx.coroutines.delay(200L)
-                    if (p.currentPosition < target / 2) {
+                    graph.scope.launch {
+                        /**
+                         * 阶段一：等播放器有内容且时长已知（最多 6 秒）。
+                         */
+                        var waited = 0L
+                        while (waited < 6_000L) {
+                            if (p.mediaItemCount > 0 &&
+                                (p.playbackState == Player.STATE_READY ||
+                                    p.playbackState == Player.STATE_BUFFERING)
+                            ) break
+                            kotlinx.coroutines.delay(150L)
+                            waited += 150L
+                        }
                         runCatching { p.seekTo(target) }
-                        kotlinx.coroutines.delay(150L)
-                        android.util.Log.i("ETKN-Music", "resumeRemembered: 补一次 seek（第一次被覆盖）")
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "resumeRemembered: 首次 seek 目标=${target}ms 实际=${p.currentPosition}ms",
+                        )
+
+                        /**
+                         * 阶段二：守护 12 秒。`replaceMediaItem` 一旦执行，
+                         * currentPosition 会掉回 0 —— 这里补回来。
+                         */
+                        val guardStart = System.currentTimeMillis()
+                        var fixes = 0
+                        while (System.currentTimeMillis() - guardStart < 12_000L) {
+                            kotlinx.coroutines.delay(400L)
+                            val cur = p.currentPosition
+                            /** 正常情况 cur 应该 >= target（在往后走）；掉回 1 秒内说明被重置。 */
+                            if (cur < 1_000L && fixes < 5) {
+                                runCatching { p.seekTo(target) }
+                                fixes++
+                                android.util.Log.i(
+                                    "ETKN-Music",
+                                    "resumeRemembered: 位置被重置($cur) → 补 seek #$fixes 目标=${target}ms",
+                                )
+                            }
+                            /** 已经稳定播过 target 了，不用再守。 */
+                            if (cur > target + 1_000L) break
+                        }
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "resumeRemembered: 守护结束 位置=${p.currentPosition}ms 补了${fixes}次",
+                        )
                     }
-                    android.util.Log.i(
-                        "ETKN-Music",
-                        "resumeRemembered: 队列=${list.size} 起始=$startIndex " +
-                            "目标=${target}ms 实际=${p.currentPosition}ms state=${p.playbackState}",
-                    )
                 }
             } else {
                 android.util.Log.i(
