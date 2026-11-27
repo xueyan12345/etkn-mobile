@@ -73,6 +73,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import xyz.etkn.mobile.data.model.MediaSource
+import xyz.etkn.mobile.data.model.MediaStream
 
 @Composable
 internal fun PlayerSheet(
