@@ -149,12 +149,20 @@
             没有这个声明，插着耳机的播放/暂停键按了没反应。
         -->
         <!--
-            Media3 官方 MediaButtonReceiver：把媒体键广播转发给 Session。
-            蓝牙耳机/线控的播放/暂停/上一首/下一首都走这里，
-            MediaSession 自己会处理，不需要另外写代码。
+            用户口径（2026-11-27，#69）**自己的 MediaButtonReceiver**。
+
+            为什么不用 Media3 官方那个：实测 force-stop 后按媒体键，
+            系统会把广播转成 startService，但**不带原始 Intent**，
+            我们的 onStartCommand 拿不到 keyCode，于是"唤醒了但不出声"
+            （adb 证据：onPlaybackResumption 与 onPlayerCommandRequest 都没被调用，
+            状态停在 PAUSED）。
+
+            自定义 Receiver 在转发给 Media3 之前，先把 keyCode 存进
+            MediaButtonHint（同进程静态变量），Service 起来后读它就知道
+            用户按的是播放还是下一首，然后决定是"开始播"还是放手。
         -->
         <receiver
-            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:name=".music.EtknMediaButtonReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
@@ -189,6 +197,17 @@
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
+                <!--
+                    用户口径（#69）**Service 自己也注册 MEDIA_BUTTON**（照 QQ 音乐）。
+
+                    adb 实测对比 QQ 音乐 com.tencent.qqmusic：
+                    ```
+                    Receiver: androidx.media.session.MediaButtonReceiver
+                    Service:  QQPlayerServiceNew  Action: "android.intent.action.MEDIA_BUTTON"
+                    ```
+                    它让媒体键在进程刚启动时就有一个静态入口可接命令。
+                -->
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </service>
     </application>
