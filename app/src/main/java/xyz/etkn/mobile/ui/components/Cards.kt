@@ -242,6 +242,33 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
         /** fontScale 越大，实际 sp 要越小，才能保持同样的物理尺寸。 */
         val fontScale = density.fontScale.coerceAtLeast(0.5f)
         val size = baseDp / fontScale
+        /**
+         * 用户口径（2026-11-27，#113）**角标数字在灰圆里不居中，偏下偏左**。
+         *
+         * 用户原话：
+         * ```
+         * 「剧集的右上角小标不是有小数字吗，那个小数字不居中，
+         *   就是在那个灰色的小圆圈里头，偏下，偏左下」
+         * ```
+         *
+         * 根因（两个叠加）：
+         * ```
+         * ① Text 带 Modifier.fillMaxWidth(0.88f) —— 宽度主导布局，
+         *    文字按排版基线摆放，而中文数字的 baseline 下方还有 descender 空间，
+         *    视觉重心天然偏低。
+         * ② 外层 Box 的 contentAlignment = Center 是按**行高盒子**居中，
+         *    不是按**字形包围盒**居中，行高里上下留白不对称 → 偏左下。
+         * ```
+         *
+         * 改法：
+         * ```
+         * · 去掉 fillMaxWidth，宽度交还给内容（wrapContent），
+         *   让 Box 的 Center 能按文字实际宽度居中
+         * · includeFontPadding = false —— 去掉字体内部的上下额外 padding，
+         *   这是 Compose 里修「文字视觉不居中」的关键开关
+         * · lineHeight 设成与字号相等，避免行高盒子比字形大
+         * ```
+         */
         Text(
             text,
             fontSize = size.sp,
@@ -255,8 +282,20 @@ private fun androidx.compose.foundation.layout.BoxScope.EpisodesRing(item: Item)
             maxLines = 1,
             softWrap = false,
             textAlign = TextAlign.Center,
-            // 兜底：即使超宽也不许裁字，缩到圆内径
-            modifier = Modifier.fillMaxWidth(0.88f),
+            /**
+             * `includeFontPadding = false` 去掉字体自带的上下 padding ——
+             * 这是「中文数字在圆里偏下」最常见的原因。
+             * `lineHeight` 与字号一致，让行高盒子贴合字形。
+             */
+            style = androidx.compose.ui.text.TextStyle(
+                fontSize = size.sp,
+                lineHeight = size.sp,
+                textAlign = TextAlign.Center,
+                platformStyle = androidx.compose.ui.text.PlatformTextStyle(
+                    includeFontPadding = false,
+                ),
+            ),
+            modifier = Modifier.wrapContentSize(),
         )
     }
 }
