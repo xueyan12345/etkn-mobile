@@ -372,7 +372,22 @@ class MusicListViewModel(
     val allLoaded: StateFlow<Boolean> = _allLoaded.asStateFlow()
 
     init {
-        if (tab == "songs" || tracksOnly) {
+        /**
+         * 用户口径（2026-11-28，#135）**歌单也要全量加载后再排序**。
+         *
+         * 用户原话：
+         * ```
+         * 「歌单里边的排序跟歌曲里面的排序一样啊，一共有四种选项，
+         *   选哪个都可以排呀，现在选哪个都不好使没有什么变化」
+         * ```
+         *
+         * 原来只有 `songs` / `tracksOnly` 走全量路径，歌单（tab=`playlists`）
+         * 走下面的分页路径 —— 分页只拉了第一页 60 首，
+         * 排序也只能作用在这 60 首上，所以看起来「怎么点都没变化」。
+         *
+         * 歌单最多几百首（xue 461 / zhang 140），全量拉完全没问题。
+         */
+        if (tab == "songs" || tab == "playlists" || tracksOnly) {
             /**
              * 用户口径（2026-11-27，#19）**先显示本地缓存，再后台刷新**。
              *
@@ -454,8 +469,8 @@ class MusicListViewModel(
         if (_sort.value == value) return
         _sort.value = value
         saveSortPref(value)
-        /** 全量拉取后重排（只有「歌曲」tab 需要，其他 tab 本身就是分组）。 */
-        if (tab == "songs" || tracksOnly) {
+        /** 全量拉取后重排（歌曲 tab / 歌单 / 歌手全部歌曲；其他 tab 本身就是分组卡片）。 */
+        if (tab == "songs" || tab == "playlists" || tracksOnly) {
             viewModelScope.launch {
                 _sortLoading.value = true
                 runCatching {

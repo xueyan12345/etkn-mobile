@@ -109,7 +109,6 @@ import xyz.etkn.mobile.ui.nav.MusicSearchRoute
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 
@@ -368,7 +367,6 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
      */
     val graph = LocalContext.current.graph
     val musicState by graph.music.state.collectAsStateWithLifecycle()
-    val queueIds = musicState.queue.map { it.id }
     /**
      * 用户口径（2026-11-27，#17）**歌曲 tab 不做滚动分页**。
      *
@@ -530,45 +528,66 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
             }
             items(folders, key = { "f-" + (it.key ?: it.id) }) { folder -> SquareCard(folder, onClick = { nav.open(folder) }, width = null) }
             /** 用户口径（#47）列表按当前排序显示（`sortedList` 在 Composable 顶层订阅）。 */
-            val ordered = if (route.tab == "songs" || route.tracksOnly) sortedList else paged.items
+            /**
+             * 用户口径（2026-11-28，#135）**歌单里的排序必须生效**。
+             *
+             * 用户原话：
+             * ```
+             * 「歌单里边的排序跟歌曲里面的排序一样啊，一共有四种选项，
+             *   选哪个都可以排呀，现在选哪个都不好使没有什么变化」
+             * ```
+             *
+             * ## 原来的 bug
+             *
+             * ```kotlin
+             * val ordered = if (route.tab == "songs" || route.tracksOnly) sortedList else paged.items
+             * ```
+             * 只给「歌曲」tab 和「歌手全部歌曲」用了排序结果。
+             * 而**歌单页的 tab 是 `playlists`**（见歌单卡片点击时
+             * `MusicListRoute(parentId, "playlists", list.key, list.name)`），
+             * 既不是 `songs` 也没有 `tracksOnly` → 走 `paged.items`（服务端原始顺序）
+             * → 排序菜单点哪个都不变。
+             *
+             * 现在：**任何列表页只要当前显示的是单曲行，就一律用排序结果**。
+             * 歌单、歌手全部歌曲、歌曲 tab 三者共用同一套排序，
+             * 这本来就是用户说的「歌单里边的排序跟歌曲里面的排序一样」。
+             */
+            val showTracks = route.tab == "songs" || route.tab == "playlists" || route.tracksOnly
+            val ordered = if (showTracks) sortedList else paged.items
             ordered.forEach { entry ->
                 if (entry.isAudio && !entry.isMusicGroup) {
                     item(span = { GridItemSpan(maxLineSpan) }, key = "t-" + entry.id, contentType = "track") {
                         /**
-                         * 用户口径（2026-11-27，#103）**这一页（601 首播放列表）也要垃圾桶，不要三点**。
+                         * 用户口径（2026-11-28，#131）**歌曲页恢复三点菜单**。
+                         *
+                         * 这里之前被我改成了垃圾桶 —— 那是**改错了页面**。
                          *
                          * 用户原话：
                          * ```
-                         * 「删除按钮，三个点都在，你拿我说话当放屁啊」
+                         * 「推荐页里的歌后边是跟着三个点的，3个点点开有两个选项，
+                         *   一个是加入播放队列，一个是添加到歌单，但是歌曲列表，
+                         *   我说的是上边四个胶囊里面的歌曲列表，不是说右下角的播放列表，
+                         *   它俩是两个东西，你之前给我改错了」
+                         * 「我之前是让你把播放列表的音乐后边三个点加上删除那个小按钮，
+                         *   你现在怎么把歌曲界面的那个三个点也给我改成删除了，
+                         *   你得给我恢复成跟推荐一样的那个三个点啊，
+                         *   那三个点是有用的，一个是加入播放队列，一个是添加到歌单」
                          * ```
-                         * 上一轮我只改了 NowPlaying 里的两个队列面板，
-                         * 漏了这一页 —— 用户截的就是这里。
                          *
-                         * 语义：这一行代表当前播放队列里的一首，点了从队列移除。
+                         * ## 两个"列表"必须分清
+                         * ```
+                         * ① 歌曲页（顶部胶囊「歌曲」）      → 三点菜单：加入播放队列 / 添加到歌单
+                         * ② 右下角播放列表面板（NowPlaying）→ 垃圾桶：从当前队列移除
+                         * ```
+                         * ① 是**音乐库的全部歌曲**（601 首，不是队列），
+                         * 所以「从队列移除」在这里没有意义，三点菜单才有用。
+                         *
+                         * 修法：不传 `trailing`，`TrackRow` 就会画默认的 MoreVert 三点。
                          */
                         TrackRow(
                             entry,
                             onClick = { vm.play(entry) },
                             horizontalPadding = 0.dp,
-                            trailing = {
-                                val queueIndex = queueIds.indexOfFirst { it == entry.id }
-                                if (queueIndex >= 0) {
-                                    IconButton(
-                                        onClick = { graph.music.removeAt(queueIndex) },
-                                        modifier = Modifier.size(40.dp),
-                                    ) {
-                                        Icon(
-                                            Icons.Rounded.DeleteOutline,
-                                            "从播放列表移除",
-                                            modifier = Modifier.size(20.dp),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                } else {
-                                    /** 不在队列里就留空，保持行高一致（用户要的是「不要三点」，不是加新按钮）。 */
-                                    Spacer(Modifier.size(40.dp))
-                                }
-                            },
                         )
                     }
                 } else {

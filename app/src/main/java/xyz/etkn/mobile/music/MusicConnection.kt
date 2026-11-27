@@ -56,6 +56,23 @@ data class MusicState(
      * 此时进度条只画"已播放 + 未播放"两段。
      */
     val cachedPosition: Long = 0L,
+
+    /**
+     * 用户口径（2026-11-28，#134）**下一首已预加载 → 亮个小气泡**。
+     *
+     * 用户原话：
+     * ```
+     * 「咱们现在不是有预加载下一首的功能吗，就是类似于播放视频的预加载下一集，
+     *   你把预加载下一集的那个小气泡添加到这里边，就是相当于是一个小提示，
+     *   有预加载下一集气泡的时候，说明下一集就已经预加载了」
+     * ```
+     *
+     * 语义和视频侧 `PlaybackCache.isNextReady()` 一致：
+     * **只有下一首真的整首落到本地了**才为 true —— 不是"开始预载了"就亮，
+     * 那样会和视频那边犯过的错一样（用户当时质问
+     * 「我不知道这个预加载是真的预加载了，还是没预加载，只不过就是把它亮起来了」）。
+     */
+    val nextReady: Boolean = false,
 )
 
 /**
@@ -1318,15 +1335,52 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             p.pause()
             return
         }
-        val uri = p.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
-        /** 占位 URL 或根本没有 item → 都要走完整解析。 */
-        if ((uri.startsWith("$SCHEME://") || p.currentMediaItem == null) && _remembered.value != null) {
+        /**
+         * 用户口径（2026-11-28，#133）**点播放不能跳回旧歌**。
+         *
+         * 用户原话：
+         * ```
+         * 「点完之后它不播放，它是暂停的状态，只是相当于把这个歌选上了，
+         *   然后我再一点播放，就又跳回原来的播放栏之前那个歌播放了」
+         * ```
+         *
+         * ## 原来的 bug
+         *
+         * ```kotlin
+         * if ((uri.startsWith("$SCHEME://") || p.currentMediaItem == null) && _remembered.value != null) {
+         *     resumeRemembered()
+         *     return
+         * }
+         * ```
+         * 判据是「当前 item 的 uri 是不是占位 scheme」。但**我们所有音乐 item 的 uri
+         * 都是 `etkn-music://track/<id>`**（见 `toMediaItem`），
+         * 所以这个 `startsWith` **恒为 true** —— 只要点播放就走
+         * `resumeRemembered()`，把「上次记住的那首」重新装进播放器，
+         * 用户点的是 A 结果播的是 B。
+         *
+         * ## 现在
+         *
+         * 只有当「当前没有 item」或「当前这首和记忆里的不是同一首」时，
+         * 才走 `resumeRemembered()` 去恢复队列/进度。同一首就正常 `play()`。
+         */
+        val currentId = p.currentMediaItem?.mediaId
+        val rememberedId = _remembered.value?.itemId
+        if ((p.currentMediaItem == null || currentId == null) && _remembered.value != null) {
+            resumeRemembered()
+            return
+        }
+        /**
+         * 当前这首就是记忆里那首、但播放器还没 prepare（冷启动后直接点播放）→
+         * 这时才需要完整恢复一次（拿直链）。否则直接 play。
+         */
+        if (currentId != null && currentId == rememberedId && p.playbackState == Player.STATE_IDLE) {
             resumeRemembered()
             return
         }
         if (p.playbackState == Player.STATE_IDLE) {
             runCatching { p.prepare() }
         }
+        p.playWhenReady = true
         p.play()
     }
     fun pause() { _player?.pause() }
@@ -1348,7 +1402,47 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      */
     fun previous() { _player?.seekToPreviousMediaItem() }
     fun seekTo(ms: Long) { _player?.seekTo(ms) }
-    fun skipTo(index: Int) { _player?.seekTo(index, 0) }
+    /**
+     * 用户口径（2026-11-28，#130）**从播放列表点歌要直接播，不能只选中**。
+     *
+     * 用户原话：
+     * ```
+     * 「我打开播放列表，滑动找一个音乐，我直接一点，
+     *   正常来讲按照逻辑我点歌曲应该马上就播放呀，
+     *   点完之后它不播放，它是暂停的状态，只是相当于把这个歌选上了，
+     *   然后我再一点播放，就又跳回原来的播放栏之前那个歌播放了」
+     * ```
+     *
+     * ## 原来的 bug
+     *
+     * ```kotlin
+     * fun skipTo(index: Int) { _player?.seekTo(index, 0) }
+     * ```
+     * `seekTo(mediaItemIndex, positionMs)` **只移动位置，不改变播放状态**。
+     * 所以：
+     * ```
+     * 暂停中 → 点歌 → 切到那首的第 0 毫秒，仍然是暂停
+     * ```
+     * 用户再点播放按钮，那个按钮是「播放/暂停」切换语义，
+     * 落到已暂停的播放器上就恢复播放 —— 但此时列表里选中的是旧歌
+     * （UI 的 `state.current` 还没被 publish 刷新），所以看起来像"跳回原来那首"。
+     *
+     * ## 现在
+     *
+     * 切歌后**确保在播**（`playWhenReady = true` + `play()`）。
+     * 这也符合所有音乐 App 的通行行为：点列表里的歌 = 立刻播这首。
+     *
+     * 注意：只加 `play()`，不改任何续播/记忆逻辑 ——
+     * 续播走的是 `restoreForResumption()`，和这里无关。
+     */
+    fun skipTo(index: Int) {
+        val p = _player ?: return
+        if (index < 0 || index >= p.mediaItemCount) return
+        p.seekTo(index, 0)
+        /** 暂停状态下点歌也要立刻出声。 */
+        p.playWhenReady = true
+        if (!p.isPlaying) p.play()
+    }
     fun toggleShuffle() { _player?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled } }
 
     /**
@@ -1569,6 +1663,15 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             sourceId = current?.id?.let { resolved[it]?.sourceId },
             /** #32⑤ 缓存进度：从当前播放位置往后，本地已落盘的毫秒数。 */
             cachedPosition = cachedAheadMs(current?.id, p.currentPosition, p.duration),
+            /**
+             * 用户口径（#134）**下一首整首落盘了才亮气泡**。
+             *
+             * 判据是 `isCached(key, 0, MAX)` 且**当前不在预载中** ——
+             * 正在写的那一段不算完整，所以预载过程中这里是 false，
+             * 预载结束才是 true。这正好是用户要的
+             * 「有气泡 = 真的已经预加载好了」。
+             */
+            nextReady = nextBlockReady(p),
         )
         /** 用户口径（#10）进度变化 → 同步车机卡片上的歌词行。 */
         runCatching { refreshLyricMetadata() }
@@ -1690,6 +1793,35 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
     /** 正在预载的曲目 id（去重用）。 */
     @Volatile private var prefetchingId: String? = null
+
+    /**
+     * 用户口径（#134）**下一首是否真的整首落到本地了**（决定气泡亮不亮）。
+     *
+     * 判据和视频侧 `PlaybackCache.isNextReady()` 同源：
+     * ```
+     * ① 有下一首（不是队列最后一首）
+     * ② 不在预载中（正在写的那段不算完整）
+     * ③ SimpleCache 里这首歌从 0 到结尾全都在
+     * ```
+     * 三条全满足才 true —— 用户要的是「有气泡 = 点了马上能播」，
+     * 不能像视频那边曾经犯的错："只是亮起来，其实还没铺好"。
+     */
+    private fun nextBlockReady(p: androidx.media3.common.Player): Boolean {
+        if (p.mediaItemCount == 0) return false
+        val nextIndex = p.currentMediaItemIndex + 1
+        if (nextIndex >= p.mediaItemCount) return false
+        val nextId = p.getMediaItemAt(nextIndex).mediaId
+        if (nextId.isBlank()) return false
+        /** 正在预载 → 还没好，别亮。 */
+        if (prefetchingId == nextId) return false
+        /** 预载成功过的直接算就绪（省一次 isCached 调用）。 */
+        if (prefetchedIds.contains(nextId)) return true
+        val store = MusicCache.get(context) ?: return false
+        return runCatching {
+            store.isCached(MusicCache.cacheKeyFor(nextId), 0L, Long.MAX_VALUE)
+        }.getOrDefault(false)
+    }
+
 
     /** 本次会话已预载完的曲目（避免反复检查）。 */
     private val prefetchedIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()

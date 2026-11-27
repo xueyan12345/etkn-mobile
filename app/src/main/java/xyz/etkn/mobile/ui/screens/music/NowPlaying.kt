@@ -33,6 +33,8 @@ import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.ui.draw.shadow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Shuffle
@@ -61,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -592,9 +595,24 @@ fun NowPlayingScreen() {
                                 2 -> "单曲循环"
                                 else -> "随机播放"
                             },
-                            tint = if (mode == 0) {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            } else MaterialTheme.colorScheme.primary,
+                            /**
+                             * 用户口径（2026-11-28，#132）**四种播放模式图标颜色统一**。
+                             *
+                             * 用户原话：
+                             * ```
+                             * 「我不是让你改了4个小图标切换播放形式吗，就是顺序播放，
+                             *   还有什么随机播放那个，为啥顺序播放的是黑色，
+                             *   然后点击一下剩下的那三种状态都是绿色的，
+                             *   你把它统一成都是黑色，不要改色」
+                             * ```
+                             *
+                             * 原来：`if (mode == 0) onSurfaceVariant else primary`
+                             * → 顺序播放显灰黑，其余三种显主题绿。
+                             *
+                             * 现在：四种状态一律 `onSurfaceVariant`（跟其他控制键同色）。
+                             * 用户明确说「不要改色」，所以不动 `onSurfaceVariant` 本身。
+                             */
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     IconButton(onClick = music::previous) {
@@ -610,8 +628,35 @@ fun NowPlayingScreen() {
                             Modifier.size(32.dp),
                         )
                     }
-                    IconButton(onClick = music::next) {
-                        Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(30.dp))
+                    /**
+                     * 用户口径（2026-11-28，#134）**下一首预加载好后亮个小气泡**。
+                     *
+                     * 用户原话：
+                     * ```
+                     * 「咱们现在不是有预加载下一首的功能吗，就是类似于播放视频的预加载下一集，
+                     *   你把预加载下一集的那个小气泡添加到这里边，相当于是一个小提示，
+                     *   有预加载下一集气泡的时候，说明下一集就已经预加载了」
+                     * ```
+                     *
+                     * 样式**照抄视频侧**（`PlayerControls.NextEpisodeAction`）：
+                     * 12dp 白色闪电、无白圈、贴在按钮右上角。
+                     * 视频那边的尺寸是用户来回调过几轮定下来的，不要自作主张改。
+                     */
+                    Box(contentAlignment = Alignment.TopEnd) {
+                        IconButton(onClick = music::next) {
+                            Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(30.dp))
+                        }
+                        if (state.nextReady) {
+                            Icon(
+                                Icons.Rounded.Bolt,
+                                contentDescription = "下一首已预加载",
+                                tint = Color.White,
+                                modifier = Modifier
+                                    .offset(x = 2.dp, y = 2.dp)
+                                    .size(12.dp)
+                                    .shadow(2.dp, CircleShape),
+                            )
+                        }
                     }
                     IconButton(onClick = { queueOpen = true }) {
                         Icon(Icons.AutoMirrored.Rounded.QueueMusic, "播放列表")
