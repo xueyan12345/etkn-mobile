@@ -984,8 +984,19 @@ private fun ActionRow(
             if (episodeLine.isNotBlank()) {
                 Text(
                     episodeLine,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
+                    /**
+                     * 用户口径（2026-11-27，#122）**S1E1 - 集名 这行要加粗，字号跟章节名一致**。
+                     *
+                     * 用户原话：
+                     * ```
+                     * 「上边播放下边的比如S1E1-集的名称，这一行要加粗，
+                     *   字体也跟章节下边的片头片头结束那个字体一样大」
+                     * ```
+                     * 章节名 = bodyMedium。原来是 titleSmall + SemiBold（字号偏大、字重偏轻）。
+                     * 现在 bodyMedium + Bold：字号对齐章节，字重更重（用户要「加粗」）。
+                     */
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -1262,6 +1273,17 @@ private fun InfoBlock(item: Item, centered: Boolean) {
         item.overview?.let { overview ->
             Text(
                 overview,
+                /**
+                 * 用户口径（#122）**简介字号跟章节名一致，字重保持现状**。
+                 *
+                 * 用户原话：
+                 * ```
+                 * 「然后集标题下边的集简介也改成跟片头、片头结束那么字体一样大
+                 *   只不过粗度不用动，就现在就行」
+                 * ```
+                 * 章节名是 bodyMedium，简介本来也是 bodyMedium → 字号已一致，
+                 * 不需要改字重（保持默认常规）。
+                 */
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = if (expanded) Int.MAX_VALUE else 4,
@@ -1507,7 +1529,11 @@ private fun MediaTechRows(
             expanded = expanded == 1,
             onClick = if (sourceCount > 1) { { expanded = if (expanded == 1) 0 else 1 } } else null,
             compact = compact,
-            onPositioned = { y, x, w -> rowYs = rowYs + (1 to y); blockX = x; blockW = w },
+            onPositioned = { y, x, w ->
+                if (rowYs[1] != y) rowYs = rowYs + (1 to y)
+                if (blockX != x) blockX = x
+                if (blockW != w) blockW = w
+            },
         )
         /** 视频选项：浮层（不再插进 Column，避免把下面几行推下去）。 */
         if (expanded == 1) {
@@ -1552,7 +1578,11 @@ private fun MediaTechRows(
             expanded = expanded == 2,
             onClick = if (audios.size > 1) { { expanded = if (expanded == 2) 0 else 2 } } else null,
             compact = compact,
-            onPositioned = { y, x, w -> rowYs = rowYs + (2 to y); blockX = x; blockW = w },
+            onPositioned = { y, x, w ->
+                if (rowYs[2] != y) rowYs = rowYs + (2 to y)
+                if (blockX != x) blockX = x
+                if (blockW != w) blockW = w
+            },
         )
         if (expanded == 2) {
             MediaTechPopup(
@@ -1594,7 +1624,11 @@ private fun MediaTechRows(
             expanded = expanded == 3,
             onClick = if (subs.isNotEmpty()) { { expanded = if (expanded == 3) 0 else 3 } } else null,
             compact = compact,
-            onPositioned = { y, x, w -> rowYs = rowYs + (3 to y); blockX = x; blockW = w },
+            onPositioned = { y, x, w ->
+                if (rowYs[3] != y) rowYs = rowYs + (3 to y)
+                if (blockX != x) blockX = x
+                if (blockW != w) blockW = w
+            },
         )
         if (expanded == 3) {
             MediaTechPopup(

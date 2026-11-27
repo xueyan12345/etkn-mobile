@@ -180,21 +180,20 @@ fun MusicHomeScreen() {
                         items(MusicTab.entries.toList()) { t ->
                             PillToggle(checked = t == tab, onClick = { tab = t }) {
                                 /**
-                                 * 用户口径（2026-11-27，#117）**胶囊文字要够大够重**。
+                                 * 用户口径（2026-11-27，#120）**胶囊从 19 收到 17**。
                                  *
-                                 * 用户原话：
+                                 * 历史：#117 时用户嫌胶囊字比标题小，要求加大 → 定 19sp Medium；
+                                 * 现在用户实测后觉得 19 偏大：
                                  * ```
-                                 * 「最上面的4个钮上面的字甚至比那个最近听的四个字的标题还小，
-                                 *   这个不应该出现，整体很不协调，4个按钮里面的字肯定要加大加粗」
-                                 * 「胶囊改成19不行吗」→「标题改成17」
+                                 * 「是，我知道现在是19，然后我觉得有点大，给我改成17」
                                  * ```
-                                 * 胶囊 19sp Medium（原来 16sp 常规，比 19sp Bold 的标题小一截），
-                                 * 标题降到 17sp SemiBold —— 胶囊比标题大 2sp，标题靠字重撑住。
+                                 * 17sp Medium，与「最近听的」标题（17sp SemiBold）字号持平，
+                                 * 靠 Medium 比 SemiBold 轻一档来区分「按钮」与「区块标题」。
                                  */
                                 Text(
                                     t.label,
                                     style = MaterialTheme.typography.bodyLarge,
-                                    fontSize = 19.sp,
+                                    fontSize = 17.sp,
                                     fontWeight = FontWeight.Medium,
                                 )
                             }

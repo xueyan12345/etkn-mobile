@@ -477,7 +477,17 @@ internal fun EpisodeCard(
         }
         Text(
             listOfNotNull(episode.indexNumber?.let { "$it." }, episode.name).joinToString(" "),
-            style = MaterialTheme.typography.labelMedium,
+            /**
+             * 用户口径（2026-11-27，#121）**集标题字号跟章节卡下方「片头/片头结束」一致**。
+             *
+             * 用户原话：
+             * ```
+             * 「把详情界面的剧集图片下边的集标题文字大小
+             *   改成跟章节里面，章节图下边的片头，片头结束，那个字体改成一样的大小」
+             * ```
+             * 章节名用 bodyMedium，分集卡原来是 labelMedium（小一档）→ 统一到 bodyMedium。
+             */
+            style = MaterialTheme.typography.bodyMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,

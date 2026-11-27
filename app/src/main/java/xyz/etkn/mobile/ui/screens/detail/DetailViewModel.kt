@@ -136,9 +136,42 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
          */
         val shelfItem = episodeFromShelf(episodeId)
         if (previous != null && shelfItem != null) {
+            /**
+             * 用户口径（2026-11-27，#123）**切集时右上角三行技术信息不能消失再出现**。
+             *
+             * 用户原话：
+             * ```
+             * 「原来这个界面就是相当于切集的时候，固定的模块是不动的，
+             *   比如说右上角那个三行媒体信息，还有下面的章节，正常来讲是不会反复跳动的，
+             *   我现在切一个集，它就刷新一次，有种像刷新重进的感觉」
+             * ```
+             *
+             * 根因：`techSource(data)` 读的是 `data.item.mediaSources`。
+             * 乐观渲染把 `item` 立刻换成新集（选集行那份数据**不带** mediaSources），
+             * 于是三行瞬间变 null → 整块 `if (showTech && techSrc != null)` 不渲染
+             * → 三行消失 → 等网络回来又重新出现。视觉上就是「闪一下重新进」。
+             *
+             * 修法：新集的 `mediaSources` 为空时，**沿用上一集的**。
+             * 同一部剧各集的编码/码率/音轨结构通常一致，先顶着显示，
+             * 网络数据回来后被真实的覆盖 —— 中间不再出现空档。
+             */
+            val carriedSources = if (shelfItem.mediaSources.isEmpty()) previous.item.mediaSources else shelfItem.mediaSources
             _state.value = Load.Ready(
                 previous.copy(
-                    item = shelfItem,
+                    item = if (carriedSources === previous.item.mediaSources) {
+                        /**
+                         * 带上 mediaSources / chapters 的副本，让技术信息区和章节区
+                         * 在切集瞬间有东西可显示（#123）。
+                         *
+                         * 章节也一样：`item.chapters` 为空时下面那块 `if (chapters.isEmpty()) return`
+                         * 会整块不渲染 → 章节标题和卡片闪一下消失再出现。
+                         * 同一部剧的片头/片尾标记通常一致，先沿用上一集的顶着。
+                         */
+                        shelfItem.copy(
+                            mediaSources = carriedSources,
+                            chapters = if (shelfItem.chapters.isEmpty()) previous.item.chapters else shelfItem.chapters,
+                        )
+                    } else shelfItem,
                     target = shelfItem,
                     /** 集变了，技术信息和章节要等网络回来才有，先清掉避免显示上一集的。 */
                     selectedSource = 0,
