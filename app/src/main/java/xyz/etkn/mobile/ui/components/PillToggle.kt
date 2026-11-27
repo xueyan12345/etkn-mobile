@@ -1,5 +1,6 @@
 package xyz.etkn.mobile.ui.components
 
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
@@ -41,7 +42,7 @@ fun PillToggle(
      * 默认值保持 `ButtonDefaults.ContentPadding`，
      * 其他页面（设置页、选集区间等）行为完全不变 —— 只改音乐页那一处调用。
      */
-    contentPadding: androidx.compose.foundation.layout.PaddingValues =
+    contentPadding: PaddingValues =
         ButtonDefaults.ContentPadding,
     content: @Composable RowScope.() -> Unit,
 ) {
