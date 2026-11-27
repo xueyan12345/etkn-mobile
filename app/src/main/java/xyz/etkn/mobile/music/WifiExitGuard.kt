@@ -377,39 +377,63 @@ object WifiExitGuard {
  * 「播放视频结束之后应该就把蓝牙对音乐的控制恢复了」
  * ```
  *
- * 根因：音乐和视频各有一个 `MediaSession`（视频那个 id="video"），
- * 两个同时 active，系统按「最近活跃」分发媒体键 → 按键会串到音乐。
+ * ## 为什么不用 `MediaSession.setActive(false)`
  *
- * 修法：视频开始播放时 `setActive(false)`，视频结束时 `setActive(true)`。
+ * Media3 的 `androidx.media3.session.MediaSession` **没有** `setActive` ——
+ * 那是平台 `android.media.session.MediaSession` 的 API。
+ * 官方 issue androidx/media#1501（至今 open，maintainer 2025-08 回复）给的唯一办法是
+ * **release 会话、需要时重建**。
  *
- * **注意**：`setActive(false)` 只影响「媒体键分发」和「系统卡片是否展示」，
- * 不影响 `MediaButtonReceiver` 的静态注册 —— 蓝牙冷启动唤醒那条路
- * 靠的是 `EtknMediaButtonReceiver` + Manifest，跟这个开关无关。
+ * 但 release 会把会话从系统摘掉：卡片消失的同时，**蓝牙按键也彻底收不到**，
+ * 而且重建要重新绑定 `MusicService` 里的 player —— 用户明确要求不许碰蓝牙唤醒链路，
+ * 这个代价不能接受。
+ *
+ * ## 实际做法：暂停 + 不释放会话
+ *
+ * 官方 issue #589 实测过：**PAUSE 时系统媒体通知会消失**（这正是用户要的「纯灰色」）。
+ * 所以视频开始时只做两件事：
+ * ```
+ * ① 音乐暂停（卡片消失/变灰、不再有"正在播放"）
+ * ② 不 release —— 会话还在，蓝牙按键仍能被收到，
+ *    只是按键落在「暂停的音乐」上，不会再让音乐自己复活
+ * ```
+ * 视频退出时把会话重新挂上，播放状态由音乐自己决定。
  */
 object MusicSessionHolder {
     @Volatile private var session: androidx.media3.session.MediaSession? = null
 
+    /** 视频是否正占用着媒体键（视频页面在前台）。 */
+    @Volatile private var videoHolding: Boolean = false
+
     fun attach(s: androidx.media3.session.MediaSession) { session = s }
 
     /**
-     * 让音乐会话让出媒体键（视频开始播放时调）。
+     * 视频开始播放：暂停音乐，让系统卡片回到「没在放」的灰态。
      *
-     * 同时把系统卡片切换成「无播放」的灰态 —— 这就是用户要的
-     * 「恢复到纯灰色的状态」。
+     * 用户反馈的 bug：
+     * ```
+     * 「我用蓝牙暂停视频，视频暂停了，然后音乐就从暂停状态转为播放状态了」
+     * ```
+     * 根因是两个会话同时 active，媒体键被分给了音乐。
+     * 这里先把音乐暂停，视频那边拿到按键时音乐就不会再被"唤醒"。
      */
     fun yieldToVideo() {
-        val s = session ?: return
-        runCatching { s.setActive(false) }
-            .onSuccess { android.util.Log.i("ETKN-Music", "session 让出媒体键（视频开始）") }
-            .onFailure { android.util.Log.w("ETKN-Music", "让出媒体键失败", it) }
+        if (videoHolding) return
+        videoHolding = true
+        runCatching {
+            val p = session?.player
+            if (p != null && p.isPlaying) {
+                p.pause()
+                android.util.Log.i("ETKN-Music", "视频开始 → 音乐已暂停，让出媒体键")
+            }
+        }.onFailure { android.util.Log.w("ETKN-Music", "让出媒体键失败", it) }
     }
 
-    /** 视频结束，把媒体键还给音乐（用户明确要求）。 */
+    /** 视频结束：解除占用标记（不自动恢复播放，播放状态由用户决定）。 */
     fun resumeFromVideo() {
-        val s = session ?: return
-        runCatching { s.setActive(true) }
-            .onSuccess { android.util.Log.i("ETKN-Music", "session 收回媒体键（视频结束）") }
-            .onFailure { android.util.Log.w("ETKN-Music", "收回媒体键失败", it) }
+        if (!videoHolding) return
+        videoHolding = false
+        android.util.Log.i("ETKN-Music", "视频结束 → 媒体键归还音乐")
     }
 
     fun release() {
