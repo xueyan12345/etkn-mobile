@@ -97,6 +97,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
@@ -795,6 +796,9 @@ private fun LyricsPane(track: Item, sourceId: String?) {
                      * 拖动直接累积像素（dragPx），不做"过半行才跳一格"的取整 ——
                      * 那样要拖 22dp 才动一行，手感像卡住。
                      */
+                    .graphicsLayer {
+                        translationY = -(dragLines - dragRows) * rowPx
+                    }
                     .pointerInput(rows, active) {
                         detectVerticalDragGestures(
                             onDragStart = { dragging = true },
@@ -818,9 +822,6 @@ private fun LyricsPane(track: Item, sourceId: String?) {
                  * 用 graphicsLayer 平移补上 —— 画面就跟着手指连续走了，不跳变。
                  * 方向：手指上滑（dragPx 增大）→ 内容向上移（translationY 为负）。
                  */
-                modifier = Modifier.graphicsLayer {
-                    translationY = -(dragLines - dragRows) * rowPx
-                },
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
