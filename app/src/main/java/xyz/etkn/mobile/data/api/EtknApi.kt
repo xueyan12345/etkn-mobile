@@ -823,12 +823,38 @@ class EtknApi(
         post("${u()}/Music/Playlists/${enc(key)}/Items/${enc(itemId)}")
     }
 
-    /** GET first; only an empty (successful) text triggers the online lookup POST. */
+    /**
+     * 用户口径（2026-11-27，#128）**歌词要缓存，不要每次重拉**。
+     *
+     * 用户原话：
+     * ```
+     * 「那个歌词是不是也加缓存，要不每次都要拉数据」
+     * ```
+     *
+     * 实测：歌词**完全没有缓存**，而且同一首歌要拉两次
+     * （`MiniLyrics` 迷你条一次 + `LyricsPane` 歌词区一次），
+     * 每次进页面、每次切歌都重新请求 —— `GET` 拿不到再 `POST` 在线查找，
+     * 一次切换最多 4 个请求。
+     *
+     * 现在：**磁盘缓存**（`lyricscache/<itemId>.lrc`），进程重启也在。
+     * ```
+     * 命中 → 直接读盘，零请求
+     * 未命中 → 走原来的 GET/POST，成功且非空才写盘
+     * ```
+     * 只缓存**非空**结果 —— 空结果不缓存，否则某次服务端抽风会把"没词"永久钉死。
+     */
     suspend fun lyrics(itemId: String, sourceId: String): String {
+        val cached = xyz.etkn.mobile.music.LyricsCache.read(itemId)
+        if (cached != null) return cached
         val path = query("/api/tv/Music/${enc(itemId)}/Lyrics", "MediaSourceId" to sourceId)
         val text = get(path).str("text")
-        if (text.isNotBlank()) return text
-        return runCatching { post(path).str("text") }.getOrDefault("")
+        if (text.isNotBlank()) {
+            xyz.etkn.mobile.music.LyricsCache.write(itemId, text)
+            return text
+        }
+        val found = runCatching { post(path).str("text") }.getOrDefault("")
+        if (found.isNotBlank()) xyz.etkn.mobile.music.LyricsCache.write(itemId, found)
+        return found
     }
 
     companion object {

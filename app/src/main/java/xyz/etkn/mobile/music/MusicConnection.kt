@@ -12,6 +12,7 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import xyz.etkn.mobile.AppGraph
@@ -1145,6 +1147,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         if (spec.uri.scheme != SCHEME) return spec
         val id = spec.uri.lastPathSegment ?: throw IllegalStateException("无效曲目")
         val active = session ?: throw IllegalStateException("未登录")
+        android.util.Log.i("ETKN-Music", "resolve 回源 id=$id")
         val entry = resolved[id] ?: runBlocking {
             val info = graph.api.playbackInfo(id, audio = true)
             val source = info.sources.firstOrNull() ?: throw IllegalStateException("这首歌暂无可播放版本")
@@ -1550,33 +1553,101 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     }
 
     /**
-     * 用户口径（2026-11-27，#124）**停止「服务端以为好多歌同时在播」**。
+     * 用户口径（2026-11-27，#129）**当前这首缓存完就预载下一首，做到无缝衔接**。
      *
-     * 原来（#39）这里为了「下一首秒播」，会调 `graph.api.playbackInfo(nextId)` 拿直链再自己下载。
-     * 但 `playbackInfo` 是**播放会话接口** —— 每调一次，ETKN 服务端就登记一次「这首歌开始播放」。
-     *
-     * 用户实测到的现象：
+     * 用户原话：
      * ```
-     * 「有时候它好像还会持续请求好多个歌，我在 ETK 后台能看到播放好多好多歌同时」
+     * 「还有正在播放的歌曲缓存完毕了要提前缓存下一首，这样保证无缝衔接播放」
      * ```
-     * 根因就是这里：一首歌播到 70% 或缓冲快满时，就替**下一首**发一次 playbackInfo，
-     * 服务端就多出一条播放记录。
      *
-     * 而且预取用的 cache key（`source.id|playSessionId`）和播放侧（`music-<itemId>`）
-     * 根本对不上 —— 下下来的字节播放时永远读不到，纯属白花流量。
+     * ## 和之前那版（已删除）的区别
      *
-     * 现在只做**本地巡检**：不发任何网络请求，只打一行日志说明「下一首在不在缓存里」。
-     * 「秒播」交给播放器自己的顺序预读（Exo 播到尾部会提前读下一段）。
+     * 之前用 `graph.api.playbackInfo(nextId)` 拿直链 —— 那个接口是**播放会话注册**接口，
+     * 每调一次服务端就多一条「正在播放」记录（用户看到的「好多歌同时在播」）。
+     *
+     * 现在**不调 playbackInfo**，而是复用播放器自己的解析通道：
+     * ```
+     * DataSpec(uri = etkn-music://track/<nextId>, key = music-<nextId>)
+     *   → ResolvingDataSource（和播放同一条，会解析成真实直链）
+     *   → CacheDataSource（和播放同一个 SimpleCache、同一个 key）
+     * ```
+     * 解析出来的直链/播放会话本来就会被 `resolved[]` 缓存复用，
+     * 所以**不会多出一条播放记录**，写进去的字节播放时也一定命中。
+     *
+     * ## 触发条件
+     *
+     * 当前这首**整首缓存完**（`isCached(key, 0, MAX)`）才预载下一首，
+     * 而不是播到 70% 就开始抢带宽 —— 用户要的是「播完这首时下一首已经好了」。
      */
     private fun maybePrefetchNext(p: androidx.media3.common.Player) {
         if (p.mediaItemCount == 0) return
         val nextIndex = p.currentMediaItemIndex + 1
         if (nextIndex >= p.mediaItemCount) return
+        val curId = p.currentMediaItem?.mediaId ?: return
         val nextId = p.getMediaItemAt(nextIndex).mediaId
-        val cache = MusicCache.get(context) ?: return
+        if (nextId.isBlank()) return
+        /** 同一首只预载一次，避免每秒事件都触发。 */
+        if (prefetchingId == nextId || prefetchedIds.contains(nextId)) return
+
+        val store = MusicCache.get(context) ?: return
         runCatching {
-            val cached = cache.isCached(MusicCache.cacheKeyFor(nextId), 0L, Long.MAX_VALUE)
-            android.util.Log.i("ETKN-Music", "下一首 $nextId 本地缓存=$cached（不发网络请求）")
+            /** 当前这首没缓存完就不预载（先把它自己下完）。 */
+            if (!store.isCached(MusicCache.cacheKeyFor(curId), 0L, Long.MAX_VALUE)) return
+            /** 下一首已经完整了就不用再下。 */
+            if (store.isCached(MusicCache.cacheKeyFor(nextId), 0L, Long.MAX_VALUE)) {
+                prefetchedIds += nextId
+                return
+            }
+            prefetchingId = nextId
+            android.util.Log.i("ETKN-Music", "当前已缓存完 → 开始预载下一首 $nextId")
+            graph.scope.launch {
+                runCatching { prefetchTrack(nextId) }
+                    .onSuccess {
+                        prefetchedIds += nextId
+                        android.util.Log.i("ETKN-Music", "预载完成 $nextId")
+                    }
+                    .onFailure { android.util.Log.w("ETKN-Music", "预载失败 $nextId", it) }
+                prefetchingId = null
+            }
+        }
+    }
+
+    /** 正在预载的曲目 id（去重用）。 */
+    @Volatile private var prefetchingId: String? = null
+
+    /** 本次会话已预载完的曲目（避免反复检查）。 */
+    private val prefetchedIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * 把一首歌整首读进缓存。
+     *
+     * **走的是和播放完全相同的两条 DataSource**（解析 + 缓存），
+     * 所以：
+     * ```
+     * · 写进去的 key = music-<itemId>，播放时命中
+     * · 解析复用 resolved[]，不会多注册一条播放会话
+     * · 只读不播，不碰 MediaSession / 播放状态
+     * ```
+     */
+    private suspend fun prefetchTrack(itemId: String) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val upstream = PlayerFactory.dataSource(graph.http.media, graph.identity.userAgent)
+        val cached = MusicCache.dataSource(context, upstream, MusicCache.limitMb)
+        val resolving = androidx.media3.datasource.ResolvingDataSource.Factory(cached) { spec -> resolve(spec) }
+        val uri = Uri.Builder().scheme(SCHEME).authority("track").appendPath(itemId).build()
+        val spec = androidx.media3.datasource.DataSpec.Builder()
+            .setUri(uri)
+            .setKey(MusicCache.cacheKeyFor(itemId))
+            .build()
+        val source = resolving.createDataSource()
+        try {
+            source.open(spec)
+            val buf = ByteArray(128 * 1024)
+            while (true) {
+                val n = source.read(buf, 0, buf.size)
+                if (n == -1) break
+            }
+        } finally {
+            runCatching { source.close() }
         }
     }
 

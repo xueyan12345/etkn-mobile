@@ -178,8 +178,15 @@ object MusicCache {
     /** 当前占用的字节数（设置页显示用）。 */
     fun sizeBytes(): Long = cache?.let { runCatching { it.cacheSpace }.getOrDefault(0L) } ?: currentBytes
 
-    /** 用户主动「清空音乐缓存」。 */
+    /**
+     * 用户主动「清空音乐缓存」。
+     *
+     * 用户口径（#128）：歌词也缓存了，这里一并清掉 ——
+     * 用户点「清空」的语义就是「把本地音乐数据全丢掉重来」，
+     * 留一堆歌词文件在那里会让计数和实际不符。
+     */
     fun clear() {
         runCatching { cache?.keys?.forEach { cache?.removeResource(it) } }
+        LyricsCache.clear()
     }
 }

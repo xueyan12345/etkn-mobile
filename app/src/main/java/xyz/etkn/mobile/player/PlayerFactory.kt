@@ -267,7 +267,34 @@ object PlayerFactory {
             .setEnableDecoderFallback(true)
         return ExoPlayer.Builder(context, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
-            .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(10_000, 60_000, 800, 1_500).build())
+            /**
+             * 用户口径（2026-11-27，#129）**音乐把整首缓冲进缓存，而不是只缓 60 秒**。
+             *
+             * 原来 `setBufferDurationsMs(10_000, 60_000, 800, 1_500)`。
+             * 参数含义 = (最小缓冲, **最大缓冲**, 起播缓冲, 重缓冲后起播)。
+             *
+             * 实测证据（adb `dumpsys media_session`，同一首歌播了两遍）：
+             * ```
+             * buffered position  78071 → 131289 → 183459
+             * 78071  = 78 秒
+             * 131289 = 131 秒   ← 一次跨 53 秒，正好撞 60 秒上限
+             * 183459 = 183 秒（全长）
+             * ```
+             * 也就是说：播到 78 秒时 Exo 停止往下读，等播放位置推进到约 71 秒
+             * 才继续读下一段 —— 整首歌是「边播边下」，播完才整首落盘。
+             *
+             * 用户要的是「这首播完，整首就在本地；下一首也提前备好」，
+             * 所以把最大缓冲提到 **10 分钟**（覆盖任何单曲，超长无损也不会卡住），
+             * 让 Exo 一次性把整首歌读完写进 SimpleCache。
+             *
+             * 不设成 `C.TIME_UNSET`（无限）：那样播超长音频时会把内存堆吃满
+             * （视频侧踩过 400MB 直接 OOM 的坑）。
+             */
+            .setLoadControl(
+                DefaultLoadControl.Builder()
+                    .setBufferDurationsMs(10_000, 600_000, 800, 1_500)
+                    .build(),
+            )
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 true,

@@ -20,6 +20,18 @@ class EtknApp : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        /**
+         * 用户口径（2026-11-27，#128）**歌词缓存需要拿到 App 目录**。
+         *
+         * `EtknApi.lyrics()` 里没有 context（它是纯网络层），
+         * 所以在这里把 Application 交给 `LyricsCache`：
+         * ```
+         * filesDir/lyricscache/<itemId>.lrc
+         * ```
+         * 歌词是纯文本、几 KB 一条，放 filesDir 而不是 cacheDir
+         * （ColorOS 会清 cacheDir，用户已经踩过这个坑）。
+         */
+        xyz.etkn.mobile.music.LyricsCache.attach(this)
         graph = AppGraph(this)
         graph.sessions.restore()
         /**
