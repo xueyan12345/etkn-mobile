@@ -74,6 +74,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.RadioButton
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
 import xyz.etkn.mobile.data.settings.HiddenLibrariesPerAccount
@@ -333,6 +334,14 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val graph = context.graph
+    /**
+     * 用户口径（2026-11-27，#74）**读 WiFi 名称必须先要位置权限**。
+     * Android 10+ 拿不到权限只会返回 `<unknown ssid>`，功能等于没有，
+     * 所以这里主动申请一次；用户拒绝就显示解释，不偷偷失败。
+     */
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { _ -> }
     var usage by remember { mutableLongStateOf(0L) }
     /**
      * 用户口径（2026-11-23）：**改完上限立刻收敛一次，并回读真实占用**。
@@ -522,6 +531,132 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
             formatBytes(musicUsage),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    /**
+     * 用户口径（2026-11-27，#74）**离开指定 WiFi 且正在放歌 → 彻底关闭 App**。
+     *
+     * 用户原话：
+     * ```
+     * 「当连接特定 wifi 并正在播放音乐的情况下。
+     *   如果这个设定的 wifi 断开了，直接彻底关闭 etkn」
+     * 「wifi 的名你能不能像 MACRODROID 这个软件一样，
+     *   能直接弹出个窗口，选择系统已经连接过或者保存过的 wifi，
+     *   这样就不用手动填了，并且更准确」
+     * 「确认断开就立即退出」
+     * 「主要就是用在车上」
+     * ```
+     * 所以这里不是输入框，而是**弹窗列出系统保存过的 WiFi 让你点**。
+     */
+    Spacer(Modifier.height(1.dp).fillMaxWidth().background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)))
+    Text(
+        "离开此 WiFi 时退出",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = ROW_INSET, top = 14.dp, bottom = 2.dp),
+    )
+    Text(
+        "连着下面选中的 WiFi 并正在放歌时，一旦这个 WiFi 断开就立即彻底关闭 ETKN。主要用于车上：熄火后 WiFi 一断，App 自动退出。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = ROW_INSET),
+    )
+
+    var wifiPickerOpen by remember { mutableStateOf(false) }
+    var ssidList by remember { mutableStateOf<List<String>>(emptyList()) }
+    var hasLocation by remember { mutableStateOf(false) }
+
+    /** 打开选择弹窗前现读一次系统保存的列表（不缓存，避免拿到过期的）。 */
+    fun refreshList() {
+        hasLocation = androidx.core.content.ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ssidList = xyz.etkn.mobile.music.WifiExitGuard.savedSsids(context.applicationContext)
+    }
+
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = ROW_INSET, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (settings.wifiExitSsid.isBlank()) "未选择 WiFi" else settings.wifiExitSsid,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            if (settings.wifiExitEnabled && settings.wifiExitSsid.isNotBlank()) {
+                Text(
+                    "已启用" + if (settings.wifiExitArmed) " · 已上膛（放歌中）" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+        TextButton(onClick = { refreshList(); wifiPickerOpen = true }) { Text("选择") }
+        Switch(
+            checked = settings.wifiExitEnabled,
+            onCheckedChange = { on ->
+                scope.launch { graph.settings.setWifiExitEnabled(on) }
+                /** 开关打开就立刻注册监听；关掉就撤掉，不占资源。 */
+                if (on) {
+                    xyz.etkn.mobile.music.WifiExitGuard.start(context.applicationContext)
+                } else {
+                    xyz.etkn.mobile.music.WifiExitGuard.stop()
+                    scope.launch { graph.settings.setWifiExitArmed(false) }
+                }
+            },
+        )
+    }
+
+    if (wifiPickerOpen) {
+        AlertDialog(
+            onDismissRequest = { wifiPickerOpen = false },
+            title = { Text("选择 WiFi") },
+            text = {
+                when {
+                    !hasLocation -> Column {
+                        Text("需要「位置信息」权限才能读取 WiFi 名称（Android 系统规定）。")
+                        Spacer(Modifier.height(10.dp))
+                        TextButton(onClick = {
+                            runCatching {
+                                permissionLauncher.launch(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                            }
+                            wifiPickerOpen = false
+                        }) { Text("去授权") }
+                    }
+                    ssidList.isEmpty() -> Column {
+                        Text("没有读到系统保存的 WiFi。")
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "可能需要打开手机「定位开关」，或先手动连接一次该 WiFi。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    else -> Column(Modifier.verticalScroll(rememberScrollState())) {
+                        ssidList.forEach { ssid ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    scope.launch { graph.settings.setWifiExitSsid(ssid) }
+                                    wifiPickerOpen = false
+                                }.padding(vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(
+                                    selected = ssid == settings.wifiExitSsid,
+                                    onClick = {
+                                        scope.launch { graph.settings.setWifiExitSsid(ssid) }
+                                        wifiPickerOpen = false
+                                    },
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(ssid, style = MaterialTheme.typography.bodyLarge)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { wifiPickerOpen = false }) { Text("关闭") } },
         )
     }
 }

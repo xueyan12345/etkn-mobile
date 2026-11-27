@@ -81,9 +81,46 @@ class MusicService : MediaSessionService() {
             .setBitmapLoader(bitmaps)
             .setCallback(object : MediaSession.Callback {
                 /**
-                 * 只实现 `onPlaybackResumption`：系统主动问「要播哪首」时给答案。
-                 * **不实现 `onPlayerCommandRequest`** —— 上一首/下一首/播放暂停
-                 * 全部交给 MediaSession 默认逻辑，避免与 Receiver 那条路重复执行。
+                 * 用户口径（2026-11-27，#73）**系统「上一首」要真的切上一首**。
+                 *
+                 * 实测（adb，播放到 18 秒时 `cmd media_session dispatch previous`）：
+                 * ```
+                 * 之前: active item id=454  ← 还是同一首歌（没换）
+                 *       position=2597       ← 回到 2.5 秒，就是"从头播放"
+                 * ```
+                 * 原因是 **Media3 默认的「上一首」行为是「播过 3 秒就回本曲开头」**，
+                 * 用户在 `MusicConnection.previous()` 里要求的"无条件切上一首"
+                 * 根本没被走系统路径的按钮调用到。
+                 *
+                 * 所以必须在这里接管 `COMMAND_SEEK_TO_PREVIOUS*`。
+                 *
+                 * **只接管「上一首」，不碰「下一首」和「播放/暂停」** ——
+                 * 那两个交给默认逻辑，保证"点一次只切一首"（#70 反复踩的坑）。
+                 */
+                override fun onPlayerCommandRequest(
+                    mediaSession: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    playerCommand: Int,
+                ): Int {
+                    val isPrev = playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS ||
+                        playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
+                    if (!isPrev) return -1
+                    val p = applicationContext.graph.music.player
+                    if (p.currentMediaItemIndex <= 0 && !p.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS)) {
+                        /** 已经是第一首，没有上一首可切 → 按常规回到开头。 */
+                        p.seekTo(0)
+                        return androidx.media3.session.SessionResult.RESULT_SUCCESS
+                    }
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "系统「上一首」→ 切到上一首（当前 idx=${p.currentMediaItemIndex}）",
+                    )
+                    p.seekToPreviousMediaItem()
+                    return androidx.media3.session.SessionResult.RESULT_SUCCESS
+                }
+
+                /**
+                 * 系统主动问「要播哪首」时给答案（蓝牙冷启动用）。
                  */
                 override fun onPlaybackResumption(
                     mediaSession: MediaSession,

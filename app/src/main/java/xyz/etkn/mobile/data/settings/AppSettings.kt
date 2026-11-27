@@ -151,6 +151,30 @@ data class Settings(
      * 默认 2048MB（2GB）—— 一首无损 30-50MB，够放 40-60 首，覆盖「最近在听」足够。
      */
     val musicCacheMb: Int = 2048,
+    /**
+     * 用户口径（2026-11-27，#74）**离开指定 WiFi 且正在放歌时，彻底关闭 App**。
+     *
+     * 用户原话：
+     * ```
+     * 「当连接特定 wifi 并正在播放音乐的情况下。
+     *   如果这个设定的 wifi 断开了，直接彻底关闭 etkn」
+     * 「确认断开就立即退出」
+     * 「主要就是用在车上」
+     * ```
+     * 场景：车机/车上的 WiFi（热点或车载 WiFi）—— 车一熄火 WiFi 就断，
+     * 断开即退出，避免 App 在后台一直占着播放。
+     *
+     * 默认关闭；WiFi 名称用系统列表选（像 MacroDroid 那样），不用手打。
+     */
+    val wifiExitEnabled: Boolean = false,
+    val wifiExitSsid: String = "",
+    /**
+     * 记录「当前这条 WiFi 会话是否已经开始放歌」。
+     *
+     * 用户口径要求「正在播放音乐的情况下」才退出 —— 所以不能只看 WiFi 断开，
+     * 还必须确认这次 WiFi 连接期间真的放过歌。断开时这个标记为 false 就不退。
+     */
+    val wifiExitArmed: Boolean = false,
     /** 播放结束后自动清空该集磁盘缓存。 */
     val cacheClearOnFinish: Boolean = false,
     val heroMode: HeroMode = HeroMode.Auto,
@@ -280,6 +304,9 @@ class AppSettings(private val context: Context) {
         val cacheMemorySeconds = intPreferencesKey("cache_memory_seconds")
         val cacheDiskGb = intPreferencesKey("cache_disk_gb")
         val musicCacheMb = intPreferencesKey("music_cache_mb")
+        val wifiExitEnabled = booleanPreferencesKey("wifi_exit_enabled")
+        val wifiExitSsid = stringPreferencesKey("wifi_exit_ssid")
+        val wifiExitArmed = booleanPreferencesKey("wifi_exit_armed")
         val cacheClearOnFinish = booleanPreferencesKey("cache_clear_on_finish")
         val tabs = stringSetPreferencesKey("nav_tabs")
         val navPosition = stringPreferencesKey("nav_position")
@@ -320,6 +347,9 @@ class AppSettings(private val context: Context) {
         cacheMemorySeconds = this[Keys.cacheMemorySeconds] ?: 1200,
         cacheDiskGb = this[Keys.cacheDiskGb] ?: 10,
             musicCacheMb = this[Keys.musicCacheMb] ?: 2048,
+        wifiExitEnabled = this[Keys.wifiExitEnabled] ?: false,
+        wifiExitSsid = this[Keys.wifiExitSsid] ?: "",
+        wifiExitArmed = this[Keys.wifiExitArmed] ?: false,
         cacheClearOnFinish = this[Keys.cacheClearOnFinish] ?: false,
         tabs = this[Keys.tabs],
         navPosition = enumOr(this[Keys.navPosition], NavPosition.Side),
@@ -350,6 +380,16 @@ class AppSettings(private val context: Context) {
 
     /** 用户口径（#39）音乐缓存大小（MB），与视频缓存完全独立。 */
     suspend fun setMusicCacheMb(value: Int) = context.settingsDataStore.edit { it[Keys.musicCacheMb] = value }
+
+    /** 用户口径（#74）离开指定 WiFi 且正在放歌时彻底退出。 */
+    suspend fun setWifiExitEnabled(value: Boolean) =
+        context.settingsDataStore.edit { it[Keys.wifiExitEnabled] = value }
+
+    suspend fun setWifiExitSsid(value: String) =
+        context.settingsDataStore.edit { it[Keys.wifiExitSsid] = value }
+
+    suspend fun setWifiExitArmed(value: Boolean) =
+        context.settingsDataStore.edit { it[Keys.wifiExitArmed] = value }
     suspend fun setCacheClearOnFinish(value: Boolean) = context.settingsDataStore.edit { it[Keys.cacheClearOnFinish] = value }
 
     suspend fun setAutoUpdate(value: Boolean) = context.settingsDataStore.edit { it[Keys.autoUpdate] = value }
