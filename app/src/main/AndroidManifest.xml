@@ -10,6 +10,12 @@
         没有它就只会拿到 `<unknown ssid>`。
     -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!--
+        Android 12+ 的硬性要求：申请 FINE 必须同时声明 COARSE，
+        否则 lint 直接报错（CoarseFineLocation）导致构建失败。
+        CI 实况 45930117075：Lint found 1 error ... aborting build。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- 投屏: SSDP discovery of DLNA renderers on the Wi-Fi. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
