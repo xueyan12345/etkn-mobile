@@ -266,6 +266,19 @@ class MusicService : MediaLibraryService() {
      * `MediaSessionService` 被 MediaButtonReceiver 拉起时会调 `onStartCommand`，
      * 这里读 intent 的 `EXTRA_KEY_EVENT` 拿到 keycode。
      */
+    /**
+     * 用户口径（#58）**调试输出同时写文件**，因为这台机器上 `logcat` 抓不到本 App 的日志
+     * （缓冲区被系统吞掉，实测 `logcat -d` 计数恒为 0）。
+     * 写到 `filesDir/next-debug.log`，用 `adb shell run-as ... cat` 就能读。
+     */
+    private fun dbg(msg: String) {
+        android.util.Log.i("ETKN-Music", msg)
+        runCatching {
+            val f = java.io.File(filesDir, "next-debug.log")
+            f.appendText("${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())} $msg\n")
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val keyEvent = intent?.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT)
         val keyCode = keyEvent?.keyCode
@@ -657,15 +670,55 @@ class MusicService : MediaLibraryService() {
                  * `onStartCommand` 那边已有 2 秒去重窗口（#40），
                  * 不会重复；`systemNext/systemPrevious` 内部也只在"真的在播"时切歌。
                  */
+                /**
+                 * 用户口径（2026-11-27，#58）**对照实验：只用最纯粹的 seek，不做任何额外动作**。
+                 *
+                 * 已经排除了：
+                 * ```
+                 * ① 全仓库只有 1 处 seekToNextMediaItem
+                 * ② onPlayerCommandRequest 只被调用 1 次
+                 * ③ onStartCommand 在队列非空时已完全跳过（#56）
+                 * ④ 已去掉多余的 prepare()
+                 * 但 idx 仍然 418 → 420 → 422（每次跨 2）
+                 * ```
+                 * 剩下的可能性只有两个：
+                 * ```
+                 * A. Media3 在返回值之外又执行了一次
+                 * B. 队列里本来就有重复项（相邻两条是同一首歌的两个版本）
+                 * ```
+                 * 这次直接调 player.seekToNextMediaItem()（不经 systemNext 那层包装），
+                 * 并打出切歌前后的 idx + id，一次就能判定。
+                 */
                 Player.COMMAND_SEEK_TO_NEXT,
                 Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                -> applicationContext.graph.scope.launch {
-                    runCatching { music.systemNext() }
+                -> {
+                    dbg("cmd=NEXT 进入")
+                    val p = applicationContext.graph.music.player
+                    val beforeIdx = p.currentMediaItemIndex
+                    val beforeId = p.currentMediaItem?.mediaId
+                    val nextId = p.getMediaItemAt(beforeIdx + 1).mediaId
+                    val nextNextId = runCatching {
+                        p.getMediaItemAt(beforeIdx + 2).mediaId
+                    }.getOrNull()
+                    dbg(
+                        "NEXT: before idx=$beforeIdx id=$beforeId 期望next=$nextId 再下一个=$nextNextId",
+                    )
+                    p.seekToNextMediaItem()
+                    dbg(
+                        "NEXT: after  idx=${p.currentMediaItemIndex} id=${p.currentMediaItem?.mediaId}",
+                    )
                 }
                 Player.COMMAND_SEEK_TO_PREVIOUS,
                 Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                -> applicationContext.graph.scope.launch {
-                    runCatching { music.systemPrevious() }
+                -> {
+                    val p = applicationContext.graph.music.player
+                    dbg(
+                        "PREV: before idx=${p.currentMediaItemIndex} id=${p.currentMediaItem?.mediaId}",
+                    )
+                    p.seekToPreviousMediaItem()
+                    dbg(
+                        "PREV: after  idx=${p.currentMediaItemIndex} id=${p.currentMediaItem?.mediaId}",
+                    )
                 }
                 Player.COMMAND_SEEK_TO_MEDIA_ITEM -> {
                     /** 指定项跳转不做特殊处理。 */
