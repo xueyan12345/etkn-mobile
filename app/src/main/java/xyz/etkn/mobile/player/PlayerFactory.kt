@@ -273,26 +273,51 @@ object PlayerFactory {
              * 原来 `setBufferDurationsMs(10_000, 60_000, 800, 1_500)`。
              * 参数含义 = (最小缓冲, **最大缓冲**, 起播缓冲, 重缓冲后起播)。
              *
-             * 实测证据（adb `dumpsys media_session`，同一首歌播了两遍）：
-             * ```
-             * buffered position  78071 → 131289 → 183459
-             * 78071  = 78 秒
-             * 131289 = 131 秒   ← 一次跨 53 秒，正好撞 60 秒上限
-             * 183459 = 183 秒（全长）
-             * ```
-             * 也就是说：播到 78 秒时 Exo 停止往下读，等播放位置推进到约 71 秒
-             * 才继续读下一段 —— 整首歌是「边播边下」，播完才整首落盘。
+             * ## 实测：只改时间上限，不会整首缓存
              *
-             * 用户要的是「这首播完，整首就在本地；下一首也提前备好」，
-             * 所以把最大缓冲提到 **10 分钟**（覆盖任何单曲，超长无损也不会卡住），
-             * 让 Exo 一次性把整首歌读完写进 SimpleCache。
+             * 用户实测反馈「他不会把整首都缓存」，adb 抓的数据证实了：
+             * ```
+             * 清空缓存后播一首没缓存过的歌（3:19 = 199 秒）
+             * T+5s    buffered = 66037   ← 66 秒
+             * T+50s   buffered = 66037   ← 50 秒过去一动不动
+             * 流量只涨了 4MB，然后就停了
+             * ```
+             * 而已经缓存过的歌显示 `buffered = 183459`（全长）——
+             * 那是**缓存命中直接读磁盘**，不是"一次拉满"。我把这两件事看混过一次。
              *
-             * 不设成 `C.TIME_UNSET`（无限）：那样播超长音频时会把内存堆吃满
-             * （视频侧踩过 400MB 直接 OOM 的坑）。
+             * ## 真正的第二个闸门：targetBufferBytes
+             *
+             * `DefaultLoadControl` 有三道限制，谁先到谁停：
+             * ```
+             * ① 时间上限  setBufferDurationsMs(max)          ← 已改 600 秒
+             * ② 字节上限  setTargetBufferBytes(...)          ← 没设，用默认
+             * ③ 优先级    setPrioritizeTimeOverSizeThresholds
+             * ```
+             * 默认 `targetBufferBytes = C.LENGTH_UNSET` 时，Exo 按轨道估算一个很小的值
+             * （视频侧的注释记录过：默认估算只有几十 MB，所以当年"永远缓存不到 400MB"）。
+             * 音频同样卡在这 —— 66 秒正好是那个估算值先到。
+             *
+             * ## 修法
+             *
+             * 照视频侧（`PlayerFactory` 视频分支）的做法，三件事一起配：
+             * ```
+             * · 时间上限 600 秒（覆盖任何单曲）
+             * · 字节上限 96MB（远大于单曲体积：320kbps × 10 分钟 ≈ 24MB，
+             *   无损 FLAC 约 100MB 一首，取 96MB 兼顾；超长音频也不会撑爆 256MB 堆）
+             * · prioritizeTimeOverSizeThresholds = true
+             *   → 时间优先，字节只是防爆护栏，不会因为内存估算偏小就提前停
+             * ```
              */
             .setLoadControl(
                 DefaultLoadControl.Builder()
-                    .setBufferDurationsMs(10_000, 600_000, 800, 1_500)
+                    .setBufferDurationsMs(
+                        /* min */ 10_000,
+                        /* max */ 600_000,
+                        /* forPlayback */ 800,
+                        /* afterRebuffer */ 1_500,
+                    )
+                    .setTargetBufferBytes(96 * 1024 * 1024)
+                    .setPrioritizeTimeOverSizeThresholds(true)
                     .build(),
             )
             .setAudioAttributes(
