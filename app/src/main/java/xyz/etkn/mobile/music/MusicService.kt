@@ -85,7 +85,8 @@ class MusicService : MediaSessionService() {
                 override fun onPlaybackResumption(
                     mediaSession: MediaSession,
                     controller: MediaSession.ControllerInfo,
-                ) = this@MusicService.onPlaybackResumption(mediaSession, controller)
+                    isForPlayback: Boolean,
+                ) = this@MusicService.onPlaybackResumption(mediaSession, controller, isForPlayback)
             })
             .build()
     }
@@ -112,9 +113,10 @@ class MusicService : MediaSessionService() {
      * App 关闭时也亮着 —— 用户明确说不需要，且它导致过"点一次跳两首"。
      * `MediaSession.Callback.onPlaybackResumption` 就够蓝牙唤醒用了。
      */
-    override fun onPlaybackResumption(
+    private fun onPlaybackResumption(
         mediaSession: MediaSession,
         controller: MediaSession.ControllerInfo,
+        isForPlayback: Boolean,
     ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
         val music = applicationContext.graph.music
         val remembered = music.remembered.value
