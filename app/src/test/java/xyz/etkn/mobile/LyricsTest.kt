@@ -56,20 +56,28 @@ class LyricsTest {
     }
 
     /**
-     * 用户口径（#57）**作词/作曲/歌名行不能当歌词显示**。
+     * 用户口径（2026-11-27，#72）**歌词文件原样显示，制作信息和标题行都保留**。
      *
-     * 实测「天外来物」开头：
+     * 用户原话（连纠正五次）：
      * ```
-     * [00:00.00]天外来物 - 薛之谦
-     * [00:06.03]词：薛之谦
-     * [00:12.06]曲：罗小黑
-     * [00:18.09]你降落的 太突然了
+     * 「不要过滤」
+     * 「人家歌词里面的信息你过滤干啥」
+     * 「过滤了之后不就空白了吗」
+     * 「这种信息留着」
+     * 「我只要过滤歌词里面空行的」
      * ```
-     * 这三行要是不过滤，前 18 秒界面上全是制作信息，
-     * 看起来就像歌词"迟迟不出来"。
+     *
+     * 这条用例在 #57 曾断言「过滤制作信息」，现在改回来：
+     * ```
+     * [00:00.00]天外来物 - 薛之谦   ← 保留
+     * [00:06.03]词：薛之谦          ← 保留
+     * [00:12.06]曲：罗小黑          ← 保留
+     * [00:18.09]你降落的 太突然了    ← 保留
+     * ```
+     * 过滤掉会让开头十几秒变成空白，用户看到的就是「没歌词」。
      */
     @Test
-    fun dropsCreditsAndTitleLines() {
+    fun keepsCreditsAndTitleLines() {
         val lyrics = Lyrics.parse(
             """
             [ti:天外来物]
@@ -81,8 +89,11 @@ class LyricsTest {
             """.trimIndent(),
         )
         assertTrue(lyrics.synced)
-        assertEquals(listOf("你降落的 太突然了", "我刚好呢 又路过了"), lyrics.lines.map { it.text })
-        assertEquals(18_090L, lyrics.lines.first().timeMs)
+        assertEquals(
+            listOf("天外来物 - 薛之谦", "词：薛之谦", "曲：罗小黑", "你降落的 太突然了", "我刚好呢 又路过了"),
+            lyrics.lines.map { it.text },
+        )
+        assertEquals(0L, lyrics.lines.first().timeMs)
     }
 
     @Test
