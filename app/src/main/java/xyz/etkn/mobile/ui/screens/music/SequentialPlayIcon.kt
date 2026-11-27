@@ -9,29 +9,32 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
 /**
- * 用户口径（2026-11-27，#47）**「顺序播放」图标要和另外三个是一套**。
+ * 「顺序播放」图标：两条同向的横向箭头。
+ *
+ * ## 用户口径（2026-11-27，#65）**三个箭头改成两个，三个有点挤**
  *
  * 用户原话：
- *  「3个横向箭头确实是这意思，但是你搞的有点太丑了，
- *    明显跟其他3个它就不是一套，好像就比它仨高，大小好像不太一样」
- *
- * 第一版哪里不对（对照 Material Rounded 的 Repeat/RepeatOne/Shuffle）：
  * ```
- * ① 图形在 y = 5 / 12 / 19 铺满整个 24 视口 → 视觉填满度比其它三个高，
- *    看起来"更高更胖"。Material 图标实际只占 y≈6~18、x≈2~22 的安全区。
- * ② 横线从 x=3 起、箭头到 x=17 收 —— 右边留白过少，视觉重心偏右。
- * ③ 箭头斜边长 3、张角偏窄，和 Repeat 那种饱满的箭头不一致。
+ * 「左下角点三个箭头你给他变成两个箭头，3个箭头有点挤」
  * ```
  *
- * 现在按 Material Rounded 的几何规范重画：
+ * 演进过程：
  * ```
- * 安全区：y 收进 6~18，x 收进 4~19（和其它图标同样的呼吸感）
- * 三条箭头 y = 7 / 12 / 17（间距 5，视觉重心居中）
- * 横线 x: 4 → 15，箭头尖 x = 18，斜边 ±2.6（比第一版更饱满）
- * 描边 2f 圆头圆角 —— 与 Material 图标的笔画粗细一致
+ * 第 1 版：y=5/12/19 三条，铺满 24 视口 → 用户「太丑，跟其他3个不是一套，比它们高」
+ * 第 2 版：y=7/12/17 三条，收进安全区   → 视觉重量对齐了，但用户仍嫌「有点挤」
+ * 第 3 版：y=8/16 两条（本版）          → 笔画更舒展，跟 Repeat/Shuffle 一样透气
  * ```
- * 上线验收方法：和 Repeat/RepeatOne/Shuffle 并排截图，
- * 量四者图形外接框高度差应 < 1dp、笔画粗细一致。
+ *
+ * 几何规范（对齐 Material Rounded 的 Repeat / RepeatOne / Shuffle）：
+ * ```
+ * 安全区：y 收进 6~18、x 收进 4~19（同其它三个图标的呼吸感）
+ * 两条箭头 y = 8 / 16（间距 8，重心正好在 12）
+ * 横线 x: 5 → 14.5；箭头尖 x = 18；斜边 ±3.4（比三条版更饱满）
+ * 描边 2f 圆头圆角 —— 与 Material 图标笔画粗细一致
+ * ```
+ *
+ * 验收方法：和 Repeat/RepeatOne/Shuffle 并排截图，
+ * 量四者图形外接框高度差 < 1dp、笔画粗细一致、留白比例相近。
  */
 val SequentialPlayIcon: ImageVector by lazy {
     ImageVector.Builder(
@@ -41,8 +44,8 @@ val SequentialPlayIcon: ImageVector by lazy {
         viewportWidth = 24f,
         viewportHeight = 24f,
     ).apply {
-        /** 三条同向右箭头：横线 + 饱满的三角箭头头部。 */
-        listOf(7f, 12f, 17f).forEach { y ->
+        /** 两条同向右箭头：横线 + 饱满的三角箭头头部。 */
+        listOf(8f, 16f).forEach { y ->
             path(
                 stroke = SolidColor(Color.Black),
                 strokeLineWidth = 2f,
@@ -52,10 +55,10 @@ val SequentialPlayIcon: ImageVector by lazy {
                 /** 横线：左边距 5（和 Material 图标左留白一致）。 */
                 moveTo(5f, y)
                 lineTo(14.5f, y)
-                /** 箭头：尖端 (18, y)，两笔斜边长 3.5，张角约 50°。 */
-                moveTo(14.5f, y - 3.2f)
+                /** 箭头：尖端 (18, y)，两笔斜边长 3.4，张角约 52°。 */
+                moveTo(14.5f, y - 3.4f)
                 lineTo(18f, y)
-                lineTo(14.5f, y + 3.2f)
+                lineTo(14.5f, y + 3.4f)
             }
         }
     }.build()

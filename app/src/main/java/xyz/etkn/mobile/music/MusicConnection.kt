@@ -916,7 +916,22 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     }
     fun pause() { _player?.pause() }
     fun next() { _player?.seekToNextMediaItem() }
-    fun previous() { _player?.let { if (it.currentPosition > 3_000) it.seekTo(0) else it.seekToPreviousMediaItem() } }
+    /**
+     * 用户口径（2026-11-27，#66）**「上一首」就是上一首，不要重播本曲**。
+     *
+     * 用户原话：
+     *  「歌曲播放一半的时候，点击上一首，不会跳到上一首，会直接这首歌重播」
+     *
+     * 原实现（抄的常见播放器惯例）：
+     * ```
+     * if (currentPosition > 3000) seekTo(0) else seekToPreviousMediaItem()
+     * ```
+     * 播过 3 秒就回到本曲开头 —— 用户明确不要这个，要直接切上一首。
+     *
+     * 现在：无条件 `seekToPreviousMediaItem()`。
+     * 想重播本曲有进度条可拖，不需要占用「上一首」这个键。
+     */
+    fun previous() { _player?.seekToPreviousMediaItem() }
     fun seekTo(ms: Long) { _player?.seekTo(ms) }
     fun skipTo(index: Int) { _player?.seekTo(index, 0) }
     fun toggleShuffle() { _player?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled } }
