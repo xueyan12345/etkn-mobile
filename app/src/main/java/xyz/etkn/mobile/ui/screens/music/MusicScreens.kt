@@ -109,6 +109,7 @@ import xyz.etkn.mobile.ui.nav.MusicSearchRoute
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.rounded.DeleteOutline
 
 @Composable
 fun MusicHomeScreen() {
@@ -313,6 +314,18 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
      */
     val sortedList by vm.sortedTracks.collectAsStateWithLifecycle()
     val allLoaded by vm.allLoaded.collectAsStateWithLifecycle()
+
+    /**
+     * 用户口径（#103）**队列 id 列表在函数顶层订阅**。
+     *
+     * `collectAsStateWithLifecycle` / `LaunchedEffect` 都是 @Composable，
+     * 不能写在 LazyVerticalGrid 的 content lambda（那是 LazyGridScope，不是 Composable）。
+     * 上一版我放在 items 前面仍然在 scope 内，编译会报
+     * 「@Composable invocations can only happen from the context of a @Composable function」。
+     */
+    val graph = LocalContext.current.graph
+    val musicState by graph.music.state.collectAsStateWithLifecycle()
+    val queueIds = musicState.queue.map { it.id }
     /**
      * 用户口径（2026-11-27，#17）**歌曲 tab 不做滚动分页**。
      *
@@ -462,7 +475,42 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
             ordered.forEach { entry ->
                 if (entry.isAudio && !entry.isMusicGroup) {
                     item(span = { GridItemSpan(maxLineSpan) }, key = "t-" + entry.id, contentType = "track") {
-                        TrackRow(entry, onClick = { vm.play(entry) }, horizontalPadding = 0.dp)
+                        /**
+                         * 用户口径（2026-11-27，#103）**这一页（601 首播放列表）也要垃圾桶，不要三点**。
+                         *
+                         * 用户原话：
+                         * ```
+                         * 「删除按钮，三个点都在，你拿我说话当放屁啊」
+                         * ```
+                         * 上一轮我只改了 NowPlaying 里的两个队列面板，
+                         * 漏了这一页 —— 用户截的就是这里。
+                         *
+                         * 语义：这一行代表当前播放队列里的一首，点了从队列移除。
+                         */
+                        TrackRow(
+                            entry,
+                            onClick = { vm.play(entry) },
+                            horizontalPadding = 0.dp,
+                            trailing = {
+                                val queueIndex = queueIds.indexOfFirst { it == entry.id }
+                                if (queueIndex >= 0) {
+                                    IconButton(
+                                        onClick = { graph.music.removeAt(queueIndex) },
+                                        modifier = Modifier.size(40.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.DeleteOutline,
+                                            "从播放列表移除",
+                                            modifier = Modifier.size(20.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                } else {
+                                    /** 不在队列里就留空，保持行高一致（用户要的是「不要三点」，不是加新按钮）。 */
+                                    Spacer(Modifier.size(40.dp))
+                                }
+                            },
+                        )
                     }
                 } else {
                     item(key = "g-" + (entry.key ?: entry.id), contentType = "group") {
