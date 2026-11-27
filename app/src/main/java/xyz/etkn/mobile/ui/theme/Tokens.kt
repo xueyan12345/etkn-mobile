@@ -218,8 +218,15 @@ object Spacing {
      * 112 → 224dp（正好一倍），高度按 16:9 自动变 126dp。
      * 这两处共用同一个常量（EpisodeShelf 的分集卡、DetailScreen 的章节卡），
      * 改一处两边同时生效。
+     *
+     * 用户口径（2026-11-27，#110）**再缩到 7/10**：
+     * ```
+     * 「如果现在的大小是10的话，给我改成7」
+     * 「就是按照这个比例改成现在的7/10」
+     * ```
+     * 224 × 0.7 = 157dp，高度按 16:9 变 88dp。
      */
-    val episodeCard: Dp = 224.dp
+    val episodeCard: Dp = 157.dp
 
     val dockBottomInset: Dp = 104.dp
     /** Tablet side dock: its width, and the space tab pages leave for it (margin + dock + gap). */
