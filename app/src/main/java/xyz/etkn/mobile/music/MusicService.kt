@@ -1,5 +1,6 @@
 package xyz.etkn.mobile.music
 
+import androidx.media3.common.Player
 import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.datasource.DataSourceBitmapLoader
@@ -78,10 +79,69 @@ class MusicService : MediaSessionService() {
             .setBitmapLoader(bitmaps)
             .setCallback(object : MediaSession.Callback {
                 /**
-                 * 用户口径（#68）**只实现蓝牙唤醒需要的这一个回调**。
-                 * 其余（onConnect / onPlayerCommandRequest / 内容库）一律不实现，
-                 * 交给 MediaSession 默认处理 —— 这样"下一首"只会执行一次。
+                 * 用户口径（2026-11-27，#69）**蓝牙唤醒要能真的开始播**。
+                 *
+                 * 实测（adb，force-stop 后按 KEYCODE_MEDIA_NEXT）：
+                 * ```
+                 * MediaSessionStack: getMediaButtonSession() mMediaButtonSession=xyz.etkn.mobile/.../572
+                 * onSessionPlaybackStateChanged: playbackState=PAUSED(2)
+                 * ```
+                 * Session 建起来了、按键也路由到了我们，但状态停在 PAUSED ——
+                 * **没人执行"播放"**。`onPlaybackResumption` 没被调用，
+                 * 那个回调只在系统主动问「你要播什么」时才触发，
+                 * 这次系统只是把按键转发给已存在的 Session。
+                 *
+                 * 所以要在这里接住「播放」类命令：没在播就起播。
+                 * 上一首/下一首**不在这里处理** —— 交给 MediaSession 默认逻辑，
+                 * 保证"点一次只切一首"（这是之前反复踩的坑）。
                  */
+                override fun onPlayerCommandRequest(
+                    mediaSession: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    playerCommand: Int,
+                ): Int {
+                    val music = applicationContext.graph.music
+                    val p = music.player
+                    val isPlayPause = playerCommand == Player.COMMAND_PLAY_PAUSE
+                    val isSeekNext = playerCommand == Player.COMMAND_SEEK_TO_NEXT ||
+                        playerCommand == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM
+
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "onPlayerCommandRequest: cmd=$playerCommand playing=${p.isPlaying} " +
+                            "idx=${p.currentMediaItemIndex} count=${p.mediaItemCount}",
+                    )
+
+                    /**
+                     * 用户口径（2026-11-27，#27）**没在播时，「播放」和「下一首」都等于开始播**。
+                     *
+                     * 用户原话：
+                     *  「我要求是 APP 如果没在后台的话，播放和下一曲都要唤醒 APP 的音乐播放的开始播放，
+                     *    下一曲这个按键也是播放，只有真的在播放的时候，下一曲才是下一曲」
+                     *
+                     * 所以：
+                     * ```
+                     * 没在播 + PLAY_PAUSE  → resumeRemembered()（接着上次进度播）
+                     * 没在播 + NEXT        → 同上（不跳歌，直接开始播）
+                     * 正在播 + PLAY_PAUSE  → 返回 -1，交给默认逻辑（暂停）
+                     * 正在播 + NEXT        → 返回 -1，交给默认逻辑（切下一首，只切一首）
+                     * ```
+                     * 关键：只在「没在播」时才自己动手，其余全部放手给 Media3 ——
+                     * 这样既解决了冷启动唤醒，又不会重复执行导致"点一次跳两首"。
+                     */
+                    if (!p.isPlaying && (isPlayPause || isSeekNext)) {
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "未在播 + 媒体键(${if (isSeekNext) "NEXT" else "PLAY"}) → 开始播放",
+                        )
+                        applicationContext.graph.scope.launch {
+                            runCatching { music.resumeRemembered() }
+                        }
+                        return androidx.media3.session.SessionResult.RESULT_SUCCESS
+                    }
+                    return -1
+                }
+
                 override fun onPlaybackResumption(
                     mediaSession: MediaSession,
                     controller: MediaSession.ControllerInfo,
