@@ -187,15 +187,29 @@ object Spacing {
     val posterGap: Dp = 12.dp
 
     /** 继续观看横卡：参考图量到 243×140px → 167×96dp（16:9 = 170×96，取实测 167）。 */
-    val wideCard: Dp = 167.dp
-    val wideCardHeight: Dp = 96.dp
+    /**
+     * 用户口径（2026-11-27，#112）**首页继续观看图片放大到 1.1 倍**：
+     * ```
+     * 「首页的继续观看图片的大小给我改成1.1倍」
+     * ```
+     * 167 × 1.1 = 184dp（16:9 → 高 103dp）。
+     */
+    val wideCard: Dp = 184.dp
+    val wideCardHeight: Dp = 103.dp
 
-    /** 平板同一个值（#101）。 */
-    val wideCardWide: Dp = 167.dp
+    /** 平板同一个值（#101 / #112 一同放大）。 */
+    val wideCardWide: Dp = 184.dp
 
     /** 媒体库入口卡：与继续观看同一套尺寸（都是横版 16:9）。 */
-    val libraryCard: Dp = 167.dp
-    val libraryCardWide: Dp = 167.dp
+    /**
+     * 用户口径（2026-11-27，#111）**首页媒体库图片放大到 1.05 倍**：
+     * ```
+     * 「首页的媒体库的图片大小，给我改成现在的1.05倍」
+     * ```
+     * 167 × 1.05 = 175dp。平板同一个值。
+     */
+    val libraryCard: Dp = 175.dp
+    val libraryCardWide: Dp = 175.dp
 
     /** 详情页季卡：165×203px → 113×140dp。 */
     val seasonCard: Dp = 113.dp
