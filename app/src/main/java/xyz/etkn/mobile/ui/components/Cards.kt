@@ -364,11 +364,24 @@ fun WideCard(
                 )
             }
         }
-        // 用户口径（2026-11-23 照参考图）：剧名居中。
+        /**
+         * 用户口径（2026-11-27，#118）**继续观看的剧名跟下面国产剧集海报保持一致**。
+         *
+         * 用户原话：
+         * ```
+         * 「继续观看画圆圈的文字，我想跟下边的文字不一样，是没加粗还是怎么的」
+         * 「就是把继续观看的变成跟下面的一致」
+         * 「不删东西，就是字号和字体的粗细跟下边的保持一致」
+         * ```
+         *
+         * 原来：bodyMedium + FontWeight.SemiBold（加了粗）
+         * 海报：titleSmall（没加 fontWeight）
+         * 两处层级写法不同 → 看着不统一。
+         * 现在统一到海报那套：titleSmall，不再手写 fontWeight。
+         */
         Text(
             item.seriesName ?: item.name,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.titleSmall,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 2.dp, end = 2.dp),
@@ -525,10 +538,13 @@ fun PersonCard(
             person.name,
             placeholder = Icons.Rounded.Person,
         )
+        /**
+         * 用户口径（#118）**演员名去掉手写的 SemiBold**，跟季卡/海报同一套。
+         * 三处（剧集卡/季卡/演员卡）现在都是「style 决定字号+字重」，不再各处加粗。
+         */
         Text(
             person.name,
             style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,

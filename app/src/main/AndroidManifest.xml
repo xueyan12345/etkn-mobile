@@ -228,26 +228,6 @@
                     它让媒体键在进程刚启动时就有一个静态入口可接命令。
                 -->
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
-                <!--
-                    用户口径（2026-11-27，#115）**验证 ①：OPPO 车联会不会认我们**。
-
-                    背景：OPPO 系统音乐在 CarLife 车机上能显示三行歌词、能点开成整页界面，
-                    它走的是 OPPO 自家的 UPK 卡片协议，不是 MediaSession。
-
-                    adb 实测 com.oplus.ocar 的 queriesIntents 里探测两个 action：
-                    ```
-                    · android.media.browse.MediaBrowserService   ← 我们已经注册
-                    · com.oplus.upk.action.UPK_CARD              ← 系统音乐走这条
-                    ```
-                    所以先补上 UPK_CARD，看 ocar 会不会把 ETKN 列进「可投屏 App」候选。
-
-                    这一步是纯验证性质的注册：Media3 不认识这些 action，
-                    Service 照常以 MediaSessionService 启动，不影响现有播放/媒体键。
-                    如果 ocar 没反应，就把这三行删掉，回滚成本为零。
-                -->
-                <action android:name="com.oplus.upk.action.UPK_CARD" />
-                <action android:name="com.oplus.ocar.action.MEDIA_CARD" />
-                <action android:name="com.heytap.opluscarlink.action.MEDIA" />
             </intent-filter>
         </service>
     </application>

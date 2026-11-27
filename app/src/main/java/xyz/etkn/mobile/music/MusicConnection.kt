@@ -978,25 +978,38 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
     private fun create(): ExoPlayer {
         val upstream = PlayerFactory.dataSource(graph.http.media, graph.identity.userAgent)
-        val resolving = ResolvingDataSource.Factory(upstream) { spec -> resolve(spec) }
         /**
-         * 用户口径（2026-11-27，#39）**音乐走自己的独立缓存**。
+         * 用户口径（2026-11-27，#116）**音乐缓存必须能命中，不能每次都回源**。
          *
-         * 接在 ResolvingDataSource 之后：直链由它解析出真实 URL，
-         * MusicCache 用解析后的地址做 cache key（`spec.key ?: uri`），
-         * 播过的歌落到 `filesDir/musiccache`，下次直接读本地 → 秒播。
-         */
-        /**
-         * 配额取「我的 → 播放 → 音乐缓存」，和视频磁盘缓存完全分开（#39）。
+         * 用户实测（adb 抓的流量与缓冲点）：
+         * ```
+         * 快退到开头 → buffered position 从 183459 掉回 82425
+         *             → 已下过的部分也失效，重新拉
+         * 40 秒流量涨了约 1 GB
+         * 「缓冲条一会满一会不满，网速一直跑」
+         * ```
          *
-         * AppSettings 只暴露 `flow`（异步），这里在创建播放器时要同步拿值，
-         * 所以直接读同一个 DataStore 生效后的 SharedPreferences 快捷方式：
-         * 用 `runBlocking` 太重，改成 MusicCache 内部自己缓存配额，
-         * 设置变更后由 `MusicCache.setLimit()` 更新。
+         * 根因：**缓存和直链解析的顺序错了**。
+         * ```
+         * 原来：upstream → ResolvingDataSource(换 token 直链) → MusicCache
+         *        ↑ 缓存看到的是带 token 的真实 URL
+         *        每次播放 token 都变 → cache key 每次不同 → 永远未命中
+         *
+         * 现在：upstream → MusicCache(用 etkn-music://track/<id> 做 key) → ResolvingDataSource
+         *        ↑ 缓存 key 是稳定的 itemId，播过一次就命中
+         * ```
+         *
+         * `MediaItem` 的 URI 本来就是 `etkn-music://track/<id>`（见 toMediaItem），
+         * 这个地址跨会话恒定，正是理想的 cache key。
+         *
+         * 注意：`CacheDataSource` 会把上游请求的 DataSpec 原样传下去，
+         * 所以 `ResolvingDataSource` 依然能拿到 `etkn-music://` 地址并解析成真实直链，
+         * 两者顺序对调不破坏解析逻辑。
          */
-        val musicCacheMb = MusicCache.limitMb
-        val factory = MusicCache.dataSource(context, resolving, musicCacheMb)
-        val player = PlayerFactory.music(context, factory)
+        val cacheKey = MusicCache.limitMb
+        val cached = MusicCache.dataSource(context, upstream, cacheKey)
+        val resolving = ResolvingDataSource.Factory(cached) { spec -> resolve(spec) }
+        val player = PlayerFactory.music(context, resolving)
         /**
          * 用户口径（2026-11-27，#83）**播放进度必须定期落盘**。
          *

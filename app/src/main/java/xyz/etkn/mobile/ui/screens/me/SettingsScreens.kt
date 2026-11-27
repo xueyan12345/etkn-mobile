@@ -498,7 +498,7 @@ private fun CacheSettings(settings: xyz.etkn.mobile.data.settings.Settings) {
             },
         ) { Text("去设置") }
     }
-    NumberRow("音乐缓存大小", settings.musicCacheMb, "MB", listOf(512, 1024, 2048, 4096, 8192, 16384)) {
+    NumberRow("音乐缓存大小", settings.musicCacheMb, "MB", listOf(512, 1024, 2048, 4096, 8192, 16384, 20480)) {
         /** 同时写进 MusicCache 的内存配额，播放器下次创建就用新值（#39）。 */
         xyz.etkn.mobile.music.MusicCache.setLimit(it)
         scope.launch { graph.settings.setMusicCacheMb(it) }

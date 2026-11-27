@@ -53,9 +53,16 @@ fun SectionHeader(
     ) {
         Text(
             title,
-            // 用户口径（2026-11-23）：字号取中间值 19sp（原来 22sp → 上一版 16sp 降过头）
-            style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp),
-            fontWeight = FontWeight.Bold,
+            /**
+             * 用户口径（2026-11-27，#117）**标题降到 17sp SemiBold**。
+             *
+             * 用户原话：「标题改成17」
+             *
+             * 配合胶囊提到 19sp Medium：胶囊比标题大 2sp（用户要的层级），
+             * 标题靠 SemiBold 字重维持"区块标题"的身份，不再是 19sp Bold 压全场。
+             */
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp),
+            fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = if (arrow) Modifier else Modifier.weight(1f),

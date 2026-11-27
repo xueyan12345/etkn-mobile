@@ -110,6 +110,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 
 @Composable
 fun MusicHomeScreen() {
@@ -176,7 +178,26 @@ fun MusicHomeScreen() {
                         horizontalArrangement = Arrangement.spacedBy(PillGap),
                     ) {
                         items(MusicTab.entries.toList()) { t ->
-                            PillToggle(checked = t == tab, onClick = { tab = t }) { Text(t.label) }
+                            PillToggle(checked = t == tab, onClick = { tab = t }) {
+                                /**
+                                 * 用户口径（2026-11-27，#117）**胶囊文字要够大够重**。
+                                 *
+                                 * 用户原话：
+                                 * ```
+                                 * 「最上面的4个钮上面的字甚至比那个最近听的四个字的标题还小，
+                                 *   这个不应该出现，整体很不协调，4个按钮里面的字肯定要加大加粗」
+                                 * 「胶囊改成19不行吗」→「标题改成17」
+                                 * ```
+                                 * 胶囊 19sp Medium（原来 16sp 常规，比 19sp Bold 的标题小一截），
+                                 * 标题降到 17sp SemiBold —— 胶囊比标题大 2sp，标题靠字重撑住。
+                                 */
+                                Text(
+                                    t.label,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontSize = 19.sp,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
                         }
                     }
                     Spacer(Modifier.width(8.dp))
@@ -354,7 +375,23 @@ private fun MusicListBody(route: MusicListRoute, header: String?, top: Dp = 0.dp
         paged.items.isEmpty() && folders.isEmpty() && paged.endReached -> MessageState("暂无音乐", icon = Icons.Rounded.MusicNote)
         else -> LazyVerticalGrid(
             state = grid,
-            columns = GridCells.Adaptive(140.dp),
+            /**
+                         * 用户口径（2026-11-27，#119）**歌手页一行四个，不改显示比例**。
+                         *
+                         * 用户原话：
+                         * ```
+                         * 「这个界面太不友好了，我现在用的是封面缩放比率是0.9，
+                         *   我想在不动缩放比率的情况下，把这一行两个变成一行四个」
+                         * ```
+                         *
+                         * 原来 `Adaptive(140.dp)`：0.9 倍率下屏宽 400dp，
+                         * 去掉左右边距剩 360dp，360/140 = 2.57 → 只能放 2 列。
+                         * 改成 90dp → 360/90 = 4 列，正是一行四个。
+                         *
+                         * 代价：头像从约 150dp 缩到 90dp，下方「7首 · 歌手名」那行
+                         * 放不下时会省略（用户接受，要的是一行四个）。
+                         */
+                        columns = GridCells.Adaptive(90.dp),
             contentPadding = PaddingValues(start = Etkn.space.screen, end = Etkn.space.screen, top = top, bottom = LocalBottomInset.current),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
