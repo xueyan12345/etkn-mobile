@@ -94,13 +94,13 @@ class MusicRecommendedViewModel(private val graph: AppGraph, private val parentI
          */
         viewModelScope.launch {
             val cached = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching { MusicHomeCache.read(graph.app, parentId) }.getOrNull()
+                runCatching { xyz.etkn.mobile.music.MusicHomeCache.read(graph.app, parentId) }.getOrNull()
             }
             if (cached != null && _state.value is Load.Loading) {
                 _state.value = Load.Ready(cached)
                 android.util.Log.i(
                     "ETKN-Music",
-                    "推荐页缓存命中：${cached.sections.size} 个分区",
+                    "推荐页缓存命中：latest=${cached.latest.size} recent=${cached.recent.size} frequent=${cached.frequent.size}",
                 )
             }
         }
@@ -115,7 +115,7 @@ class MusicRecommendedViewModel(private val graph: AppGraph, private val parentI
                     _state.value = Load.Ready(home)
                     /** 回写缓存，下次进来秒开。 */
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        runCatching { MusicHomeCache.write(graph.app, parentId, home) }
+                        runCatching { xyz.etkn.mobile.music.MusicHomeCache.write(graph.app, parentId, home) }
                     }
                 }
                 .onFailure { e ->
