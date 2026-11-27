@@ -8,6 +8,10 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import xyz.etkn.mobile.MainActivity
 import xyz.etkn.mobile.graph
+import com.google.common.collect.ImmutableList
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.launch
 
 /**
  * 音乐播放服务：托管一个 MediaSession，让播放能在后台继续，
@@ -72,10 +76,69 @@ class MusicService : MediaSessionService() {
         session = MediaSession.Builder(this, graph.music.player)
             .setSessionActivity(open)
             .setBitmapLoader(bitmaps)
+            .setCallback(object : MediaSession.Callback {
+                /**
+                 * 用户口径（#68）**只实现蓝牙唤醒需要的这一个回调**。
+                 * 其余（onConnect / onPlayerCommandRequest / 内容库）一律不实现，
+                 * 交给 MediaSession 默认处理 —— 这样"下一首"只会执行一次。
+                 */
+                override fun onPlaybackResumption(
+                    mediaSession: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                ) = this@MusicService.onPlaybackResumption(mediaSession, controller)
+            })
             .build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+    /**
+     * 用户口径（2026-11-27，#68）**蓝牙耳机按「下一首」要能唤醒并播放**。
+     *
+     * 用户原话：「蓝牙耳机触发下一首不能唤醒播放了」
+     *
+     * 是我上一版删过头了：媒体键在 App 已关闭时，系统会先拉起 Service，
+     * 然后**调用 `onPlaybackResumption` 问「你要播哪首」**。
+     * 上游 52 行的 `MediaSessionService` 没有实现它，
+     * 系统拿不到要播的内容，于是"唤醒了但不出声"。
+     *
+     * 这次只补最小实现，不重新引入之前那套 320 行的 MusicCallback：
+     * ```
+     * 有记忆 → 返回那一首 + 起播位置，并异步真正开始播
+     * 没记忆 → 返回空列表（系统不会拉起播放，符合预期）
+     * ```
+     *
+     * 为什么不开 `MediaLibraryService`：那个会让系统控制中心的按钮在
+     * App 关闭时也亮着 —— 用户明确说不需要，且它导致过"点一次跳两首"。
+     * `MediaSession.Callback.onPlaybackResumption` 就够蓝牙唤醒用了。
+     */
+    override fun onPlaybackResumption(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+    ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+        val music = applicationContext.graph.music
+        val remembered = music.remembered.value
+        android.util.Log.i(
+            "ETKN-Music",
+            "onPlaybackResumption: item=${remembered?.itemId} name=${remembered?.name} pos=${remembered?.positionMs}",
+        )
+        if (remembered == null) {
+            return Futures.immediateFuture(
+                MediaSession.MediaItemsWithStartPosition(ImmutableList.of(), 0, 0L),
+            )
+        }
+        /** 真正开始播（进主线程异步，避免阻塞系统回调）。 */
+        applicationContext.graph.scope.launch {
+            runCatching { music.resumeRemembered() }
+        }
+        return Futures.immediateFuture(
+            MediaSession.MediaItemsWithStartPosition(
+                ImmutableList.of(music.resumeMediaItem(remembered)),
+                0,
+                remembered.positionMs,
+            ),
+        )
+    }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = session?.player
