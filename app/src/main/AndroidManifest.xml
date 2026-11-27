@@ -25,14 +25,28 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
-    <application
+    <!--
+    用户口径（2026-11-27，#86）原图直接用，不要系统裁切放大。
+    用户原话：「A」—— 选原图原样、方角，不要系统圆角裁切。
+
+    之前用 @mipmap/ic_launcher（adaptive-icon XML）：
+        background = 原图
+        foreground = 全透明
+    系统渲染自适应图标时会对前景层缩放叠加，等效于把原图裁成圆角
+    并重新缩放 —— 桌面看到的主体就被放大了。
+
+    现在直接指向 @drawable/ic_launcher_plain（原图 PNG 1024x1024，
+    MD5 = 0da16416cf5b，未做任何像素处理）。系统原样显示，不裁不缩。
+    代价是图标方角。
+-->
+<application
         android:name=".EtknApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
         android:enableOnBackInvokedCallback="true"
-        android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher"
+        android:icon="@drawable/ic_launcher_plain"
+        android:roundIcon="@drawable/ic_launcher_plain"
         android:label="@string/app_name"
         android:largeHeap="false"
         android:networkSecurityConfig="@xml/network_security_config"
