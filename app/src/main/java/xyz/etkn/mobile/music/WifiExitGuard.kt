@@ -85,7 +85,8 @@ object WifiExitGuard {
         }
         callback = cb
         runCatching { cm.registerNetworkCallback(request, cb) }
-            .onFailure { android.util.Log.w("ETKN-WifiExit", "注册 WiFi 回调失败", it) }
+            .onSuccess { android.util.Log.i("ETKN-WifiExit", "✅ WiFi 回调已注册") }
+            .onFailure { android.util.Log.w("ETKN-WifiExit", "!! 注册 WiFi 回调失败", it) }
         scope.launch { syncArmed(context.applicationContext) }
     }
 
@@ -109,15 +110,41 @@ object WifiExitGuard {
      * `onIsPlayingChanged` 调进来（那里只加一行调用，不改其它逻辑）。
      */
     fun onPlaybackChanged(context: Context, playing: Boolean) {
-        val scope = job ?: return
+        /**
+         * 用户实测「WiFi 断掉，关闭 APP 不好使」→ 加日志把每一步的判定都打出来，
+         * 才知道是「监听没注册」还是「SSID 读不到」还是「没上膛」。
+         */
+        android.util.Log.i(
+            "ETKN-WifiExit",
+            "onPlaybackChanged: playing=$playing job=${job != null}",
+        )
+        val scope = job ?: run {
+            android.util.Log.w("ETKN-WifiExit", "!! 监听未启动（job == null）→ 开关可能没打开或 App 没重启")
+            return
+        }
         scope.launch {
             val s = context.graph.settings.flow.first()
+            android.util.Log.i(
+                "ETKN-WifiExit",
+                "判定: enabled=${s.wifiExitEnabled} target=「${s.wifiExitSsid}」armed=${s.wifiExitArmed}",
+            )
             if (!s.wifiExitEnabled) return@launch
             if (playing) {
                 val now = currentSsid(context)
-                if (now != null && now == s.wifiExitSsid && !s.wifiExitArmed) {
+                android.util.Log.i("ETKN-WifiExit", "当前 SSID=「$now」")
+                if (now == null) {
+                    android.util.Log.w(
+                        "ETKN-WifiExit",
+                        "!! 读不到 SSID —— 检查①位置权限是否授予 ②手机定位开关是否打开",
+                    )
+                } else if (now == s.wifiExitSsid && !s.wifiExitArmed) {
                     context.graph.settings.setWifiExitArmed(true)
-                    android.util.Log.i("ETKN-WifiExit", "已上膛：连着「$now」且在放歌")
+                    android.util.Log.i("ETKN-WifiExit", "✅ 已上膛：连着「$now」且在放歌")
+                } else if (now != s.wifiExitSsid) {
+                    android.util.Log.i(
+                        "ETKN-WifiExit",
+                        "当前 WiFi「$now」≠ 目标「${s.wifiExitSsid}」，不上膛",
+                    )
                 }
             } else if (s.wifiExitArmed) {
                 context.graph.settings.setWifiExitArmed(false)

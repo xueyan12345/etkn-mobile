@@ -94,6 +94,29 @@ class MusicService : MediaSessionService() {
             .build()
         /** 用户口径 #77：交给 WifiExitGuard 在退出前释放，卡片才会立刻消失。 */
         session?.let { MusicSessionHolder.attach(it) }
+
+        /**
+         * 用户口径（#74 修正）**监听也要挂在 Service 上**。
+         *
+         * 用户实测「WiFi 断掉，关闭 APP 不好使」。
+         * 只挂在 Application 上不够 —— App 切后台久一点，或被系统回收，
+         * ConnectivityManager 的进程内回调就没人响应了。
+         * MusicService 是前台服务（MediaSessionService），播放期间一定活着，
+         * 在这里再挂一份，断开时一定能收到。
+         * （WifiExitGuard.start 内部会先 stop 旧的，重复调用安全。）
+         */
+        runCatching {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(1_000L) {
+                    applicationContext.graph.settings.flow.first().wifiExitEnabled
+                } ?: false
+            }
+        }.getOrDefault(false).let { on ->
+            if (on) {
+                runCatching { WifiExitGuard.start(applicationContext) }
+                android.util.Log.i("ETKN-WifiExit", "Service 侧监听已启动=$on")
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session

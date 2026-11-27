@@ -778,8 +778,18 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (startedId != null) report("Progress", completed = false)
-                /** 用户口径 #74：维护 WiFi 退出的「上膛」状态（唯一新增的一行）。 */
-                runCatching { WifiExitGuard.onPlaybackChanged(context.applicationContext, isPlaying) }
+                /**
+                 * 用户口径 #74：维护 WiFi 退出的「上膛」状态。
+                 *
+                 * 用户实测「WiFi 断掉，关闭 APP 不好使」→ 说明上膛或监听没生效。
+                 * 这里**不能再静默吞异常**（`runCatching{}` 会把真实错误吃掉，
+                 * 导致"看起来跑过了但没生效"），改成捕获后打日志。
+                 */
+                try {
+                    WifiExitGuard.onPlaybackChanged(context.applicationContext, isPlaying)
+                } catch (t: Throwable) {
+                    android.util.Log.w("ETKN-WifiExit", "onPlaybackChanged 异常", t)
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
