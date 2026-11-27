@@ -825,6 +825,37 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val musicCacheMb = MusicCache.limitMb
         val factory = MusicCache.dataSource(context, resolving, musicCacheMb)
         val player = PlayerFactory.music(context, factory)
+        /**
+         * 用户口径（2026-11-27，#83）**播放进度必须定期落盘**。
+         *
+         * 用户原话：
+         * ```
+         * 「播放进度还是不好使，还是归零」
+         * 「下次我再播放的时候，就不能从上次播放断掉的地方开始」
+         * ```
+         *
+         * 实测证据（adb，播放 25 秒）：
+         * ```
+         * dumpsys media_session  → position=24910   ← 实际播了 24.9 秒
+         * logcat saveMemory      → pos=1088         ← 磁盘上只有 1.08 秒
+         * ```
+         *
+         * 根因：`saveMemory()` 只由 `publish()` 调，而 `publish()` 只挂在
+         * `Player.Listener.onEvents` 上 —— **播放过程中进度前进不会触发任何 event**
+         * （播放器内部走的是 position 推进，不发事件）。
+         * 所以磁盘上永远是「开始播放那一刻」的 1 秒。
+         *
+         * 修法：起一个 3 秒一次的协程，只要在播就把当前进度写盘。
+         * 3 秒的粒度足够（用户感知不到 3 秒误差），开销可忽略
+         * （SharedPreferences.apply 是异步的）。
+         */
+        graph.scope.launch {
+            while (true) {
+                delay(3_000L)
+                if (player.isPlaying) runCatching { saveMemory() }
+            }
+        }
+
         player.addListener(object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) = publish()
 
