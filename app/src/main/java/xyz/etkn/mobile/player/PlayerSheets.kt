@@ -92,7 +92,21 @@ internal fun PlayerSheet(
      */
     PlayerSidePanel(onDismiss) {
         when (sheet) {
-            Sheet.Audio -> OptionList("音轨", ui.audio.map { it.label to it.selected }) { i -> session.selectTrack(ui.audio[i]); onDismiss() }
+            /**
+             * 用户口径（#96）**音轨不再是"只有列表"的面板**。
+             *
+             * 改成「固定行（视频/音频当前值）+ 点音频行展开下拉列表」，
+             * 见 AvSettingsPanel 的类注释。
+             * 视频行只展示当前画质（参考图里它没有下拉箭头）。
+             */
+            Sheet.Audio -> AvSettingsPanel(
+                videoTitle = ui.sources.getOrNull(ui.sourceIndex)?.let { describeQuality(it) } ?: "未知",
+                videoSubtitle = ui.sources.getOrNull(ui.sourceIndex)?.let { describeBitrate(it) },
+                audioTitle = ui.audio.firstOrNull { it.selected }?.label
+                    ?: ui.audio.firstOrNull()?.label ?: "无音轨",
+                audioSubtitle = ui.audio.firstOrNull { it.selected }?.stream?.let { describeAudioSub(it) },
+                audioOptions = ui.audio.map { it.label to it.selected },
+            ) { i -> session.selectTrack(ui.audio[i]) }
             Sheet.Subtitle -> Column {
                 ui.subtitleOffset?.let { SubtitleOffsetRow(it, session) }
                 OptionList(
@@ -399,3 +413,73 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
  * （实测 Limit 传 100/200/500/2000 都只返 80），所以按 80 翻页。
  */
 private const val EPISODE_PAGE = 80
+
+
+/**
+ * 用户口径（#96）**把 MediaSource 描述成参考图那种「4K HDR10 HEVC」**。
+ *
+ * 参考图第一行主文本就是这个格式：分辨率 + HDR + 编码。
+ * 缺哪个就跳过哪个，不硬凑。
+ */
+internal fun describeQuality(source: MediaSource): String {
+    val v = source.video
+    val parts = mutableListOf<String>()
+    /** 分辨率：优先用宽高判档，其次用服务端给的 height。 */
+    val h = v?.height ?: 0
+    val w = v?.width ?: 0
+    parts += when {
+        h >= 2000 || w >= 3500 -> "4K"
+        h >= 1400 || w >= 2500 -> "2K"
+        h >= 1000 || w >= 1800 -> "1080P"
+        h >= 700 -> "720P"
+        h > 0 -> "${h}P"
+        else -> source.name.ifBlank { "视频" }
+    }
+    /** HDR：MediaStream 里有 videoRange / 颜色传输字段。 */
+    val range = v?.videoRange.orEmpty()
+    if (range.contains("HDR", true) || range.contains("PQ", true) || range.contains("HLG", true)) {
+        parts += range.uppercase()
+    }
+    /** 编码：codec 里通常带 hevc / h264 / av1。 */
+    val codec = v?.codec.orEmpty()
+    parts += when {
+        codec.contains("hevc", true) || codec.contains("h265", true) -> "HEVC"
+        codec.contains("av1", true) -> "AV1"
+        codec.contains("h264", true) || codec.contains("avc", true) -> "H.264"
+        else -> codec.substringBefore('.').uppercase().takeIf { it.isNotBlank() } ?: ""
+    }
+    return parts.filter { it.isNotBlank() }.joinToString(" ")
+}
+
+/** 副标题：码率 / 文件大小，参考图是「3.6 GB / 13.1 Mbps」。 */
+internal fun describeBitrate(source: MediaSource): String? {
+    val out = mutableListOf<String>()
+    if (source.size > 0) {
+        val gb = source.size / 1024.0 / 1024 / 1024
+        out += if (gb >= 1) String.format("%.1f GB", gb) else String.format("%.0f MB", source.size / 1024.0 / 1024)
+    }
+    if (source.bitrate > 0) out += String.format("%.1f Mbps", source.bitrate / 1_000_000.0)
+    return out.joinToString(" / ").ifBlank { null }
+}
+
+/** 音轨副文本：编码 + 声道，参考图是「DDP5.1」。 */
+internal fun describeAudioSub(track: MediaStream): String? {
+    val codec = track.codec.orEmpty()
+    val ch = track.channels ?: 0
+    val c = when {
+        codec.contains("eac3", true) || codec.contains("ddp", true) -> "DDP"
+        codec.contains("ac3", true) -> "AC3"
+        codec.contains("truehd", true) -> "TrueHD"
+        codec.contains("dts", true) -> "DTS"
+        codec.contains("aac", true) -> "AAC"
+        else -> codec.substringBefore('.').uppercase().takeIf { it.isNotBlank() } ?: ""
+    }
+    val layout = when (ch) {
+        8 -> "7.1"
+        6 -> "5.1"
+        2 -> "stereo"
+        1 -> "mono"
+        else -> ""
+    }
+    return (c + layout).ifBlank { null }
+}
