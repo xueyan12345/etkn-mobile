@@ -281,7 +281,7 @@ object WifiExitGuard {
          *
          * 为什么必须这么做（adb 实测证据）：
          * ```
-         * cmd wifi list-networks  →  29 个已保存网络（123/CarLife/GEELY_522612/CMCC-*/...）
+         * cmd wifi list-networks  →  29 个已保存网络（123/CarLife/GEELY_522612/CMCC 系列等）
          * 但 App 里 getConfiguredNetworks() 只返回当前那个
          * ```
          * Android 10+ 把 `getConfiguredNetworks()` 限制成「只返回自己创建的」，
