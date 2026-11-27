@@ -145,6 +145,8 @@ import androidx.compose.material.icons.rounded.Tune
 import xyz.etkn.mobile.data.model.MediaStream
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 
 @Composable
 fun DetailScreen(id: String) {
@@ -1427,6 +1429,37 @@ private fun MediaTechRows(
     val muted = Color.White.copy(alpha = 0.72f)
     var expanded by remember { mutableStateOf(0) }   // 0 无 / 1 视频 / 2 音频 / 3 字幕
 
+    /**
+     * 用户口径（2026-11-27，#105）**这三行必须钉死，展开的选项要浮起来盖住下面**。
+     *
+     * 用户原话：
+     * ```
+     * 「我是说这三行位置就不要动，固定在这了，就算我点开选项，……
+     *   点开的话，这3个也不要动，在这个第二个点开的基础上弹出一个小对话框」
+     * 「现在的样子是我点第二行，它整个三行的位置就跳起来了」
+     * 「上面的三行信息也没固定住」
+     * ```
+     *
+     * 根因：这里原来是
+     * ```
+     * if (expanded == 2) {
+     *     audios.forEach { MediaTechOption(...) }   // 直接插进同一个 Column
+     * }
+     * ```
+     * 选项插进流式布局 → Column 变高 → 下面三行被往下推，
+     * 而整个信息块又贴在海报底部对齐 → 看起来就是「三行往上跳」。
+     *
+     * 改法：选项**不插进 Column**，改用 `Popup`（独立窗口）浮在这一行下面。
+     * 另外记录每一行在屏幕上的 y，Popup 才能精确锚在那一行下沿。
+     *
+     * 注意这是详情页（DetailScreen）的另一套实现，
+     * 播放器里的 `AvSettingsPanel` 是独立的另一处，两边都要修。
+     */
+    var rowYs by remember { mutableStateOf(mapOf<Int, Float>()) }
+    var rowHeightPx by remember { mutableStateOf(0f) }
+    var blockX by remember { mutableStateOf(0f) }
+    var blockW by remember { mutableStateOf(0) }
+
     if (source == null) return
 
     val video = source.video
@@ -1466,15 +1499,24 @@ private fun MediaTechRows(
             expanded = expanded == 1,
             onClick = if (sourceCount > 1) { { expanded = if (expanded == 1) 0 else 1 } } else null,
             compact = compact,
+            onPositioned = { y, x, w -> rowYs = rowYs + (1 to y); blockX = x; blockW = w },
         )
+        /** 视频选项：浮层（不再插进 Column，避免把下面几行推下去）。 */
         if (expanded == 1) {
-            item.mediaSources.forEachIndexed { i, src ->
-                MediaTechOption(
-                    label = src.name.ifBlank { src.slotLabel },
-                    selected = i == selectedIndex,
-                    onPanel = onPanel,
-                    onClick = { onSelectSource(i); expanded = 0 },
-                )
+            MediaTechPopup(
+                anchorY = rowYs[1] ?: 0f,
+                anchorX = blockX,
+                width = blockW,
+                onDismiss = { expanded = 0 },
+            ) {
+                item.mediaSources.forEachIndexed { i, src ->
+                    MediaTechOption(
+                        label = src.name.ifBlank { src.slotLabel },
+                        selected = i == selectedIndex,
+                        onPanel = onPanel,
+                        onClick = { onSelectSource(i); expanded = 0 },
+                    )
+                }
             }
         }
         Divider(color = onPanel.copy(alpha = 0.10f))
@@ -1502,15 +1544,23 @@ private fun MediaTechRows(
             expanded = expanded == 2,
             onClick = if (audios.size > 1) { { expanded = if (expanded == 2) 0 else 2 } } else null,
             compact = compact,
+            onPositioned = { y, x, w -> rowYs = rowYs + (2 to y); blockX = x; blockW = w },
         )
         if (expanded == 2) {
-            audios.forEach { a ->
-                MediaTechOption(
-                    label = a.cleanTitle(),
-                    selected = (selectedAudioIndex ?: currentAudio?.index) == a.index,
-                    onPanel = onPanel,
-                    onClick = { expanded = 0; onSelectAudio(a.index) },
-                )
+            MediaTechPopup(
+                anchorY = rowYs[2] ?: 0f,
+                anchorX = blockX,
+                width = blockW,
+                onDismiss = { expanded = 0 },
+            ) {
+                audios.forEach { a ->
+                    MediaTechOption(
+                        label = a.cleanTitle(),
+                        selected = (selectedAudioIndex ?: currentAudio?.index) == a.index,
+                        onPanel = onPanel,
+                        onClick = { expanded = 0; onSelectAudio(a.index) },
+                    )
+                }
             }
         }
         Divider(color = onPanel.copy(alpha = 0.10f))
@@ -1536,22 +1586,30 @@ private fun MediaTechRows(
             expanded = expanded == 3,
             onClick = if (subs.isNotEmpty()) { { expanded = if (expanded == 3) 0 else 3 } } else null,
             compact = compact,
+            onPositioned = { y, x, w -> rowYs = rowYs + (3 to y); blockX = x; blockW = w },
         )
         if (expanded == 3) {
-            /** -1 = 明确关闭字幕（和「没选过」的 null 区分开）。 */
-            MediaTechOption(
-                label = "关闭",
-                selected = selectedSubtitleIndex == -1 || (selectedSubtitleIndex == null && currentSub == null),
-                onPanel = onPanel,
-                onClick = { expanded = 0; onSelectSubtitle(-1) },
-            )
-            subs.forEach { sub ->
+            MediaTechPopup(
+                anchorY = rowYs[3] ?: 0f,
+                anchorX = blockX,
+                width = blockW,
+                onDismiss = { expanded = 0 },
+            ) {
+                /** -1 = 明确关闭字幕（和「没选过」的 null 区分开）。 */
                 MediaTechOption(
-                    label = sub.cleanTitle(),
-                    selected = (selectedSubtitleIndex ?: currentSub?.index) == sub.index,
+                    label = "关闭",
+                    selected = selectedSubtitleIndex == -1 || (selectedSubtitleIndex == null && currentSub == null),
                     onPanel = onPanel,
-                    onClick = { expanded = 0; onSelectSubtitle(sub.index) },
+                    onClick = { expanded = 0; onSelectSubtitle(-1) },
                 )
+                subs.forEach { sub ->
+                    MediaTechOption(
+                        label = sub.cleanTitle(),
+                        selected = (selectedSubtitleIndex ?: currentSub?.index) == sub.index,
+                        onPanel = onPanel,
+                        onClick = { expanded = 0; onSelectSubtitle(sub.index) },
+                    )
+                }
             }
         }
     }
@@ -1570,6 +1628,59 @@ internal fun MediaStream.cleanTitle(): String {
     return if (isDefault) "$base (默认)" else base
 }
 
+/**
+ * 用户口径（2026-11-27，#105）**选项浮层：独立 Popup 窗口，不参与父布局测量**。
+ *
+ * 为什么不直接在 Column 里叠一层：
+ * ```
+ * if (expanded == 2) { audios.forEach { MediaTechOption(...) } }
+ * ```
+ * `MediaTechOption` 是真实布局节点 —— 插进去 Column 就变高，下面的行被推下去，
+ * 而整个信息块又贴海报底部 → 视觉上就是「三行往上跳」。
+ *
+ * `Modifier.offset` 也不行：它只改变**绘制位置**，不改变**测量尺寸**，
+ * 父容器照样按放大后的高度测量。
+ *
+ * 只有 `Popup`（独立 Window）能既脱离测量、又能覆盖在下层之上。
+ *
+ * @param anchorY 被点那一行的**下沿**在窗口中的 y
+ * @param anchorX 信息块的左边缘 x（让浮层左右对齐）
+ * @param width   信息块宽度
+ */
+@Composable
+private fun MediaTechPopup(
+    anchorY: Float,
+    anchorX: Float,
+    width: Int,
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    androidx.compose.ui.window.Popup(
+        alignment = Alignment.TopStart,
+        offset = androidx.compose.ui.unit.IntOffset(anchorX.toInt(), anchorY.toInt()),
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.PopupProperties(
+            focusable = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Column(
+            Modifier
+                .width(with(density) { width.toDp() })
+                .clip(RoundedCornerShape(12.dp))
+                /**
+                 * 浮层必须有不透明底，否则下面几行的文字会透上来
+                 * （这个页面是压在海报上的半透明信息区）。
+                 */
+                .background(Color(0xF21A1A1E))
+                .padding(vertical = 4.dp),
+        ) {
+            content()
+        }
+    }
+}
+
 @Composable
 private fun MediaTechRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -1581,10 +1692,23 @@ private fun MediaTechRow(
     expanded: Boolean,
     onClick: (() -> Unit)?,
     compact: Boolean = false,
+    /** 记录这一行在窗口里的 y，Popup 要用它锚位置（#105）。 */
+    onPositioned: ((Float, Float, Int) -> Unit)? = null,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
+            /**
+             * 把「这一行的下沿」和「区块的 x / 宽」报给调用方，
+             * 让选项浮层能精确贴在这一行下面、跟区块左右对齐。
+             */
+            .then(
+                if (onPositioned == null) Modifier
+                else Modifier.onGloballyPositioned { c ->
+                    val pos = c.positionInRoot()
+                    onPositioned(pos.y + c.size.height, pos.x, c.size.width)
+                }
+            )
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(vertical = if (compact) 4.dp else 7.dp),
         verticalAlignment = Alignment.CenterVertically,
