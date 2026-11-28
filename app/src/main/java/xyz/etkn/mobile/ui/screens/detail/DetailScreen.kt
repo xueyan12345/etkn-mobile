@@ -815,7 +815,37 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                      */
                     Row(
                         Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.Bottom,
+                        /**
+                         * 用户口径（2026-11-28，#173）**左栏比右栏矮时，空白对半分**。
+                         *
+                         * ## 三代演进（前两代都被用户否掉）
+                         *
+                         * ```
+                         * Top 对齐    → 左边矮一截，空白全在下方
+                         * Bottom 对齐 → 空白全在上方 = 用户圈的「标题下面一大块」
+                         * ```
+                         * 两代都是「把洞挪位置」，没根治。
+                         *
+                         * ## 现在：Vertical Center
+                         *
+                         * 左栏内容少时，剩余高度**上下各分一半**：
+                         * ```
+                         * 左栏 2 行、右栏 3 行 →
+                         *   上留 0.5 行  内容 2 行  下留 0.5 行
+                         * ```
+                         * 视觉上是「这段信息在右侧三行的中间」，对称、像设计；
+                         * 而不是「标题下方空出一整块」或者「贴着底部、上面全空」。
+                         *
+                         * ## 为什么这次不改行数/行高
+                         *
+                         * 用户明确要求「先恢复到原来的位置，再在原来的位置上改」。
+                         * 前两版都是通过改左栏行数/行高去填洞，结果把整块撑高、
+                         * 底部锚定的头部整体上移 → 剧名被顶上去（用户发现「剧名偏上了」）。
+                         *
+                         * 现在**结构、行数、行距、总高度全部回到 v1.19.2**，
+                         * 只改这个对齐参数 —— 高度不变 → 剧名位置不变。
+                         */
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(Modifier.weight(1f)) {
                             MetaLines(item, techSrc, align)
@@ -884,7 +914,39 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
     val muted = Color.White.copy(alpha = 0.72f)
     val ratings = item.ratings
 
-    /** 第 1 行：评分（多种评分并排；没有就用 bestRating 兜一层）。 */
+    /**
+     * 用户口径（2026-11-28，#172）**恢复原来的行结构，不做固定槽位**。
+     *
+     * 用户原话：
+     * ```
+     * 「你得先把这些位置恢复到原来的位置，然后在原来的位置上改」
+     * 「剧名要是太偏上的话，你均匀分布的话，那间隔不是更大了吗？那不好看了」
+     * 「并没有像你说的那种左边分布均匀，我怎么感觉你好像干反了呢，
+     *   现在不光不均匀了，感觉好像框更大了」
+     * ```
+     *
+     * ## 前两版都错在哪
+     *
+     * ```
+     * #168 SpaceEvenly  → 均匀分配「所有间隙」，内容少时行距被拉大 → 框更大（用户看出来了）
+     * #170 固定23dp槽位 → 左栏三行被撑到 69dp，加上视频行更高，
+     *                    整块变高 → 因为是底部锚定，整体向上长 → 剧名被顶上去
+     * ```
+     *
+     * ## 现在：完全恢复原来的三块结构，高度不变
+     *
+     * ```
+     * 块 1：评分（ratingScores 并排；为空则整块不渲染）
+     * 块 2：日期 + 时长（评分兜底也放这一行，和原来一样）
+     * 块 3：类型
+     * 行距 6dp
+     * ```
+     * 和 v1.19.2 的结构/高度完全一致 → **剧名位置自动回到原位**。
+     *
+     * 空白不在这里解决，交给外层 `Row` 的垂直对齐方式
+     * （见 `Row(verticalAlignment = Alignment.CenterVertically)`）：
+     * 左栏比右栏矮时，空白上下**对半分**，看起来是对称留白，而不是标题下面一个洞。
+     */
     val ratingLine: @Composable () -> Unit = {
         if (ratings.isNotEmpty()) {
             FlowRow(
@@ -893,43 +955,31 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
             ) {
                 ratings.forEach { RatingScore(it, textColor = Color.White) }
             }
-        } else {
-            formatRating(item.bestRating)?.let {
+        }
+    }
+
+    /** 块 2：评分兜底 + 日期 + 时长，**和原来一样放在同一行**。 */
+    val dateLine: @Composable () -> Unit = {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            formatRating(item.bestRating)?.takeIf { ratings.isEmpty() }?.let {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Star, null, Modifier.size(16.dp), tint = Etkn.tokens.rating)
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Color.White,
-                        modifier = Modifier.padding(start = 2.dp),
-                    )
+                    Text(it, style = MaterialTheme.typography.labelLarge, color = Color.White, modifier = Modifier.padding(start = 2.dp))
                 }
+            }
+            val dateText = item.premiereDate?.take(10)?.replace("-", "/")
+            if (dateText != null) {
+                Text(dateText, style = MaterialTheme.typography.labelLarge, color = Color.White)
+            } else {
+                item.productionYear?.let { Text(it.toString(), style = MaterialTheme.typography.labelLarge, color = Color.White) }
+            }
+            formatRuntime(item.runtimeMs)?.let {
+                Text(it, style = MaterialTheme.typography.labelLarge, color = muted)
             }
         }
     }
 
-    /** 第 2 行：上映日期 + 时长。 */
-    val dateLine: @Composable () -> Unit = {
-        /** 有完整日期用日期，没有退回年份；都取不到就不渲染这一行。 */
-        val dateText = item.premiereDate?.take(10)?.replace("-", "/")
-            ?: item.productionYear?.toString()
-        val runtime = formatRuntime(item.runtimeMs)
-        if (dateText != null || runtime != null) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (dateText != null) {
-                    Text(dateText, style = MaterialTheme.typography.labelLarge, color = Color.White)
-                }
-                if (runtime != null) {
-                    Text(runtime, style = MaterialTheme.typography.labelLarge, color = muted)
-                }
-            }
-        }
-    }
-
-    /** 第 3 行：类型。 */
+    /** 块 3：类型。 */
     val genreLine: @Composable () -> Unit = {
         if (item.genres.isNotEmpty()) {
             Text(
@@ -941,50 +991,7 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
         }
     }
 
-    /**
-     * 用户口径（2026-11-28，#168）**缺评分时不留大洞**。
-     *
-     * 用户原话：
-     * ```
-     * 「他这个有 TMDB 评分的数据，所以现在看起来虽然标题下面有一行空白，
-     *   但是看起来还可以。如果 TMDB 评分没有，就是相当于评分这一栏是空白的话，
-     *   那么就标题下边会空两行，特别特别空」
-     * 「你还不能直接把标题移到下边去，不把那空行留出来，
-     *   因为标题如果短的话还可以，如果太长的话，就会跟右边的三个媒体信息打架」
-     * ```
-     *
-     * ## 这个空白是几何必然，不是 bug
-     *
-     * 头部是左右两栏并排的 `Row`：
-     * ```
-     * 左栏 = 评分 / 日期·时长 / 类型   → 有几项渲染几行（1~3 行）
-     * 右栏 = 视频 / 音频 / 字幕        → 恒 3 行
-     * Row 高度 = 两栏中高的那个（3 行）
-     * ```
-     * 左栏内容少，就必然空出来。之前用 `Bottom` 对齐把洞放在上方，
-     * 用户看到的就是"标题下面空一大块"。
-     *
-     * ## 用户否掉的方案：把标题往下移
-     *
-     * ```
-     * 「标题如果短的话还可以，如果太长的话，就会跟右边的三个媒体信息打架，就会撞车」
-     * ```
-     * 完全正确 —— 标题是 `fillMaxWidth(0.78f)` + `maxLines=2`，
-     * 往下移就会和右栏的媒体信息行重叠。
-     *
-     * ## 采用的方案：让左栏内容在 3 行高度里均匀分布
-     *
-     * ```
-     * 有评分（3 行）→ 和现在一样，无空隙
-     * 没评分（2 行）→ SpaceEvenly 自动拉大行距，均匀铺满 3 行高度 → 没有"洞"，只是间距略宽
-     * 只有 1 行     → 居中，上下对称，看着是设计而非缺失
-     * ```
-     * 标题完全不动 → 再长也不会撞右栏。
-     *
-     * `SpaceEvenly` 而不是 `SpaceBetween`：后者会把首行顶到最上、末行压到最下，
-     * 和右栏的三行视觉重心不一致；前者首尾也留白，整体更居中。
-     */
-    Column(horizontalAlignment = align, verticalArrangement = Arrangement.SpaceEvenly) {
+    Column(horizontalAlignment = align, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ratingLine()
         dateLine()
         genreLine()
@@ -1802,14 +1809,39 @@ private fun InfoBlock(item: Item, centered: Boolean, seriesOverview: String? = n
             ) {
                 listOf("本集简介", "全剧简介").forEachIndexed { i, label ->
                     val on = tab == i
-                    val tone = if (on) Color.White else Color.White.copy(alpha = 0.55f)
+                    /**
+                     * 用户口径（2026-11-28，#171）**这里是白底，不能照抄分级徽章的颜色**。
+                     *
+                     * 用户原话：
+                     * ```
+                     * 「下边的分级简介和全剧简介切换的按钮现在是全白的状态，这块你得稍微设计一下，
+                     *   因为下边是白色的背景，不是跟上边的那个分级一样，
+                     *   不能全按照分级那个来，我是说指那个是一个参考」
+                     * ```
+                     *
+                     * 分级徽章压在**深色渐变**上，所以用白字白边。
+                     * 简介区在**白色背景**上，用白字等于隐身上去 —— 我判断失误。
+                     *
+                     * 现在改成跟着主题走（`onSurfaceVariant`），白底上是深灰、暗色主题下自动变浅，
+                     * 两种主题都不会看不见。用主题色而不是写死灰色，是为了不重蹈
+                     * 「写死 hex 只满足一个主题」的旧坑。
+                     *
+                     * 选中态：加深 + 加粗 + 描边更实；未选中：调淡。
+                     * 仍然**不用填充色**（用户要求只做描边胶囊）。
+                     */
+                    val base = MaterialTheme.colorScheme.onSurfaceVariant
+                    val tone = if (on) base else base.copy(alpha = 0.55f)
                     Text(
                         label,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
                         color = tone,
                         modifier = Modifier
-                            .border(1.dp, tone.copy(alpha = if (on) 0.75f else 0.35f), Corner.small)
+                            .border(
+                                width = if (on) 1.2.dp else 1.dp,
+                                color = tone.copy(alpha = if (on) 0.9f else 0.4f),
+                                shape = Corner.small,
+                            )
                             .clickable {
                                 if (tab != i) {
                                     tab = i
