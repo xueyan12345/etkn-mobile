@@ -1027,7 +1027,17 @@ private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .offset(x = (-5).dp, y = 5.dp)
+                    /**
+                     * 用户口径（2026-11-28，#158）**再贴近下一集按钮一点点**。
+                     *
+                     * 上一版 offset(-5, 5) 是按音乐页 1.25 倍等比算的，
+                     * 但音乐页那个 IconButton 的触摸区是 48dp、图标 30dp，
+                     * 视频页 PlayerAction 是 60dp 触摸区 + 30dp 图标 ——
+                     * 触摸区更大，图标离盒子边缘更远，气泡按比例挪就显得「离图标远了」。
+                     *
+                     * 现在收到 (-2, 2)：气泡圆边几乎挨着图标右上角。
+                     */
+                    .offset(x = (-2).dp, y = 2.dp)
                     .size(14.dp)
                     .graphicsLayer { this.alpha = alpha }
                     .background(Color.White, CircleShape)
