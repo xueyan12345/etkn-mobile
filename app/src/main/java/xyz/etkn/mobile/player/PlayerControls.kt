@@ -93,6 +93,11 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 
 /**
  * 播放器控制层。
@@ -957,19 +962,58 @@ private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
     Box(contentAlignment = Alignment.TopEnd) {
         PlayerAction(Icons.Rounded.SkipNext, "下一集", onClick)
         if (warmed) {
-            Icon(
-                Icons.Rounded.Bolt,
-                contentDescription = "下一集已预加载",
-                tint = Color.White,
-                /**
-                 * 只往右下压一点点，贴着按钮右上角 —— 原来 17.5dp 的圆 + 默认 TopEnd
-                 * 会在按钮上方留出一截空白，用户觉得「太往上了」。
-                 */
-                modifier = Modifier
-                    .offset(x = 2.dp, y = 2.dp)
-                    .size(12.dp)
-                    .shadow(2.dp, CircleShape),
+            /**
+             * 用户口径（2026-11-28，#151）**视频播放器的气泡也改成呼吸样式**。
+             *
+             * 用户原话：
+             * ```
+             * 「我想把这个效果也放在视频播放器里面，
+             *   但是你要注意，视频播放器的组件是白色的」
+             * ```
+             *
+             * ## 配色为什么不能照抄音乐页
+             *
+             * 音乐页那张卡的底色是 `surfaceContainerHigh`（浅灰），
+             * 所以气泡用 `primary`（主题色）+ `onPrimary` 的文字。
+             *
+             * 而视频播放器这一层是**压在视频画面上**、所有控件都是纯白
+             * （见 `PlayerAction`：`tint = Color.White`）。
+             * 如果气泡也用白色，会和「下一集」图标糊成一片、看不出边界；
+             * 所以这里反过来：
+             * ```
+             * 底：Color.White        白圆 —— 和图标同色系但更实
+             * 图标：Color.Black      黑闪电 —— 在白圆上对比最强
+             * ```
+             * 白圆 + 黑闪在任何画面上都清楚，也和白色控制组件统一。
+             *
+             * 呼吸：透明度 0.5 ↔ 1.0，1.6 秒一轮（和音乐页参数一致）。
+             */
+            val breathe = rememberInfiniteTransition(label = "next-ep-ready")
+            val alpha by breathe.animateFloat(
+                initialValue = 0.5f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(800, easing = LinearEasing),
+                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+                ),
+                label = "next-ep-ready-alpha",
             )
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .offset(x = (-4).dp, y = 4.dp)
+                    .size(13.dp)
+                    .graphicsLayer { this.alpha = alpha }
+                    .background(Color.White, CircleShape)
+                    .shadow(2.dp, CircleShape),
+            ) {
+                Icon(
+                    Icons.Rounded.Bolt,
+                    contentDescription = "下一集已预加载",
+                    tint = Color.Black,
+                    modifier = Modifier.size(9.dp),
+                )
+            }
         }
     }
 }

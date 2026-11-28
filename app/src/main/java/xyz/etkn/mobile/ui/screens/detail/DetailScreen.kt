@@ -148,6 +148,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.unit.Dp
 
 @Composable
 fun DetailScreen(id: String) {
@@ -2033,8 +2034,30 @@ internal fun MediaStream.cleanTitle(): String {
         ).firstOrNull { d.contains(it) }
     }
 
-    val base = fromTitle ?: fromLang ?: fromDisplay ?: "未知语言"
-    return if (isDefault) "$base (默认)" else base
+    /**
+     * 用户口径（2026-11-28，#149）**取不到语言就保持空白，不要「未知语言」**。
+     *
+     * 用户原话：
+     * ```
+     * 「为空的就不用管它」
+     * 「为空的不用改，就还是默认显示空」
+     * ```
+     *
+     * 数据库里字幕有 817 条 Title 为空（DisplayTitle 只有 `(ASS)`/`(PGSSUB)`/`(SUBRIP)`），
+     * 音频有 4368 条为空。这些**原样显示空**，不要自己编一个"未知语言"出来。
+     */
+    val base = fromTitle ?: fromLang ?: fromDisplay
+    return when {
+        /**
+         * 真正取不到语言时，退回「编码名」而不是纯空白 ——
+         * 三行信息那一行如果整行空白，看起来像渲染坏了；
+         * 显示 `SUBRIP` / `EAC3` 至少能看出这是哪一种流。
+         * 用户说的「为空就显示空」指的是不要编造语言名，不是要一行全空。
+         */
+        base == null -> if (codec.isNotBlank()) codec.uppercase() else ""
+        isDefault -> "$base (默认)"
+        else -> base
+    }
 }
 
 /**

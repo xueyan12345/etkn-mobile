@@ -91,6 +91,18 @@ internal fun GestureLayer(
     val context = LocalContext.current
     val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val activity = context as? Activity
+    /**
+     * 用户口径（#150）**顶部状态栏那条带子不接管手势** —— 在 Composable 上下文算好高度。
+     *
+     * `pointerInput` 的 lambda 是 suspend 的 PointerInputScope，里面不能读 Composable API，
+     * 所以状态栏高度必须在这里取（`WindowInsets.statusBars` → px），
+     * 再闭包传进去。+8dp 余量避免误判，下限 60dp 兜住无状态栏/沉浸式的情况。
+     */
+    val topStripPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+        val bar = androidx.compose.foundation.layout.WindowInsets.statusBars
+            .getTop(this).toFloat()
+        (bar + 8.dp.toPx()).coerceAtLeast(60.dp.toPx())
+    }
     Box(
         Modifier.fillMaxSize()
             .pointerInput(enabled, player) {
@@ -203,6 +215,39 @@ internal fun GestureLayer(
             }
             .pointerInput(enabled, player) {
                 if (!enabled) return@pointerInput
+                /**
+                 * 用户口径（2026-11-28，#150）**从屏幕顶部下拉要能拉出状态栏**，
+                 * 不能顺手把亮度/音量也调了。
+                 *
+                 * 用户原话：
+                 * ```
+                 * 「视频播放器不是顶部拉不下来状态栏，是可以拉状态栏，
+                 *   但是同时触发了音量和亮度这两个操作，
+                 *   因为往下拉状态栏的时候，那个操作正好是音量调低和亮度调低，
+                 *   左边和右边」
+                 * ```
+                 *
+                 * ## 原因
+                 *
+                 * 这一层 `fillMaxSize()` 的拖动识别器把**整屏**都吃掉了：
+                 * ```
+                 * 左上往下滑 → 亮度  ↓  右上往下滑 → 音量 ↓
+                 * ```
+                 * 而系统下拉状态栏恰恰也是「从顶部往下滑」——
+                 * 同一个手势被两边同时响应，所以拉状态栏的同时亮度音量一起掉。
+                 *
+                 * ## 修法：顶部留一条「不接管」的带子
+                 *
+                 * 拖动起点落在顶部 [TOP_SYSTEM_STRIP_PX] 以内 → **这一轮手势完全不处理**
+                 * （不 consume，交给系统 → 状态栏正常拉下来）。
+                 * 超过这条线才走原来的亮度/音量/快进逻辑。
+                 *
+                 * 为什么按「起点」而不是「当前位置」判断：
+                 * 用户从顶部起手就是想要状态栏，中途划到哪都该是状态栏；
+                 * 反过来从中间起手往下滑是调亮度，也不能划到顶部就突然失效。
+                 *
+                 * 宽度取状态栏高度（约 24-48dp）再加一点余量。
+                 */
                 var mode = 0 // 1 seek, 2 brightness, 3 volume
                 var startPosition = 0L
                 var seekTarget = 0L
@@ -210,6 +255,17 @@ internal fun GestureLayer(
                 var accumulated = androidx.compose.ui.geometry.Offset.Zero
                 detectDragGestures(
                     onDragStart = { start ->
+                        /**
+                         * 用户口径（#150）**起点在顶部带子里 → 这一轮完全不接管**。
+                         *
+                         * `mode = -1` 是个哨兵值：
+                         * ```
+                         * onDrag 里看到 mode == -1 直接 return（不 consume）
+                         * onDragEnd 里看到 mode == -1 什么都不做
+                         * ```
+                         * 这样系统才能接到「从顶部下拉」这个手势去拉状态栏。
+                         */
+                        if (start.y <= topStripPx) { mode = -1; return@detectDragGestures }
                         mode = 0
                         accumulated = androidx.compose.ui.geometry.Offset.Zero
                         startPosition = player.currentPosition
@@ -230,6 +286,8 @@ internal fun GestureLayer(
                     },
                     onDragCancel = { onFeedback(null) },
                     onDrag = { change, drag ->
+                        /** 顶部带子起手的那一轮：整轮不消费，交给系统拉状态栏。 */
+                        if (mode == -1) return@detectDragGestures
                         change.consume()
                         accumulated += drag
                         if (mode == 0) {
