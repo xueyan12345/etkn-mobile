@@ -84,6 +84,9 @@ class MusicService : MediaSessionService() {
          */
         @Volatile var alive = false
 
+        /** 上次「媒体键启动」的时间戳，用于 onStartCommand 防抖（#204）。 */
+        @Volatile private var lastKeyStartAt = 0L
+
         /** 自动重建的次数与时间窗，用于限流（#199）。 */
         @Volatile private var rebuildCount = 0
         @Volatile private var lastRebuildAt = 0L
@@ -738,11 +741,43 @@ class MusicService : MediaSessionService() {
          * 用户按一下暂停即可；而漏判的代价是「按了没反应」，
          * 对上车场景更糟。
          */
+        /**
+         * 用户实测（2026-11-28，#204）**持续暂停和播放**。
+         *
+         * ## 日志铁证
+         *
+         * ```
+         * 19:34:29.928  无 keyCode → 按要播放处理
+         * 19:34:29.928  未在播 + key=null → 开始播放
+         * 19:34:29.965  无 keyCode → 按要播放处理     ← 37ms 后又来
+         * 19:34:30.527  播放触发完成 isPlaying=true
+         * 19:34:30.888  无 keyCode → 按要播放处理     ← 又来了
+         * 19:34:30.891  又来了
+         * ```
+         * `onStartCommand` 在几百毫秒内被反复调用，每次都执行 `play()`，
+         * 于是播放/暂停不停来回切。
+         *
+         * ## 上一版错在哪
+         *
+         * 为了让「耳机冷启动也能播放」，我把 `pressed == null` 时的 `return` 去掉了，
+         * 改成「按要播放处理」。但 `onStartCommand` 不只由媒体键触发：
+         * ```
+         * startForeground / 会话重建 / 系统恢复服务 / startService 幂等重入
+         * ```
+         * 这些都会调 `onStartCommand`，进去就 `play()` —— 变成自我驱动的循环。
+         *
+         * ## 现在恢复严格判断
+         *
+         * **没有 keyCode 一律不接管**，退回 Media3 默认行为。
+         * 也就是说宁可「耳机冷启动那一下不播」，也不能让 App 自己抽风。
+         *
+         * 真正要支持「耳机冷启动直接播」，得靠 MediaSession 的
+         * `onPlaybackResumption` 或者给媒体键单独记一个一次性标记，
+         * 不能用 onStartCommand 无差别接管 —— 那条路必然自激。
+         */
         if (pressed == null) {
-            android.util.Log.i(
-                "ETKN-Music",
-                "onStartCommand: 无 keyCode（系统/会话直接拉起）→ 按要播放处理",
-            )
+            android.util.Log.i("ETKN-Music", "onStartCommand: 无 keyCode，放手给 Media3")
+            return super.onStartCommand(intent, flags, startId)
         }
 
         /** ③ 暂停键就是暂停，不要播。 */
@@ -755,6 +790,21 @@ class MusicService : MediaSessionService() {
          * ④ 其余键（播放 / 下一首 / 上一首 / 耳机线控）在「没在播」时
          *    一律当作「开始播放」，接着上次的进度播，不跳歌。
          */
+        /**
+         * 用户实测（#204）**防抖**：同一次按键可能触发多次 `onStartCommand`，
+         * 于是 `play()` 被调多次，表现为「持续暂停和播放」。
+         *
+         * 2 秒内只处理一次媒体键启动。
+         */
+        val now = System.currentTimeMillis()
+        if (now - lastKeyStartAt < 2_000L) {
+            android.util.Log.i(
+                "ETKN-Music",
+                "onStartCommand: 2 秒内重复触发(距上次 ${now - lastKeyStartAt}ms)，忽略",
+            )
+            return super.onStartCommand(intent, flags, startId)
+        }
+        lastKeyStartAt = now
         android.util.Log.i("ETKN-Music", "onStartCommand: 未在播 + key=$pressed → 开始播放")
         applicationContext.graph.scope.launch {
             runCatching {
