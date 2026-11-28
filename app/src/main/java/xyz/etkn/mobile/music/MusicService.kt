@@ -921,14 +921,93 @@ class MusicService : MediaSessionService() {
          */
         val player = session?.player
         val hasContent = player != null && player.mediaItemCount > 0
-        if (!hasContent) {
-            applicationContext.graph.music.stop()
-            stopSelf()
-        } else {
+
+        /**
+         * 用户口径（2026-11-28，#217）**彻底杀掉 App 后播放卡片不该再自己冒出来**。
+         *
+         * ## 现场证据
+         *
+         * ```
+         * 21:17:16  MainActivity visible=false       用户杀 App
+         * 21:17:22  notifyTaskRemoved / handleAppDied
+         * 21:17:24  Start proc for MusicService       系统又把服务拉起来
+         * ```
+         * 服务状态（dumpsys activity services）：
+         * ```
+         * stopIfKilled=false          ← START_STICKY：被杀就重建
+         * startRequested=true         ← 启动请求没被撤销
+         * restartTime=-1m13s          ← 确实发生过自动重启
+         * ```
+         * manifest 里还有 `android:stopWithTask="false"` ——
+         * 明确告诉系统「划掉任务时别停我」，与用户意图正好相反。
+         *
+         * ## 上一版为什么失败（重要，别再犯）
+         *
+         * 上一版只调了 `stopSelf()`：
+         * ```
+         * stopSelf() 没撤销 startRequested
+         *   → START_STICKY 仍然生效
+         *   → 系统又把它拉起来
+         *   → 再 onCreate、再建会话、再被停
+         *   → 卡片「一次有一次没有」地抖
+         * ```
+         * 用户原话：「不行，那个又出现，打开一次，出现一次，
+         * 然后再打开一次，不出现的那个情况了」。
+         *
+         * ## 现在：照搬 WifiExitGuard 里已验证的清理链
+         *
+         * `WifiExitGuard`（WiFi 断开退出）里这套流程是实测有效的，
+         * 五步缺一不可：
+         * ```
+         * ① 进度先落盘（MusicConnection.stop 内部会做）
+         * ② 释放会话      MusicSessionHolder.release()  → 系统收卡片
+         * ③ 撤通知
+         * ④ stopService   ← 关键：撤销 startRequested，START_STICKY 才不生效
+         * ⑤ killProcess   ← 关键：彻底结束进程，系统没有「可重建的服务」
+         * ```
+         * 上一版少了 ④⑤，所以系统总能把它拉回来。
+         *
+         * 注意：只有「用户划掉/杀掉任务」才走这条路。
+         * 正在播放时按 Home 键切后台**不会**触发 onTaskRemoved，音乐照常继续。
+         */
+        if (hasContent || session != null) {
             android.util.Log.i(
                 "ETKN-Music",
-                "onTaskRemoved: 队列还有${player!!.mediaItemCount}首，保持服务存活（不自杀）",
+                "onTaskRemoved: 用户划掉任务 → 完整清理链（队列=${player?.mediaItemCount ?: 0}）",
             )
+            Thread {
+                try {
+                    /** ① 记住进度并停播放（内部会先存 currentPosition 再清队列）。 */
+                    applicationContext.graph.music.stop()
+
+                    /** ② 释放会话 —— 系统收掉控制中心卡片。 */
+                    runCatching { MusicSessionHolder.release() }
+                    Thread.sleep(200)
+
+                    /** ③ 撤掉前台通知。 */
+                    runCatching {
+                        (applicationContext.getSystemService(android.content.Context.NOTIFICATION_SERVICE)
+                            as? android.app.NotificationManager)?.cancelAll()
+                    }
+
+                    /** ④ stopService：撤销 startRequested，让 START_STICKY 失效。 */
+                    runCatching {
+                        applicationContext.stopService(
+                            android.content.Intent(applicationContext, MusicService::class.java),
+                        )
+                    }
+                    Thread.sleep(300)
+
+                    /** ⑤ 彻底结束进程。 */
+                    android.util.Log.i("ETKN-Music", "onTaskRemoved: 清理完成 → killProcess")
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                } catch (t: Throwable) {
+                    android.util.Log.w("ETKN-Music", "onTaskRemoved 清理异常", t)
+                }
+            }.start()
+        } else {
+            android.util.Log.i("ETKN-Music", "onTaskRemoved: 没有任何会话/队列，直接停服务")
+            stopSelf()
         }
     }
 
