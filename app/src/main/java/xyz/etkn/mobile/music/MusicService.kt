@@ -265,57 +265,46 @@ class MusicService : MediaSessionService() {
                      * 不碰 `restoreForResumption()`、不碰蓝牙 Receiver、
                      * 不碰 `saveMemory()` —— 续播红线完好。
                      */
-                    /** `playerCommands` 是 Int（不是 Long），这里必须用 Int 掩码。 */
-                    val isSeekNext = playerCommands and
-                        (androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT or
-                            androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) != 0
-                    val isSeekPrev = playerCommands and
-                        (androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS or
-                            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) != 0
                     /**
-                     * 用户口径（#191 修订，2026-11-28）**暂停时按切歌键 = 开始播放，不跳歌**。
+                     * 用户口径（#195）**这里完全回滚到默认行为**。
                      *
-                     * 用户确认的两条（逐字）：
+                     * ## 事故（我引入的）
+                     *
+                     * 用户实测：
                      * ```
-                     * 问：上车后车机卡片显示暂停中的那首歌，按方向盘「下一首」希望它做什么？
-                     * 答：不跳歌，直接把当前这首放起来（接着上次的进度）
-                     *
-                     * 问：这个规则是每次按都生效，还是只在上车那一下？
-                     * 答：一直这样：只要暂停着，按下一首都是开始播放
+                     * 「我现在在系统状态栏上点暂停按钮不是暂停功能了，是下一曲」
                      * ```
                      *
-                     * ## 之前写错的地方
+                     * ## 真因：Media3 的命令常量是组合位
                      *
-                     * 上一版是 `seekToNextMediaItem()` + `play()` ——
-                     * **既跳歌又播放**。用户没要「跳歌」，他要的是「把当前这首放起来」。
-                     * 上车场景下，卡片显示的就是他上次没听完的那首，
-                     * 一按方向盘就把它跳过去，等于把想听的那首丢了。
-                     *
-                     * ## 现在
-                     *
+                     * 官方源码常量值：
                      * ```
-                     * 暂停 + 下一首/上一首 → 什么都不切，直接 play() 接着播
-                     * 正在播 + 下一首     → 交给 Media3 默认逻辑（正常下一首）
+                     * COMMAND_PLAY_PAUSE       = 1   (二进制 0001)
+                     * COMMAND_SEEK_TO_PREVIOUS = 7
+                     * COMMAND_SEEK_TO_NEXT     = 9   (二进制 1001) ← 本身就含 bit0！
                      * ```
-                     * 位置用播放器当前的 `currentPosition`（续播时已 seek 回记忆位置），
-                     * 所以是「接着上次的进度」放。
+                     * 我原来的判断：
+                     * ```kotlin
+                     * playerCommands and (COMMAND_SEEK_TO_NEXT or ...) != 0
+                     * ```
+                     * 点暂停时 `playerCommands = 1`，而 `1 and 9 = 1 ≠ 0`
+                     * → 被误判成「下一首」→ 切歌 + 播放。
+                     * **暂停键因此变成了下一曲。**
                      *
-                     * 不碰 `restoreForResumption()` / 蓝牙 Receiver / `saveMemory()`。
-                     */
-                    if ((isSeekNext || isSeekPrev) && !graph.music.player.isPlaying) {
-                        android.util.Log.i(
-                            "ETKN-Music",
-                            "暂停中按${if (isSeekNext) "下一首" else "上一首"} → 不跳歌，直接开始播放 " +
-                                "pos=${graph.music.player.currentPosition}ms",
-                        )
-                        /** 用户主动要求播放 → 唤醒逻辑不要把它再暂停掉。 */
-                        graph.music.markUserPlayback()
-                        graph.music.player.play()
-                        return androidx.media3.session.SessionResult.RESULT_SUCCESS
-                    }
-                    /**
-                     * 播放中的下一首/上一首走这里 → Media3 默认逻辑，正常切歌。
-                     * 「暂停时切歌键=开播」和「播放时切歌键=切歌」两条互不干扰。
+                     * ## 教训
+                     *
+                     * Media3 的 `COMMAND_*` 不是互斥枚举，是**位掩码**，
+                     * 小值的组合位会被大常量覆盖。判命令必须用
+                     * `playerCommands == COMMAND_X`（精确相等），
+                     * 或只检查**独立**的单一位，不能用 or 组合后做 and。
+                     *
+                     * ## 现状
+                     *
+                     * 整段自定义拦截删除，恢复 `super`：
+                     * 暂停就是暂停、下一首就是下一首，与 v1.20.8 之前一致。
+                     *
+                     * 「暂停时按下一首=开始播放」这个需求暂时不做，
+                     * 等有实测条件（车机/蓝牙）时再按精确匹配实现。
                      */
                     return super.onPlayerCommandRequest(mediaSession, controller, playerCommands)
                 }
