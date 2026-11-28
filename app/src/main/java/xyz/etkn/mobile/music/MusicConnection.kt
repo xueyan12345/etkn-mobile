@@ -2049,7 +2049,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         if (lyricLoadingFor == itemId) return
         lyricLoadingFor = itemId
         graph.scope.launch {
-            runCatching {
+            try {
                 var raw = LyricsCache.read(itemId)
                 if (raw.isNullOrBlank()) {
                     if (sourceId == null) {
@@ -2076,8 +2076,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                     "歌词：$itemId 载入 ${lines.size} 行 synced=${parsed.synced}",
                 )
                 publishLyrics(itemId, lines)
-            }.onFailure {
-                android.util.Log.w("ETKN-Music", "歌词加载失败 $itemId", it)
+            } catch (t: Throwable) {
+                android.util.Log.w("ETKN-Music", "歌词加载失败 $itemId", t)
             } finally {
                 lyricLoadingFor = null
             }
