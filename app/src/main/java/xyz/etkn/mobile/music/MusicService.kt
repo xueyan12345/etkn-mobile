@@ -545,10 +545,61 @@ class MusicService : MediaSessionService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        /**
+         * 用户口径（2026-11-28，#190）**划掉后台不能让服务自杀**。
+         *
+         * ## adb 抓到的决定性证据
+         *
+         * 两次启动的完整对比（`ConferenceScene` 记录的前台服务状态）：
+         * ```
+         * 第1次（显示）pid=18742: 13.190 fgState=2 → 19.111 fgState=0
+         *                        活了 5.9 秒，是你杀它才停的
+         * 第2次（不显示）pid=19089: 19.619 fgState=2 → 19.679 fgState=0
+         *                        只活了 60 毫秒就自己停了
+         * ```
+         * 紧接着：
+         * ```
+         * 16:38:19.670  addSession  id./791
+         * 16:38:19.702  removeSession id./791   ← 32ms 后就被销毁
+         * 之后再也没有 addSession —— 所以「等多长时间都不显示」
+         * ```
+         *
+         * ## 原因就是这里
+         *
+         * `onTaskRemoved` 是「用户从最近任务里划掉 App」的回调。
+         * 原来写的是：
+         * ```kotlin
+         * if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
+         *     graph.music.stop()
+         *     stopSelf()          // ← 服务自杀
+         * }
+         * ```
+         * 用户打开 App 时音乐是**暂停**状态（`playWhenReady = false`），
+         * 一划掉后台就命中这个条件 → 服务自杀 →
+         * **会话销毁 → 控制中心卡片消失，且再打开也不重建**（因为新的
+         * task-removed 事件会继续把它杀掉）。
+         *
+         * ## 现在：只有「真的没有任何内容」才停
+         *
+         * 队列里有歌就保持服务活着 —— 这正是「打开 App 卡片就该一直在」的前提。
+         * 用户明确要求过（原话）：
+         * ```
+         * 「只要这个 APP 不全部退出，它那个音乐控件上就一直应该显示现在正在播放的音乐，
+         *   就算现在没有音乐，应该也是暂停的状态」
+         * ```
+         * 注意：`setStopWithTask` 已在 manifest 设为 false，
+         * 所以划掉后台时**服务本来就不该被销毁**，这里更不该自己调 `stopSelf()`。
+         */
         val player = session?.player
-        if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
+        val hasContent = player != null && player.mediaItemCount > 0
+        if (!hasContent) {
             applicationContext.graph.music.stop()
             stopSelf()
+        } else {
+            android.util.Log.i(
+                "ETKN-Music",
+                "onTaskRemoved: 队列还有${player!!.mediaItemCount}首，保持服务存活（不自杀）",
+            )
         }
     }
 
