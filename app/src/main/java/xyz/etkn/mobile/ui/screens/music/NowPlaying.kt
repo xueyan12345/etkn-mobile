@@ -734,7 +734,8 @@ private fun LyricsPane(track: Item, sourceId: String?) {
     val current = lyrics
     if (current == null || current.lines.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (!loaded) LoadingIndicator() else Text("暂无歌词", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!loaded) xyz.etkn.mobile.ui.components.EtknLoading()
+            else Text("暂无歌词", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         return
     }

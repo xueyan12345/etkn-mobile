@@ -88,6 +88,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.platform.LocalContext
 import xyz.etkn.mobile.data.model.MediaSource
 import xyz.etkn.mobile.graph
+import androidx.compose.foundation.layout.Arrangement
+import xyz.etkn.mobile.ui.components.GlassSheet
+import xyz.etkn.mobile.ui.components.EtknLoading
 
 /** Long-press / overflow menu of the current shell; null outside it (previews, player). */
 val LocalItemMenu = staticCompositionLocalOf<ItemMenu?> { null }
@@ -578,7 +581,7 @@ private fun CastSheet(item: Item, menu: ItemMenu) {
     when (val found = devices) {
         null -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
             /** 全 App 统一用三点跳动加载（#183 用户选的第 2 套）。 */
-            xyz.etkn.mobile.ui.components.LoadingIndicator()
+            EtknLoading()
         }
         else -> {
             if (found.isEmpty()) {
