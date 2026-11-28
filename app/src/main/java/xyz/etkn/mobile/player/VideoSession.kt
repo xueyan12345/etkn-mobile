@@ -900,8 +900,14 @@ class VideoSession(
                  * 这样第一次播放也能一次到位，不再「起了再切」。
                  */
                 val remembered = item?.id?.let { EngineMemory.lookup(context, it) }
+                val fromServer = engineFromServerStreams(chosen)
+                android.util.Log.i(
+                    TAG,
+                    "engineFor: remembered=$remembered server=$fromServer streams=${chosen.streams.size} " +
+                        "video=${chosen.streams.firstOrNull { it.type.equals("Video", true) }?.codec}",
+                )
                 remembered
-                    ?: engineFromServerStreams(chosen)
+                    ?: fromServer
                     ?: Engine.Exo
             }
         }
@@ -1206,7 +1212,42 @@ class VideoSession(
         pendingDefaults = setOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_TEXT)
         source = chosen
         discTried = discTried || disc
-        val player = ensurePlayer(engineFor(chosen, disc))
+        val pickedEngine = engineFor(chosen, disc)
+        /**
+         * 用户实测（2026-11-28，#214）**起播慢：先选 mpv 再切 Exo，多起了一次**。
+         *
+         * ## 日志时序
+         *
+         * ```
+         * 20:15:10.766  自动选核 → mpv            ← 第一次起播（错）
+         * 20:15:11.772  手动切换 → ExoPlayer      ← 1 秒后用户手动切的
+         * 20:15:13.412  video decoder 就绪        ← 才出画
+         * ```
+         *
+         * ## 根因
+         *
+         * `engineFor()` 里已经用**服务器给的编码信息**预判出该用 Exo
+         * （`engineFromServerStreams`），但紧接着这里：
+         * ```kotlin
+         * autoPickDone = false   // 允许 onTracksChanged 再决策一次
+         * ```
+         * 于是 `onTracksChanged` 又按老逻辑判了一遍，**把预判结果覆盖成 mpv**。
+         *
+         * ## 现在
+         *
+         * 如果这次引擎是**从服务器信息推出来的**（不是"没有信息、默认 Exo"），
+         * 就直接把 `autoPickDone` 置 true —— 告诉后面的 `onTracksChanged`
+         * 「已经定过了，别再改」。这样只起一次播放器，省掉一次重建。
+         *
+         * 只有服务器信息确实不足（`engineFromServerStreams` 返回 null）时，
+         * 才保留 `autoPickDone = false`，让轨道解析后再判一次。
+         */
+        autoPickDone = engineFromServerStreams(chosen) != null
+        android.util.Log.i(
+            TAG,
+            "playSource: 预判引擎=$pickedEngine 已定稿=$autoPickDone",
+        )
+        val player = ensurePlayer(pickedEngine)
         started = false
         stopped = false
         completedBySkip = false
