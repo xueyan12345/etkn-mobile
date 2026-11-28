@@ -213,6 +213,62 @@ class MusicService : MediaSessionService() {
                             }
                         }
                     }
+                    /**
+                     * 用户口径（2026-11-28，#191）**暂停时按下一首 = 继续播放**。
+                     *
+                     * 用户实测（CarLife 车机方向盘）：
+                     * ```
+                     * 「我按方向盘上的下一首歌，它没有继续播放，它是直接下一首了，
+                     *   然后也不播放，必须得手动点击那个卡片上的暂停按钮，它才播放」
+                     * ```
+                     *
+                     * ## 原因
+                     *
+                     * 下面这行 `super.onPlayerCommandRequest` 把命令直接交给 Media3，
+                     * 而 Media3 对 `SEEK_TO_NEXT` 的语义就是「切歌」——
+                     * **不管当前是不是暂停，切完仍然是暂停**。
+                     * 所以车机方向盘按下一首 → 歌变了但不出声 → 用户以为没反应。
+                     *
+                     * ## 用户要的行为（原话）
+                     * ```
+                     * 「如果当前这个音乐是暂停的状态，点下一曲就是播放；
+                     *   如果当前这个音乐是播放的状态，点下一曲就是下一曲」
+                     * ```
+                     *
+                     * 这正是蓝牙耳机/CarLife 的通用直觉：没在播的时候任何媒体键
+                     * 都应该「把音乐叫起来」。
+                     *
+                     * ## 只做这一件事，不越界
+                     *
+                     * ```
+                     * 暂停 + NEXT/PREV  → 切歌，然后把 playWhenReady 置 true（开始播）
+                     * 播放中 + NEXT     → 原样放行（照常下一首）
+                     * 视频占用          → 上面那段已经拦掉了，不会走到这
+                     * ```
+                     * 不碰 `restoreForResumption()`、不碰蓝牙 Receiver、
+                     * 不碰 `saveMemory()` —— 续播红线完好。
+                     */
+                    val isSeekNext = playerCommands and
+                        (androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT or
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) != 0L
+                    val isSeekPrev = playerCommands and
+                        (androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS or
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) != 0L
+                    if ((isSeekNext || isSeekPrev) && !graph.music.player.isPlaying) {
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "暂停中按${if (isSeekNext) "下一首" else "上一首"} → 切歌并开始播放",
+                        )
+                        if (isSeekNext) graph.music.player.seekToNextMediaItem()
+                        else graph.music.player.seekToPreviousMediaItem()
+                        /**
+                         * 用户主动要求播放 → 标记下来，
+                         * 避免「唤醒卡片」那段把它当成自己的静音轻播再暂停掉。
+                         */
+                        graph.music.markUserPlayback()
+                        graph.music.player.play()
+                        return androidx.media3.session.SessionResult.RESULT_SUCCESS
+                    }
                     return super.onPlayerCommandRequest(mediaSession, controller, playerCommands)
                 }
 

@@ -1668,6 +1668,20 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 因为唤醒协程的 `delay(120)` 走完会无条件 `pause()`。
      * 这里置位后，唤醒协程在暂停前会看到并放弃暂停。
      */
+    /**
+     * 外部（MediaSession / 车机方向盘 / 蓝牙）要求「开始播放」时调用。
+     *
+     * 用户口径（#191）：暂停状态下按下一首应当**切歌并播放**。
+     * 置位后唤醒逻辑不会把这当成自己的静音轻播再暂停掉。
+     */
+    fun markUserPlayback() {
+        userTouchedPlayback = true
+        wakeForCard = true
+        /** 清掉「唤醒窗口」，之后任何 PLAYING 都不再被判定成本次唤醒造成的。 */
+        wakeStartedAt = 0L
+        wakePauseCancelled = true
+    }
+
     fun playOrResume() {
         userTouchedPlayback = true
         wakeForCard = true
