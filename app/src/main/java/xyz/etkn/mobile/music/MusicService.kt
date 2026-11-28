@@ -272,21 +272,51 @@ class MusicService : MediaSessionService() {
                     val isSeekPrev = playerCommands and
                         (androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS or
                             androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) != 0
+                    /**
+                     * 用户口径（#191 修订，2026-11-28）**暂停时按切歌键 = 开始播放，不跳歌**。
+                     *
+                     * 用户确认的两条（逐字）：
+                     * ```
+                     * 问：上车后车机卡片显示暂停中的那首歌，按方向盘「下一首」希望它做什么？
+                     * 答：不跳歌，直接把当前这首放起来（接着上次的进度）
+                     *
+                     * 问：这个规则是每次按都生效，还是只在上车那一下？
+                     * 答：一直这样：只要暂停着，按下一首都是开始播放
+                     * ```
+                     *
+                     * ## 之前写错的地方
+                     *
+                     * 上一版是 `seekToNextMediaItem()` + `play()` ——
+                     * **既跳歌又播放**。用户没要「跳歌」，他要的是「把当前这首放起来」。
+                     * 上车场景下，卡片显示的就是他上次没听完的那首，
+                     * 一按方向盘就把它跳过去，等于把想听的那首丢了。
+                     *
+                     * ## 现在
+                     *
+                     * ```
+                     * 暂停 + 下一首/上一首 → 什么都不切，直接 play() 接着播
+                     * 正在播 + 下一首     → 交给 Media3 默认逻辑（正常下一首）
+                     * ```
+                     * 位置用播放器当前的 `currentPosition`（续播时已 seek 回记忆位置），
+                     * 所以是「接着上次的进度」放。
+                     *
+                     * 不碰 `restoreForResumption()` / 蓝牙 Receiver / `saveMemory()`。
+                     */
                     if ((isSeekNext || isSeekPrev) && !graph.music.player.isPlaying) {
                         android.util.Log.i(
                             "ETKN-Music",
-                            "暂停中按${if (isSeekNext) "下一首" else "上一首"} → 切歌并开始播放",
+                            "暂停中按${if (isSeekNext) "下一首" else "上一首"} → 不跳歌，直接开始播放 " +
+                                "pos=${graph.music.player.currentPosition}ms",
                         )
-                        if (isSeekNext) graph.music.player.seekToNextMediaItem()
-                        else graph.music.player.seekToPreviousMediaItem()
-                        /**
-                         * 用户主动要求播放 → 标记下来，
-                         * 避免「唤醒卡片」那段把它当成自己的静音轻播再暂停掉。
-                         */
+                        /** 用户主动要求播放 → 唤醒逻辑不要把它再暂停掉。 */
                         graph.music.markUserPlayback()
                         graph.music.player.play()
                         return androidx.media3.session.SessionResult.RESULT_SUCCESS
                     }
+                    /**
+                     * 播放中的下一首/上一首走这里 → Media3 默认逻辑，正常切歌。
+                     * 「暂停时切歌键=开播」和「播放时切歌键=切歌」两条互不干扰。
+                     */
                     return super.onPlayerCommandRequest(mediaSession, controller, playerCommands)
                 }
 
