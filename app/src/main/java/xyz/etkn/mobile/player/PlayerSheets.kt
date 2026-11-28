@@ -26,7 +26,6 @@ import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -75,6 +74,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import xyz.etkn.mobile.data.model.MediaSource
 import xyz.etkn.mobile.data.model.MediaStream
+import xyz.etkn.mobile.ui.components.EtknLoading
 
 @Composable
 internal fun PlayerSheet(
@@ -257,7 +257,7 @@ private fun CastSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Unit)
         }
     }
     when (val found = devices) {
-        null -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { LoadingIndicator() }
+        null -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { EtknLoading() }
         else -> {
             if (found.isEmpty()) {
                 Text("没有找到投屏设备", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
@@ -376,7 +376,7 @@ private fun EpisodeSheet(ui: VideoUi, session: VideoSession, onDismiss: () -> Un
     Text(current.seasonName ?: "选集", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
     val list = episodes
     if (list == null) {
-        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { LoadingIndicator() }
+        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { EtknLoading() }
         return
     }
     val urls = images()

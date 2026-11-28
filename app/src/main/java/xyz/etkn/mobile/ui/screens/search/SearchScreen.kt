@@ -23,7 +23,6 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SearchBarDefaults
 import androidx.compose.material3.Text
@@ -89,6 +88,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.background
+import xyz.etkn.mobile.ui.components.EtknLoading
 
 @Composable
 fun SearchScreen() {
@@ -169,7 +169,7 @@ fun SearchScreen() {
                             when (online) {
                                 Load.Loading -> Row(
                                     Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 10.dp),
-                                ) { LoadingIndicator() }
+                                ) { EtknLoading() }
                                 is Load.Failed -> Row(
                                     Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
@@ -268,7 +268,7 @@ private fun DiscoverFallback(
             item(key = "head-${kind.wire}", contentType = "head") { SectionHeader("探索 · ${kind.label}") }
             item(key = "row-${kind.wire}", contentType = "row") {
                 when (load) {
-                    Load.Loading -> Box(Modifier.fillMaxWidth().height(width * 1.6f), contentAlignment = Alignment.Center) { LoadingIndicator() }
+                    Load.Loading -> Box(Modifier.fillMaxWidth().height(width * 1.6f), contentAlignment = Alignment.Center) { EtknLoading() }
                     is Load.Failed -> Row(
                         Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -331,7 +331,7 @@ private fun SearchResults(
             }
             when (load) {
                 Load.Loading -> item(span = { GridItemSpan(maxLineSpan) }, key = "on-l-${kind.wire}") {
-                    Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { LoadingIndicator() }
+                    Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { EtknLoading() }
                 }
                 is Load.Failed -> item(span = { GridItemSpan(maxLineSpan) }, key = "on-f-${kind.wire}") {
                     Row(

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.RangeSliderState
@@ -37,6 +36,7 @@ import java.time.LocalDate
 import kotlin.math.roundToInt
 import xyz.etkn.mobile.ui.components.PillGap
 import xyz.etkn.mobile.ui.components.PillToggle
+import xyz.etkn.mobile.ui.components.EtknLoading
 
 /** Pick one day and an hour range of the local error log, then save it as a text file. */
 @Composable
@@ -70,7 +70,7 @@ fun LogExportSheet(onDismiss: () -> Unit) {
             Text("导出日志", style = MaterialTheme.typography.titleLarge)
             val list = days
             when {
-                list == null -> LoadingIndicator(Modifier.align(Alignment.CenterHorizontally))
+                list == null -> EtknLoading(Modifier.align(Alignment.CenterHorizontally))
                 list.isEmpty() -> Text("暂无日志", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(PillGap), verticalArrangement = Arrangement.spacedBy(PillGap)) {

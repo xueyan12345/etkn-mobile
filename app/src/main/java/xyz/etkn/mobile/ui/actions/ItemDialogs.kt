@@ -36,7 +36,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -89,6 +88,7 @@ import xyz.etkn.mobile.ui.components.PillToggle
 import xyz.etkn.mobile.ui.components.images
 import xyz.etkn.mobile.ui.screens.me.SwitchRow
 import xyz.etkn.mobile.ui.theme.Corner
+import xyz.etkn.mobile.ui.components.EtknLoading
 
 // ---------- Refresh ----------
 
@@ -156,7 +156,7 @@ internal fun DeleteDialog(item: Item, menu: ItemMenu) {
             Column {
                 Text("确定删除“${item.name}”吗？将删除$scopeText，并进入联动删除流程，可能同时删除关联文件。")
                 when {
-                    list == null -> Box(Modifier.fillMaxWidth().padding(top = 16.dp), contentAlignment = Alignment.Center) { LoadingIndicator() }
+                    list == null -> Box(Modifier.fillMaxWidth().padding(top = 16.dp), contentAlignment = Alignment.Center) { EtknLoading() }
                     list.size > 1 -> Column(Modifier.padding(top = 12.dp).heightIn(max = 280.dp).verticalScroll(rememberScrollState())) {
                         VersionOption("全部版本", choice == null) { choice = null }
                         list.forEach { version -> VersionOption(version.label, choice == version.id) { choice = version.id } }
@@ -270,7 +270,7 @@ internal fun MetadataSheet(item: Item, menu: ItemMenu) {
             Text("编辑元数据", style = MaterialTheme.typography.titleLarge)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (!loaded && error == null) {
-                Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) { LoadingIndicator() }
+                Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) { EtknLoading() }
                 return@Column
             }
             OutlinedTextField(name, { name = it }, label = { Text("标题") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -417,7 +417,7 @@ internal fun ImageSheet(item: Item, menu: ItemMenu) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("编辑图片", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                if (busy) LoadingIndicator(Modifier.size(36.dp))
+                if (busy) EtknLoading(Modifier.size(36.dp), size = 6.dp)
                 FilledTonalButton(onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !busy) {
                     Icon(Icons.Rounded.Upload, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
@@ -438,7 +438,7 @@ internal fun ImageSheet(item: Item, menu: ItemMenu) {
         Box(Modifier.fillMaxWidth().height(460.dp)) {
             when {
                 loadError != null -> Text(loadError.orEmpty(), color = MaterialTheme.colorScheme.error, modifier = Modifier.align(Alignment.Center).padding(24.dp))
-                candidates == null -> LoadingIndicator(Modifier.align(Alignment.Center))
+                candidates == null -> EtknLoading(Modifier.align(Alignment.Center))
                 candidates.isEmpty() -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Rounded.Image, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(32.dp))
                     Text("没有找到可用图片", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))

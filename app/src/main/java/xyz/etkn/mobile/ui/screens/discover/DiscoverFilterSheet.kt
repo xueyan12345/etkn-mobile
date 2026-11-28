@@ -25,7 +25,6 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -60,6 +59,7 @@ import xyz.etkn.mobile.ui.components.GlassSheet
 import xyz.etkn.mobile.ui.theme.Corner
 import xyz.etkn.mobile.ui.components.PillGap
 import xyz.etkn.mobile.ui.components.PillToggle
+import xyz.etkn.mobile.ui.components.EtknLoading
 
 /** [department] = TMDb department a typed name is matched in (people pickers only). */
 private enum class Picker(val title: String, val department: String = "") {
@@ -328,7 +328,7 @@ private fun PeoplePickerSheet(
             OutlinedTextField(
                 value = search, onValueChange = { search = it }, singleLine = true,
                 placeholder = { Text("输入姓名") }, leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                trailingIcon = { if (loading) LoadingIndicator(Modifier.size(24.dp)) },
+                trailingIcon = { if (loading) EtknLoading(Modifier.size(24.dp), size = 4.dp) },
                 isError = notFound,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { confirm() }),

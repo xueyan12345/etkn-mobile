@@ -37,7 +37,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -68,6 +67,7 @@ import xyz.etkn.mobile.data.session.SavedAccount
 import xyz.etkn.mobile.data.session.StoredSessions
 import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.ui.theme.Corner
+import xyz.etkn.mobile.ui.components.EtknLoading
 
 private sealed interface Step {
     data object Server : Step
@@ -282,7 +282,7 @@ private fun PrimaryAction(label: String, busy: Boolean, enabled: Boolean, onClic
         enabled = enabled && !busy,
         modifier = Modifier.fillMaxWidth().height(ButtonDefaults.MediumContainerHeight),
     ) {
-        if (busy) LoadingIndicator(Modifier.size(28.dp), color = MaterialTheme.colorScheme.onPrimary)
+        if (busy) EtknLoading(Modifier.size(28.dp), size = 5.dp, tint = MaterialTheme.colorScheme.onPrimary)
         else Text(label, style = MaterialTheme.typography.titleMedium)
     }
 }

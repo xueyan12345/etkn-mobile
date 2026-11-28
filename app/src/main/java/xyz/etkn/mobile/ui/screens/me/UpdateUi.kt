@@ -22,7 +22,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearWavyProgressIndicator
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -49,6 +48,7 @@ import xyz.etkn.mobile.data.update.formatBytes
 import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.ui.components.GlassSheet
 import androidx.compose.runtime.LaunchedEffect
+import xyz.etkn.mobile.ui.components.EtknLoading
 
 /** Settings → 检查更新. */
 @Composable
@@ -71,7 +71,7 @@ internal fun UpdateSettings(settings: Settings) {
             )
         }
         if (state.checking) {
-            LoadingIndicator(Modifier.size(40.dp))
+            EtknLoading(Modifier.size(40.dp), size = 7.dp)
         } else {
             FilledTonalButton(onClick = { graph.updates.check() }) { Text("检查更新") }
         }
@@ -174,7 +174,7 @@ private fun UpdatePanel(state: UpdateState) {
                     }
                 }
                 DownloadState.Verifying -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    LoadingIndicator(Modifier.size(32.dp))
+                    EtknLoading(Modifier.size(32.dp), size = 6.dp)
                     Text("正在校验安装包…", modifier = Modifier.padding(start = 12.dp))
                 }
                 is DownloadState.Done -> {
