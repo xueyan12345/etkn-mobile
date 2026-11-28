@@ -363,24 +363,32 @@ class MusicService : MediaSessionService() {
             b.setShowWhen(false)
             b.setVisibility(android.app.Notification.VISIBILITY_PUBLIC)
             /**
-             * MediaStyle 里**不绑 session token** —— 见下方说明。
+             * **这里故意不设 MediaStyle。**
              *
-             * Media3 的 `androidx.media3.session.MediaSession` 没有公开
-             * `getPlatformToken()`（api.txt 里查不到），而平台
-             * `MediaStyle.setMediaSession()` 需要的是
-             * `android.media.session.MediaSession.Token`。
+             * 实测（v1.19.7）：设了 `MediaStyle()`（即使不绑 token）后，
+             * `startForeground` 返回成功、`startForegroundCount=1`，
+             * 但 `cmd notification list` 里查不到 —— 通知被系统丢掉了。
              *
-             * 但这条通知本来就不需要它：
+             * 原因：平台 `MediaStyle.setMediaSession()` 需要一个
+             * `android.media.session.MediaSession.Token`，而 Media3 的
+             * `androidx.media3.session.MediaSession` 没有公开 `getPlatformToken()`
+             * （api.txt 里确认过）。没绑 token 的 MediaStyle 在部分 ROM 上
+             * 会被判定成「不完整的媒体通知」而直接丢弃。
+             *
+             * ## 现在的做法：先发一条普通通知
+             *
              * ```
-             * 系统媒体卡片识别「这是媒体通知」靠的是：
-             *   ① 通知由 MediaStyle 渲染（有媒体样式外观）
-             *   ② 同一个 App 有活跃的媒体会话（我们本来就有，实测在 Sessions Stack 里）
-             * 卡片上的按钮走的是**会话**，不是通知里写死的 action
+             * 目标不是「长成媒体卡片的样子」，
+             * 而是「让系统里存在一条属于本 App 的常驻通知」
              * ```
-             * 所以不给 token 也能显示，并且按钮点了会正确作用于当前播放器。
+             * 有了它：
+             * ```
+             * ① startForeground 成功 → 服务不会因为「没进前台」被杀
+             * ② OPPO 媒体控制器在「有活跃会话 + 有常驻通知」时会接管显示
+             * ③ 就算它不接管，用户状态栏里至少能看到歌名
+             * ```
+             * 先验证这条能不能出现，再决定要不要补 MediaStyle。
              */
-            @Suppress("DEPRECATION")
-            b.style = android.app.Notification.MediaStyle().setShowActionsInCompactView(0)
             startForeground(CARD_ID, b.build())
             if (!cardBuilt) {
                 cardBuilt = true
