@@ -906,7 +906,16 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                                  * 1200ms 足够它完成一次 `dispatchMediaDataOnLoaded`。
                                  * 全程 `volume = 0f`，用户听不到任何声音。
                                  */
-                                kotlinx.coroutines.delay(1_200L)
+                                /**
+                                 * 用户口径（#194）**这个静音轻播能看见，要缩短**。
+                                 * 原话：「播放然后暂停的时间能缩短一下吗，我每次都能看见她播放然后暂停」
+                                 *
+                                 * 之前拉到 1200ms 是为了让 ColorOS 的异步加载抓到 PLAYING 状态；
+                                 * 现在卡片改成了「状态自愈」（服务不在就补拉），
+                                 * 不再依赖这个窗口 —— 所以缩回 150ms，
+                                 * 既够系统记下「刚播过」，人耳也基本察觉不到。
+                                 */
+                                kotlinx.coroutines.delay(150L)
                                 /**
                                  * 暂停前三重判断，防「用户点了播放被我们停掉」（#184）。
                                  * 规则同 `allowWakeAgain()` 里那段，注释见那里。
@@ -919,7 +928,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                                  * 直接触发 `advanced > 300` → **永远不暂停** → 音乐一直响。
                                  * 取 2000ms：既容得下自己的 1200ms，又能识别「用户真的在听」。
                                  */
-                                val cancelled = wakePauseCancelled || userTouchedPlayback || advanced > 2_000L
+                                /** 窗口缩到 150ms 后，阈值同步收到 800ms（容差仍然充足）。 */
+                                val cancelled = wakePauseCancelled || userTouchedPlayback || advanced > 800L
                                 if (cancelled) {
                                     android.util.Log.i(
                                         "ETKN-Music",
@@ -1925,7 +1935,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                     wakePauseCancelled = false
                     p.play()
                     /** 窗口拉到 1200ms，理由见 restore 分支里那段（#189）。 */
-                    kotlinx.coroutines.delay(1_200L)
+                    /** 150ms，理由同 restore 分支（#194：轻播窗口能被用户看见）。 */
+                    kotlinx.coroutines.delay(150L)
                     /**
                      * 暂停前做**三重判断**，任何一条成立就不暂停：
                      *
@@ -1940,7 +1951,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                      */
                     val advanced = p.currentPosition - posBefore
                     /** 阈值 2000ms，理由同 restore 分支（要容下自己 1200ms 的静音播放）。 */
-                    val someoneElse = wakePauseCancelled || userTouchedPlayback || advanced > 2_000L
+                    val someoneElse = wakePauseCancelled || userTouchedPlayback || advanced > 800L
                     if (someoneElse) {
                         android.util.Log.i(
                             "ETKN-Music",
