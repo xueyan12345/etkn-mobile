@@ -703,10 +703,46 @@ class MusicService : MediaSessionService() {
             return super.onStartCommand(intent, flags, startId)
         }
 
-        /** ② 只有媒体键触发的启动才接管（普通启动不动）。 */
+        /**
+         * ② 只有媒体键触发的启动才接管（普通启动不动）。
+         *
+         * ## 用户实测（2026-11-28，#202）
+         *
+         * ```
+         * 「耳机后台拉起的下一首是打开暂停」
+         * ```
+         * 也就是说：耳机确实把 App 拉起来了（说明 `b1832b3` 删掉的那段
+         * 「预装 MediaItem」恢复有效），但拉起后停在**暂停**状态，没开始播。
+         *
+         * ## 为什么会漏
+         *
+         * `pressed` 来自 `MediaButtonHint`，只有 `EtknMediaButtonReceiver`
+         * 先收到广播才会被赋值。
+         * 但实际存在两条拉起路径：
+         * ```
+         * 路径 A：耳机广播 → Receiver → 记录 keyCode → 转发 Media3 → 拉起服务
+         *          → pressed 有值 ✅
+         * 路径 B：系统直接通过会话恢复服务（不经过我们的 Receiver）
+         *          → pressed == null → 上一版直接 return → 不播放 ❌
+         * ```
+         * 用户遇到的就是 B。
+         *
+         * ## 现在：没有 keyCode 也不再直接放弃
+         *
+         * 只在「明确是暂停/停止键」时才不播（下面第 ③ 段）。
+         * 拿不到 keyCode 的情况，按「用户希望它响」处理 ——
+         * 因为这种冷启动只可能由媒体按键或系统恢复触发，
+         * 不会是用户随手点图标（那走 Activity 不走 Service）。
+         *
+         * 若误判（比如系统后台恢复服务），代价是开始播放音乐，
+         * 用户按一下暂停即可；而漏判的代价是「按了没反应」，
+         * 对上车场景更糟。
+         */
         if (pressed == null) {
-            android.util.Log.i("ETKN-Music", "onStartCommand: 无媒体键，跳过")
-            return super.onStartCommand(intent, flags, startId)
+            android.util.Log.i(
+                "ETKN-Music",
+                "onStartCommand: 无 keyCode（系统/会话直接拉起）→ 按要播放处理",
+            )
         }
 
         /** ③ 暂停键就是暂停，不要播。 */
@@ -728,13 +764,59 @@ class MusicService : MediaSessionService() {
                         it is xyz.etkn.mobile.data.session.SessionState.SignedIn
                     }
                 }
-                withTimeoutOrNull(5_000L) {
+                val mem = withTimeoutOrNull(5_000L) {
                     applicationContext.graph.music.remembered.first { it != null }
                 }
-                applicationContext.graph.music.resumeRemembered()
+                if (mem == null) {
+                    /**
+                     * 用户实测（#202）**耳机拉起后停在暂停**。
+                     *
+                     * 原来这里不管记忆有没有拿到都硬调 `resumeRemembered()`，
+                     * 拿不到时它内部会静默返回 —— 表现为「拉起来了但不播」。
+                     *
+                     * 现在明确区分：没有记忆就退化成「直接播当前装好的那首」，
+                     * 因为 `onCreate` 里已经预装了 MediaItem（恢复蓝牙唤醒那段），
+                     * 播放器里是有内容的，直接 `play()` 就能出声。
+                     */
+                    android.util.Log.w(
+                        "ETKN-Music",
+                        "onStartCommand: 没拿到记忆队列，改为直接播放已装载的曲目",
+                    )
+                    runCatching {
+                        val p = applicationContext.graph.music.player
+                        if (p.mediaItemCount > 0) {
+                            /**
+                             * `play()` 必须在播放器能播之后才有效果。
+                             * 冷启动时直链还没解析，`prepare()` 后会先 BUFFERING，
+                             * 此时 `play()` 只是设置「准备好就播」，不会立刻出声。
+                             * 所以要等它到 READY（最多 8 秒）再确认一次。
+                             */
+                            p.prepare()
+                            p.play()
+                            var waited = 0L
+                            while (waited < 8_000L && p.playbackState != Player.STATE_READY) {
+                                kotlinx.coroutines.delay(200L)
+                                waited += 200L
+                            }
+                            android.util.Log.i(
+                                "ETKN-Music",
+                                "兜底播放：等待 ${waited}ms 后 state=${p.playbackState} " +
+                                    "isPlaying=${p.isPlaying} pos=${p.currentPosition}ms",
+                            )
+                            /** 到了 READY 但没在播，再点一次（有些机型第一次 play 被吞）。 */
+                            if (!p.isPlaying) p.play()
+                        }
+                    }
+                } else {
+                    applicationContext.graph.music.resumeRemembered()
+                }
+                /** 延迟一拍再读状态，`play()` 之后 isPlaying 不是立刻变 true 的。 */
+                kotlinx.coroutines.delay(600L)
+                val nowPlaying = applicationContext.graph.music.player.isPlaying
                 android.util.Log.i(
                     "ETKN-Music",
-                    "onStartCommand: 已触发播放 isPlaying=${applicationContext.graph.music.player.isPlaying}",
+                    "onStartCommand: 播放触发完成 isPlaying=$nowPlaying " +
+                        "state=${applicationContext.graph.music.player.playbackState}",
                 )
             }
         }
@@ -803,69 +885,29 @@ class MusicService : MediaSessionService() {
     override fun onDestroy() {
         alive = false
         /**
-         * 用户口径（2026-11-28，#199）**蓝牙耳机唤醒失效**。
+         * 用户口径（2026-11-28，#201）**这段自动重建必须删掉**。
          *
-         * ## 现场数据（adb 实测）
-         *
+         * 用户实测：
          * ```
-         * 进程 29624 在跑
-         * MediaSession = 0 个      ← 蓝牙按键找不到接收者
-         * MusicService = 0         ← 服务不在
-         * 应用待机分桶 = 5 (RESTRICTED，最深一档限制)
+         * 「修出问题了，那个播放卡片一直在跳，好像是频繁启停」
          * ```
          *
-         * 蓝牙耳机的播放/暂停/切歌按键是发给**当前活动的媒体会话**的。
-         * 服务没了 → 会话没了 → 按键没有任何接收者 → 「打不开、唤醒不了」。
+         * 原因：服务被销毁时立刻 `startService` 重建，而重建后
+         * `onCreate` 里的 `prepare()` / 唤醒逻辑又会触发一次状态变化，
+         * 招惹 ColorOS 再次停掉它 —— 形成
+         * ```
+         * onDestroy → 重建 → onCreate → prepare → 被停 → onDestroy → ...
+         * ```
+         * 于是卡片就一直在「出现→消失→出现」地跳。
          *
-         * ## 为什么之前没这个问题
+         * 教训：**「被系统杀就自重建」这种对抗系统的写法不能用**。
+         * ColorOS 的进程/服务管理是它的地盘，硬重建只会被判定成异常应用，
+         * 待机分桶继续往下降，越修越糟。
          *
-         * 上一版 `onTaskRemoved` 会 `stopSelf()`，但那时系统还会保留会话存活一小段；
-         * 我改成「保持存活」之后，服务如果被 ColorOS 从**别的路径**停掉，
-         * 就没人再把它拉起来了 —— 前台巡检只在 Activity 可见时跑。
-         *
-         * ## 现在
-         *
-         * 服务被销毁时，只要**队列里还有歌**，就立刻把自己重新拉起来。
-         * 这是「保持媒体会话一直存在」的最后一道保险，
-         * 也是蓝牙按键能随时唤醒 App 的前提。
-         *
-         * 注意：只在有内容时重建，用户主动清空队列 / 退出登录不会无限重启。
+         * 蓝牙唤醒的正确修法在**别处**：`onCreate` 里 Session 建好后
+         * 预装 MediaItem（那一段保留），让系统媒体栈里始终有内容可认，
+         * 而不是靠不停重启服务去占位。
          */
-        runCatching {
-            /** 用 graph 里的同一个播放器（session 可能已在 super.onDestroy() 释放前仍可读）。 */
-            val stillHasContent =
-                (applicationContext.graph.music.player.mediaItemCount) > 0
-            /**
-             * **必须限流，否则会被系统当成恶意重启**。
-             *
-             * 如果 ColorOS 立刻再杀一次，`onDestroy` 又会重建 ——
-             * 变成「起→杀→起→杀」的死循环，反而会被判成异常应用、
-             * 待机分桶继续往下降（现在是 5 = RESTRICTED，已经是最差一档）。
-             *
-             * 规则：10 分钟内最多重建 3 次，超了就放弃，
-             * 交给用户下次打开 App 时由 `onStart` 的自愈逻辑接管。
-             */
-            val now = System.currentTimeMillis()
-            if (now - lastRebuildAt > 10 * 60_000L) rebuildCount = 0
-            val allow = rebuildCount < 3
-            if (stillHasContent && !allow) {
-                android.util.Log.w(
-                    "ETKN-Music",
-                    "MusicService 重建次数超限($rebuildCount)，放弃自动重建",
-                )
-            }
-            if (stillHasContent && allow) {
-                rebuildCount++
-                lastRebuildAt = now
-                android.util.Log.i("ETKN-Music", "MusicService 被销毁但有内容 → 立即重建")
-                startService(
-                    android.content.Intent(
-                        applicationContext,
-                        MusicService::class.java,
-                    ),
-                )
-            }
-        }.onFailure { android.util.Log.w("ETKN-Music", "重建 MusicService 失败", it) }
         session?.release()
         session = null
         super.onDestroy()

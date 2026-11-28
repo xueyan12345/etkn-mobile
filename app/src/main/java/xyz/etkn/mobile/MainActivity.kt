@@ -133,36 +133,23 @@ class MainActivity : ComponentActivity() {
         }.onFailure { android.util.Log.w("ETKN-App", "onStart 唤醒失败", it) }
 
         /**
-         * 兜住「App 已经在前台、服务却被中途停掉」这种情况 ——
-         * 那时不会再走 `onStart`，光靠上面那次检查等于没兜。
+         * 用户口径（2026-11-28，#201）**删掉每秒巡检**。
          *
-         * 每秒看一眼，服务没了就补拉。只在前台运行，
-         * `onStop` 里取消，不会在后台空转耗电。
+         * 用户实测：「那个播放卡片一直在跳，好像是频繁启停」
+         *
+         * 每秒检查 `MusicService.alive`，不在就 `startService` —— 这等于
+         * 用应用层去跟 ColorOS 的服务管理对抗：
+         * ```
+         * 系统停服务 → 我们 1 秒内补拉 → 系统再停 → 再拉 ...
+         * ```
+         * 卡片就跟着「出现→消失」地跳，而且会被判定成异常应用，
+         * 待机分桶继续降级（现在已是 5 = RESTRICTED 最差一档）。
          */
-        guardJob?.cancel()
-        guardJob = lifecycleScope.launch {
-            while (isActive) {
-                delay(1_000L)
-                if (!xyz.etkn.mobile.music.MusicService.alive) {
-                    android.util.Log.i("ETKN-App", "前台巡检：MusicService 不在了 → 补拉")
-                    runCatching {
-                        startService(
-                            Intent(this@MainActivity, xyz.etkn.mobile.music.MusicService::class.java),
-                        )
-                    }
-                }
-            }
-        }
     }
 
     override fun onStop() {
-        guardJob?.cancel()
-        guardJob = null
         super.onStop()
     }
-
-    /** 前台服务巡检协程，`onStop` 时取消。 */
-    private var guardJob: kotlinx.coroutines.Job? = null
 
     /**
      * Several ROMs keep apps at 60 Hz unless they ask, which makes page turns and scrolling stutter
