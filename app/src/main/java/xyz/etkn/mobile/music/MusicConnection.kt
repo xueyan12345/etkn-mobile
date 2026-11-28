@@ -878,14 +878,48 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                                 wakeStartedAt = System.currentTimeMillis()
                                 wakePauseCancelled = false
                                 p.play()
-                                kotlinx.coroutines.delay(120L)
+                                /**
+                                 * 用户口径（2026-11-28，#189）**窗口必须够长**。
+                                 *
+                                 * ## 决定性证据（ColorOS 系统 UI 自己的日志）
+                                 *
+                                 * ```
+                                 * 16:38:15.409  isPlaying=false   ← 唤醒前
+                                 * 16:38:15.437  isPlaying=true    ← 我 play()
+                                 * 16:38:15.546  isPlaying=false   ← 我 pause()
+                                 * ```
+                                 * **PLAYING 只持续了 137ms** —— 而 `SystemUi--Media` 的
+                                 * `MEDIA_PANEL dispatchMediaDataOnLoaded` 是**异步加载**的：
+                                 * 它要在 PLAYING 期间把数据抓下来才会建卡片。
+                                 *
+                                 * 全量统计（一次 4 万行日志）：
+                                 * ```
+                                 * MEDIA_PANEL 加载时 isPlaying=false 共 46 次
+                                 * MEDIA_PANEL 加载时 isPlaying=true  共  8 次
+                                 * ```
+                                 * 也就是说系统绝大多数时候抓到的都是 `false`（已暂停）。
+                                 * 只有恰好抢在那 137ms 里加载完 → 卡片显示 → **交替出现**。
+                                 *
+                                 * ## 所以：窗口拉到 1200ms
+                                 *
+                                 * 120ms 太短，系统的异步加载抢不到；
+                                 * 1200ms 足够它完成一次 `dispatchMediaDataOnLoaded`。
+                                 * 全程 `volume = 0f`，用户听不到任何声音。
+                                 */
+                                kotlinx.coroutines.delay(1_200L)
                                 /**
                                  * 暂停前三重判断，防「用户点了播放被我们停掉」（#184）。
                                  * 规则同 `allowWakeAgain()` 里那段，注释见那里。
                                  */
                                 val advanced = p.currentPosition - posBefore
                                 val winAge = System.currentTimeMillis() - wakeStartedAt
-                                val cancelled = wakePauseCancelled || userTouchedPlayback || advanced > 300L
+                                /**
+                                 * 阈值必须 > 播放窗口（1200ms）+ 容差。
+                                 * 否则这 1.2 秒的静音播放本身就会让位置前进 1200ms，
+                                 * 直接触发 `advanced > 300` → **永远不暂停** → 音乐一直响。
+                                 * 取 2000ms：既容得下自己的 1200ms，又能识别「用户真的在听」。
+                                 */
+                                val cancelled = wakePauseCancelled || userTouchedPlayback || advanced > 2_000L
                                 if (cancelled) {
                                     android.util.Log.i(
                                         "ETKN-Music",
@@ -1396,7 +1430,12 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                  */
                 if (isPlaying && wakeStartedAt > 0L) {
                     val age = System.currentTimeMillis() - wakeStartedAt
-                    if (age > 1_500L) {
+                    /**
+ * 判定窗口必须**小于**我自己的播放窗口（1200ms），
+ * 否则我自己 play() 造成的 PLAYING 也会被当成「用户接管」→ 永远不暂停。
+ * 取 800ms：我自己 play() 后状态变化在几十毫秒内，800ms 已经够宽松。
+ */
+                    if (age > 800L) {
                         wakePauseCancelled = true
                         android.util.Log.i(
                             "ETKN-Music",
@@ -1863,7 +1902,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                     wakeStartedAt = System.currentTimeMillis()
                     wakePauseCancelled = false
                     p.play()
-                    kotlinx.coroutines.delay(120L)
+                    /** 窗口拉到 1200ms，理由见 restore 分支里那段（#189）。 */
+                    kotlinx.coroutines.delay(1_200L)
                     /**
                      * 暂停前做**三重判断**，任何一条成立就不暂停：
                      *
@@ -1877,7 +1917,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                      * 三条都不成立才 pause（说明这 120ms 确实是我们的静音轻播）。
                      */
                     val advanced = p.currentPosition - posBefore
-                    val someoneElse = wakePauseCancelled || userTouchedPlayback || advanced > 300L
+                    /** 阈值 2000ms，理由同 restore 分支（要容下自己 1200ms 的静音播放）。 */
+                    val someoneElse = wakePauseCancelled || userTouchedPlayback || advanced > 2_000L
                     if (someoneElse) {
                         android.util.Log.i(
                             "ETKN-Music",
