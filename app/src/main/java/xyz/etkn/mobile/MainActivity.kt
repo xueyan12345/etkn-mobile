@@ -54,6 +54,47 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 用户口径（2026-11-28，#185）**每次回到这个界面都点亮控制中心卡片**。
+     *
+     * 用户实测：
+     * ```
+     * 「第一次显示，第二次不显示，第三次显示第4次不显示」
+     * 「我点每次都把后台彻底杀掉」「把后台卡片都彻底划掉」
+     * ```
+     *
+     * ## 为什么挂在 `EtknApp.onCreate` 不行（实测确认）
+     *
+     * adb 观察：用户「划掉」App 之后，
+     * **进程号一直没变**（还是同一个），说明 ColorOS 只是把界面划掉了，
+     * 进程还在。于是：
+     * ```
+     * 再点图标 → Activity 重建 → Application.onCreate 不会执行
+     * → `allowWakeAgain()` 不执行 → wakeForCard 保持上一轮的值 → 交替
+     * ```
+     * 只有 `am force-stop`（我在命令行测试时用的）才会真杀进程，
+     * 所以「我用命令行每次都出、你手动就交替」—— 两个现象完全对上。
+     *
+     * ## 现在挂到 onStart
+     *
+     * `onStart` 比 `onCreate` 可靠得多：
+     * ```
+     * 进程被杀 → 冷启动 → onCreate + onStart 都走 → 唤醒
+     * 进程还在 → 点图标 → onStart 走（onCreate 不走）→ 也会唤醒
+     * ```
+     * 这样两种情况都能保证「打开就有卡片」。
+     *
+     * 为什么不用 `onResume`：`onResume` 在弹窗关闭、切回来时也会频繁触发，
+     * 会不必要地多次静音轻播；`onStart` 只在「界面真正从不可见到可见」时走一次。
+     */
+    override fun onStart() {
+        super.onStart()
+        runCatching {
+            graph.music.allowWakeAgain()
+            android.util.Log.i("ETKN-App", "MainActivity.onStart → 允许唤醒卡片")
+        }.onFailure { android.util.Log.w("ETKN-App", "onStart 唤醒失败", it) }
+    }
+
+    /**
      * Several ROMs keep apps at 60 Hz unless they ask, which makes page turns and scrolling stutter
      * on 90 / 120 / 144 Hz panels. Ask for the panel's fastest mode at the current resolution (a
      * different resolution would rescale the UI). Only this window asks; the player sets its own
