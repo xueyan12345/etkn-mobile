@@ -1384,9 +1384,19 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                  * 我自己 play() 后状态变化在几十毫秒内；
                  * 超过 250ms 才变播放，只能是用户点了（或蓝牙命令）。
                  */
+                /**
+                 * 用户实测（#188）**「点播放 → 播两秒就停」**。
+                 *
+                 * 上一版用 250ms 判定「是不是我造成的」，但用户点播放到
+                 * 状态真正变 PLAYING 之间可能隔了不止 250ms（解析直链、起播放器），
+                 * 于是被误判成「我自己的唤醒」→ 照样被 pause 掉。
+                 *
+                 * 改成 1500ms：我从 play() 到 pause() 只用 120ms，
+                 * 任何超过 1500ms 才变播放的，一定不是这次唤醒造成的。
+                 */
                 if (isPlaying && wakeStartedAt > 0L) {
                     val age = System.currentTimeMillis() - wakeStartedAt
-                    if (age > 250L) {
+                    if (age > 1_500L) {
                         wakePauseCancelled = true
                         android.util.Log.i(
                             "ETKN-Music",
@@ -1775,11 +1785,51 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
          * 并且用 `playerCommandReceived` 标记 —— 用户点播放会走
          * `MediaSession.Callback.onPlayerCommandRequest`，那里置位。
          */
-        val p = _player ?: return
+        /**
+         * 用户实测（2026-11-28，#188）**交替显示的真根因**。
+         *
+         * adb 抓到的失败那次（进程 8175）日志：
+         * ```
+         * 16:19:24.362  init done: mediaItemCount=-1 queue=0    ← 播放器刚创建
+         * 16:19:24.372  MainActivity.onStart → 允许唤醒卡片    ← 只隔 10ms
+         * （之后没有任何「唤醒卡片」日志）
+         * ```
+         * 而成功那次（monkey 启动）：
+         * ```
+         * 16:18:47.184  restore: 守护结束 位置=20503ms
+         * 16:18:47.184  唤醒卡片：静音 → 轻播 → 暂停 → 还原
+         * ```
+         *
+         * 差别就是这里原来是：
+         * ```kotlin
+         * val p = _player ?: return          // ← 同步判空
+         * ```
+         * `onStart` 只比播放器创建晚 10ms，`_player` **还没赋值** →
+         * 直接 return，整个唤醒逻辑一次都没执行。
+         *
+         * 而且这个失败是「静默」的：不打任何日志，看上去就像代码没生效。
+         *
+         * 修法：**判空也移进协程里等**（最多 8 秒），
+         * 播放器什么时候建好都不影响。
+         */
         graph.scope.launch {
             runCatching {
-                /** 等就绪（最多 8 秒）—— 不再要求调用瞬间就 READY。 */
+                /** ① 等播放器实例（最多 8 秒）。 */
                 var waited = 0L
+                while (waited < 8_000L && _player == null) {
+                    kotlinx.coroutines.delay(100L)
+                    waited += 100L
+                }
+                val p = _player
+                if (p == null) {
+                    android.util.Log.i("ETKN-Music", "重新唤醒卡片：等播放器超时，跳过")
+                    return@launch
+                }
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "重新唤醒卡片：开始等待（等了${waited}ms state=${p.playbackState} count=${p.mediaItemCount}）",
+                )
+                /** ② 等队列填上（最多 8 秒）。 */
                 while (waited < 8_000L && p.mediaItemCount == 0) {
                     kotlinx.coroutines.delay(150L)
                     waited += 150L
@@ -1788,6 +1838,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                     android.util.Log.i("ETKN-Music", "重新唤醒卡片：等队列超时，跳过")
                     return@launch
                 }
+                /** ③ 等 READY（最多 8 秒）。 */
                 while (waited < 8_000L && p.playbackState != Player.STATE_READY) {
                     kotlinx.coroutines.delay(150L)
                     waited += 150L

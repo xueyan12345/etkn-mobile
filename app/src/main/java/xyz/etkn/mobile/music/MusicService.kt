@@ -325,9 +325,56 @@ class MusicService : MediaSessionService() {
     fun updateMediaCard() {
         val s = session ?: return
         val p = s.player
-        val meta = p.currentMediaItem?.mediaMetadata ?: return
-        val title = meta.title?.toString().orEmpty().ifBlank { return }
-        val artist = (meta.artist ?: meta.subtitle)?.toString().orEmpty()
+        /**
+         * 用户口径（2026-11-28，#187）**服务一起来就必须进前台，不能等队列**。
+         *
+         * ## 实测证据（adb，决定性的）
+         *
+         * 故障态下抓到的真实状态：
+         * ```
+         * 进程 8175 还活着
+         * 会话栈 = 空、通知 = 无、MusicService = 不存在
+         * ```
+         * 同时系统日志显示 ColorOS 在**反复杀进程**：
+         * ```
+         * 16:19:15.563  UserAwareMgr: process killed pid=6231 flags='bg'
+         * 16:19:16.574  Start proc 8270 for service MusicService
+         * 16:19:20.318  UserAwareMgr: process killed pid=8270 flags='bg'
+         * 16:19:21.141  Background started FGS: MusicService
+         * 16:19:23.958  UserAwareMgr: process killed pid=7669 flags='bg'
+         * ```
+         * `UserAwareMgr` 是 ColorOS 的后台管理，`flags='bg'` = 后台进程 → 可杀。
+         *
+         * ## 为什么会被判成后台
+         *
+         * 之前这段写的是：
+         * ```kotlin
+         * val meta = p.currentMediaItem?.mediaMetadata ?: return   // ← 队列没恢复就 return
+         * val title = meta.title?.toString().orEmpty().ifBlank { return }
+         * ```
+         * 而 **MusicService 启动比队列恢复快**：
+         * ```
+         * Service.onCreate → updateMediaCard() → currentMediaItem 还是 null
+         * → 直接 return → 从没调过 startForeground
+         * → 服务一路都是"后台服务" → ColorOS 随时可杀
+         * ```
+         * `dumpsys` 里 `startForegroundCount: 0` 就是铁证。
+         *
+         * 于是形成交替：
+         * ```
+         * 打开 App → 服务起来、赶在被杀前恢复好队列 → 卡片亮
+         * 下次打开 → 服务刚起来就被判 bg 杀掉 → 卡片灭
+         * ```
+         *
+         * ## 现在：没有标题也要进前台
+         *
+         * 用占位文案「正在加载」先进前台，把服务钉住；
+         * 队列恢复后 `onMediaItemTransition` / `onMediaMetadataChanged`
+         * 会再调一次，把文案换成真实歌名。
+         */
+        val meta = p.currentMediaItem?.mediaMetadata
+        val title = meta?.title?.toString().orEmpty().ifBlank { "正在加载…" }
+        val artist = (meta?.artist ?: meta?.subtitle)?.toString().orEmpty()
         runCatching {
             val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
             /** Android 8+ 必须走渠道。 */
