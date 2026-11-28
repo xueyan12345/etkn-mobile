@@ -899,15 +899,23 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                 Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
+                /**
+                 * 用户口径（#205）**三点动画加大，网速也加大**。
+                 *
+                 * 用户原话：「三点动画加大，网速也加大」。
+                 * 原来 9dp 的点 / 12sp 的字，在全屏视频画面上偏小。
+                 * 现在点 16dp（约 1.8 倍），网速 16sp（约 1.3 倍），
+                 * 间距同步放大，整体在中心区域更显眼。
+                 */
                 xyz.etkn.mobile.ui.components.EtknLoading(
-                    size = 9.dp,
+                    size = 16.dp,
                     tint = Color.White,
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(16.dp))
                 Text(
                     netSpeed,
-                    color = Color.White.copy(alpha = 0.75f),
-                    fontSize = 12.sp,
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 16.sp,
                 )
             }
         }

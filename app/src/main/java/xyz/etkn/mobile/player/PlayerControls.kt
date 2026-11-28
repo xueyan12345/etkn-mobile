@@ -307,12 +307,29 @@ internal fun Controls(
          * `setSeekBackIncrementMs/setSeekForwardIncrementMs`（PlayerFactory）也没动，
          * 那是耳机线控和系统媒体控制用的，和界面按钮无关。
          */
-        IconButton(onClick = onPlayPause, modifier = Modifier.align(Alignment.Center).size(95.dp)) {
-            Icon(
-                if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                if (playing) "暂停" else "播放",
-                tint = Color.White, modifier = Modifier.size(75.dp),
-            )
+        /**
+         * 用户口径（2026-11-28，#205）**缓冲时不要显示中间这个大播放键**。
+         *
+         * 用户原话：
+         * ```
+         * 「缓冲的时候中间的大播放按钮删掉，然后三点动画加大，网速也加大」
+         * ```
+         * 之前这个 95dp 的播放键一直画在正中，和加载中的三点动画叠在一起，
+         * 视觉上就是「一个大按钮 + 下面一串小字」，很乱。
+         *
+         * 现在缓冲中整个不渲染它，让三点动画独占中心区域。
+         */
+        if (!ui.loading) {
+            IconButton(
+                onClick = onPlayPause,
+                modifier = Modifier.align(Alignment.Center).size(95.dp),
+            ) {
+                Icon(
+                    if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    if (playing) "暂停" else "播放",
+                    tint = Color.White, modifier = Modifier.size(75.dp),
+                )
+            }
         }
 
         // ===== 底栏：剧名+集号 / 进度条 / 功能图标 =====
