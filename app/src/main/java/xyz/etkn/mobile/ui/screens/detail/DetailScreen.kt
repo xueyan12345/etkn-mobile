@@ -941,7 +941,50 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
         }
     }
 
-    Column(horizontalAlignment = align, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    /**
+     * 用户口径（2026-11-28，#168）**缺评分时不留大洞**。
+     *
+     * 用户原话：
+     * ```
+     * 「他这个有 TMDB 评分的数据，所以现在看起来虽然标题下面有一行空白，
+     *   但是看起来还可以。如果 TMDB 评分没有，就是相当于评分这一栏是空白的话，
+     *   那么就标题下边会空两行，特别特别空」
+     * 「你还不能直接把标题移到下边去，不把那空行留出来，
+     *   因为标题如果短的话还可以，如果太长的话，就会跟右边的三个媒体信息打架」
+     * ```
+     *
+     * ## 这个空白是几何必然，不是 bug
+     *
+     * 头部是左右两栏并排的 `Row`：
+     * ```
+     * 左栏 = 评分 / 日期·时长 / 类型   → 有几项渲染几行（1~3 行）
+     * 右栏 = 视频 / 音频 / 字幕        → 恒 3 行
+     * Row 高度 = 两栏中高的那个（3 行）
+     * ```
+     * 左栏内容少，就必然空出来。之前用 `Bottom` 对齐把洞放在上方，
+     * 用户看到的就是"标题下面空一大块"。
+     *
+     * ## 用户否掉的方案：把标题往下移
+     *
+     * ```
+     * 「标题如果短的话还可以，如果太长的话，就会跟右边的三个媒体信息打架，就会撞车」
+     * ```
+     * 完全正确 —— 标题是 `fillMaxWidth(0.78f)` + `maxLines=2`，
+     * 往下移就会和右栏的媒体信息行重叠。
+     *
+     * ## 采用的方案：让左栏内容在 3 行高度里均匀分布
+     *
+     * ```
+     * 有评分（3 行）→ 和现在一样，无空隙
+     * 没评分（2 行）→ SpaceEvenly 自动拉大行距，均匀铺满 3 行高度 → 没有"洞"，只是间距略宽
+     * 只有 1 行     → 居中，上下对称，看着是设计而非缺失
+     * ```
+     * 标题完全不动 → 再长也不会撞右栏。
+     *
+     * `SpaceEvenly` 而不是 `SpaceBetween`：后者会把首行顶到最上、末行压到最下，
+     * 和右栏的三行视觉重心不一致；前者首尾也留白，整体更居中。
+     */
+    Column(horizontalAlignment = align, verticalArrangement = Arrangement.SpaceEvenly) {
         ratingLine()
         dateLine()
         genreLine()
@@ -954,7 +997,26 @@ private fun RatingBadge(text: String) {
     val color = Color.White.copy(alpha = 0.78f)
     Text(
         text,
-        style = MaterialTheme.typography.labelMedium,
+        style = MaterialTheme.typography.labelMedium.copy(
+            /**
+             * 用户口径（2026-11-28，#167）**分级徽章也要加阴影，跟剧名一致**。
+             *
+             * 用户原话：
+             * ```
+             * 「标题的阴影和渐变也可以了，但是后面的限制级别那个
+             *   也得跟标题的渐变保持一致，要不同样看不清」
+             * ```
+             *
+             * 它和剧名在同一条基线上、压在同一块海报上，
+             * 剧名有阴影而它没有，亮背景上就会「剧名清楚、分级发虚」。
+             * 参数完全照抄剧名那处，保证是同一套视觉。
+             */
+            shadow = androidx.compose.ui.graphics.Shadow(
+                color = Color.Black.copy(alpha = 0.75f),
+                offset = androidx.compose.ui.geometry.Offset(0f, 2f),
+                blurRadius = 12f,
+            ),
+        ),
         color = color,
         modifier = Modifier.border(1.dp, color.copy(alpha = 0.6f), Corner.small).padding(horizontal = 5.dp, vertical = 1.dp),
     )
@@ -1707,27 +1769,54 @@ private fun InfoBlock(item: Item, centered: Boolean, seriesOverview: String? = n
             Text(it, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, textAlign = align, modifier = Modifier.padding(bottom = 6.dp))
         }
         if (showSeriesTab) {
+            /**
+             * 用户口径（2026-11-28，#169）**文案改长 + 套胶囊边框**。
+             *
+             * 用户原话：
+             * ```
+             * 「把本集改成本集简介，整部剧改成全剧简介，
+             *   然后这两个按钮，你给它四外圈框上。一个小胶囊，
+             *   这个胶囊不要深色，你可以参考上面的限制级那个，
+             *   稍微做一下，要不纯文字的话，有点不太明显」
+             * ```
+             *
+             * ## 胶囊样式照抄「限制级」那个徽章
+             *
+             * 上面剧名右侧的分级徽章（`RatingBadge`）长这样：
+             * ```
+             * 文字：白色 0.78 不透明度
+             * 描边：同色 0.6 不透明度，1dp，Corner.small
+             * 内边距：水平 5dp / 垂直 1dp
+             * ```
+             * 这里只调整两处适配按钮场景：
+             * ```
+             * 内边距 水平 5 → 10dp（文字更长，要呼吸感）
+             * 垂直   1 → 4dp（要够大才像可点按钮）
+             * ```
+             * **不用深色底**（用户明确要求），只留细描边 + 浅色字；
+             * 选中态加深描边和字色，未选中调淡 —— 靠不透明度区分，不用填充色。
+             */
             Row(
                 Modifier.padding(bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                listOf("本集", "整部剧").forEachIndexed { i, label ->
+                listOf("本集简介", "全剧简介").forEachIndexed { i, label ->
                     val on = tab == i
+                    val tone = if (on) Color.White else Color.White.copy(alpha = 0.55f)
                     Text(
                         label,
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.labelMedium,
                         fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
-                        color = if (on) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                        },
-                        modifier = Modifier.clickable {
-                            if (tab != i) {
-                                tab = i
-                                expanded = false   // 换简介时先收起来，避免一行行读长文
+                        color = tone,
+                        modifier = Modifier
+                            .border(1.dp, tone.copy(alpha = if (on) 0.75f else 0.35f), Corner.small)
+                            .clickable {
+                                if (tab != i) {
+                                    tab = i
+                                    expanded = false   // 换简介时先收起来，避免一行行读长文
+                                }
                             }
-                        },
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
                     )
                 }
             }
