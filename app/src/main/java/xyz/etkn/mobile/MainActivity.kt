@@ -33,6 +33,10 @@ import xyz.etkn.mobile.ui.screens.connect.ConnectScreen
 import xyz.etkn.mobile.ui.screens.me.UpdatePrompt
 import xyz.etkn.mobile.ui.theme.EtknTheme
 import androidx.compose.animation.core.tween
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun attachBaseContext(newBase: Context) {
@@ -88,11 +92,77 @@ class MainActivity : ComponentActivity() {
      */
     override fun onStart() {
         super.onStart()
+        /**
+         * 用户口径（2026-11-28，#192）**自我修复 MusicService**。
+         *
+         * ## 为什么不再猜「谁杀了它」
+         *
+         * 用户实测卡片的故障是「一次显示一次不显示」，adb 抓到的故障态：
+         * ```
+         * 进程活着，但 MusicService 不在、会话空、通知无
+         * ```
+         * 前面几版分别怀疑过 `Application.onCreate` 未执行、`_player` 未初始化、
+         * `onTaskRemoved` 自杀 —— 其中 `onTaskRemoved` 那条是**判断错了**：
+         * 日志里服务停掉的时刻（19.679）在进程启动（19.619）**之后**，
+         * 那是新进程里发生的事，不是用户划掉旧进程造成的。
+         *
+         * ColorOS 的服务生命周期受 `UserAwareMgr` / `OplusBatteryStatsManager` /
+         * `ConferenceScene` 等多个厂商策略影响，我们在代码里堵不完每一条。
+         *
+         * ## 所以改成「状态自愈」
+         *
+         * 不关心是谁停的，只检查一件事：**服务现在在不在**。
+         * ```
+         * 不在 → 立刻重新 startService，再等它就绪后唤醒卡片
+         * 在   → 只走原来的唤醒逻辑
+         * ```
+         * 这样无论 ColorOS 用什么手段停掉它，只要用户在看 App，就会被拉回来。
+         */
+        runCatching {
+            if (!xyz.etkn.mobile.music.MusicService.alive) {
+                android.util.Log.i("ETKN-App", "onStart 发现 MusicService 不在 → 重新拉起")
+                startService(
+                    Intent(this, xyz.etkn.mobile.music.MusicService::class.java),
+                )
+            }
+        }.onFailure { android.util.Log.w("ETKN-App", "onStart 补拉 MusicService 失败", it) }
+
         runCatching {
             graph.music.allowWakeAgain()
             android.util.Log.i("ETKN-App", "MainActivity.onStart → 允许唤醒卡片")
         }.onFailure { android.util.Log.w("ETKN-App", "onStart 唤醒失败", it) }
+
+        /**
+         * 兜住「App 已经在前台、服务却被中途停掉」这种情况 ——
+         * 那时不会再走 `onStart`，光靠上面那次检查等于没兜。
+         *
+         * 每秒看一眼，服务没了就补拉。只在前台运行，
+         * `onStop` 里取消，不会在后台空转耗电。
+         */
+        guardJob?.cancel()
+        guardJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(1_000L)
+                if (!xyz.etkn.mobile.music.MusicService.alive) {
+                    android.util.Log.i("ETKN-App", "前台巡检：MusicService 不在了 → 补拉")
+                    runCatching {
+                        startService(
+                            Intent(this@MainActivity, xyz.etkn.mobile.music.MusicService::class.java),
+                        )
+                    }
+                }
+            }
+        }
     }
+
+    override fun onStop() {
+        guardJob?.cancel()
+        guardJob = null
+        super.onStop()
+    }
+
+    /** 前台服务巡检协程，`onStop` 时取消。 */
+    private var guardJob: kotlinx.coroutines.Job? = null
 
     /**
      * Several ROMs keep apps at 60 Hz unless they ask, which makes page turns and scrolling stutter

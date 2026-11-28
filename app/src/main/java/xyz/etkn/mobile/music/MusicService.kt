@@ -69,6 +69,21 @@ class MusicService : MediaSessionService() {
 
     private companion object {
         /**
+         * 服务实例是否存活。
+         *
+         * 用户实测（2026-11-28，#192）**卡片一次显示一次不显示**，
+         * adb 抓到故障态的真实状态是：
+         * ```
+         * 进程活着，但 ccc=0（MusicService 不在）、会话空、通知无
+         * ```
+         * 也就是说**服务实例本身没能起来**，而它的创建/销毁时刻
+         * 受 ColorOS 各种策略影响，我们在代码里堵不住每一条路径。
+         *
+         * 所以改成「自我修复」：前台 Activity 每次 onStart 都检查这个标记，
+         * 没起来就重新拉一次。不依赖「谁杀了它」，只看「它现在在不在」。
+         */
+        @Volatile var alive = false
+        /**
          * 媒体卡片用的通知 id / 渠道。
          *
          * 用一个固定的 id：每次 `startForeground` 都更新同一条，
@@ -79,6 +94,8 @@ class MusicService : MediaSessionService() {
     }
 
     override fun onCreate() {
+        /** 标记实例存活 —— 用于诊断「服务是否真的起来了」。 */
+        alive = true
         super.onCreate()
         val graph = applicationContext.graph
         val open = PendingIntent.getActivity(
@@ -661,6 +678,7 @@ class MusicService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        alive = false
         session?.release()
         session = null
         super.onDestroy()
