@@ -1787,7 +1787,30 @@ private fun MediaTechRows(
     val video = source.video
     val resLabel = video?.let { resolutionLabel(it.width, it.height) }
     val codecLabel = video?.codec?.takeIf { it.isNotEmpty() }?.uppercase()
-    val videoMain = listOfNotNull(resLabel, codecLabel).joinToString(" ").ifBlank { "视频" }
+    /**
+     * 用户口径（2026-11-28，#154）**这行也要显示 HDR/DV，位置在分辨率和编码中间**。
+     *
+     * 用户原话：
+     * ```
+     * 「HDR10 那个还是不显示在 4K 和编码中间」
+     * 「比如这个醉梦这集，它是 HDR10，我想把这个 HDR10 加在 4K 和 HEVC 中间，
+     *   别的比如说什么 DV 呀之类的，都给它加在分辨率和这个编码中间」
+     * ```
+     *
+     * ## 为什么之前 #145 的改动没生效
+     *
+     * #145 只改了 `techLine()`（详情页顶部那批技术参数），
+     * 但那个函数**在 11-23 就被整行删掉了**（`MetaLines` 里只剩一行注释
+     * 「原来这里渲染 techLine(item, source)」）。
+     *
+     * 用户实际看到的那行「4K HEVC」是**这里** `videoMain` 拼的 ——
+     * 它只有 `resLabel + codecLabel` 两段，从来没有 HDR。
+     *
+     * 现在补上中间那段：`4K HDR10 HEVC`。
+     */
+    val rangeLabel = video?.dynamicRangeLabel()
+    val videoMain = listOfNotNull(resLabel, rangeLabel, codecLabel)
+        .joinToString(" ").ifBlank { "视频" }
     /**
      * 用户口径（2026-11-27，#16）**副标题不要重复主标题的内容**。
      *
