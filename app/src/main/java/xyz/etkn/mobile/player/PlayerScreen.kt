@@ -824,7 +824,35 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                                         null,
                                     ),
                                 )
-                                setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * 1.08f)
+                                /**
+                                 * 用户实测（2026-11-28，#219）**两个引擎字幕大小不一样，Exo 偏大**。
+                                 *
+                                 * 用户原话：「EXO和MPV这两个播放器显示字幕的大小不一样，
+                                 * 好像MPV的偏小一点」「MPV的效果好，MPV的是小字的那个」。
+                                 *
+                                 * ## 像素实测（同一部片、同一画面、抓图直接量）
+                                 *
+                                 * 两张截图都是 2520x1680，扫描底部 30% 的白字行分布：
+                                 * ```
+                                 * Exo : 单行笔画 69px = 屏高 4.11%
+                                 * mpv : 单行笔画 53px = 屏高 3.15%
+                                 * ```
+                                 * mpv 只有 Exo 的 76.6%，所以是 Exo 大了，不是 mpv 小了。
+                                 *
+                                 * ## 换算
+                                 *
+                                 * 原来 `DEFAULT_TEXT_SIZE_FRACTION * 1.08f` = 0.05756，
+                                 * 实测对应 4.11% 屏高，所以要降到 3.15%：
+                                 * ```
+                                 * 0.05756 × (3.15 / 4.11) = 0.04412
+                                 * 0.04412 / 0.0533 = 0.828
+                                 * ```
+                                 * 即把系数 1.08 换成 0.828，与 mpv 的默认字号对齐。
+                                 *
+                                 * 注意：这里只调 Exo 的 CapCut 字幕（纯文本轨道）；
+                                 * ASS/SSA 有自己的内嵌样式，不受这个值影响（见上方注释）。
+                                 */
+                                setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * 0.828f)
                                 setBottomPaddingFraction(0.06f)
                             }
                             this.player = core
