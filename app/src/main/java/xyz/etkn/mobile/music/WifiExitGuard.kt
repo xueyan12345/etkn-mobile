@@ -82,6 +82,42 @@ object WifiExitGuard {
             override fun onLost(network: Network) {
                 scope.launch { handleLost(context.applicationContext) }
             }
+
+            /**
+             * 用户口径（2026-11-28，#175）**连上 WiFi 就记下来**。
+             *
+             * 用户原话：
+             * ```
+             * 「刚才连 CarLife 的时候，我去点那个 WiFi 也搜不到，
+             *   你这样，把那个输入和这个自动填这个都加上」
+             * ```
+             *
+             * ## 为什么必须在「连上那一刻」记
+             *
+             * Android 10+ 拿不到系统保存的 WiFi 列表（`getConfiguredNetworks()`
+             * 只返回自己创建的），但 `connectionInfo.ssid` 在**当前连接**时一定读得到。
+             *
+             * 所以策略从「翻列表」换成「连过就记」：
+             * ```
+             * 连上 CarLife → 此刻读 currentSsid() 能拿到 "CarLife" → 存进 recentWifis
+             * → 用户下次在设置页里直接点它，不用手打
+             * ```
+             *
+             * `onAvailable` 触发时 `connectionInfo` 可能还没更新完（系统时序），
+             * 所以延迟 800ms 再读一次；读不到就放弃这一轮（下次连上还会再试）。
+             */
+            override fun onAvailable(network: Network) {
+                scope.launch {
+                    kotlinx.coroutines.delay(800)
+                    val now = currentSsid(context.applicationContext)
+                    if (!now.isNullOrBlank()) {
+                        android.util.Log.i("ETKN-WifiExit", "连上 WiFi「$now」→ 记入候选")
+                        runCatching {
+                            context.applicationContext.graph.settings.rememberWifi(now)
+                        }
+                    }
+                }
+            }
         }
         callback = cb
         runCatching { cm.registerNetworkCallback(request, cb) }

@@ -159,6 +159,29 @@ data class Settings(
     val wifiExitSsid: String = "",
     /** 本次 WiFi 连接期间是否真的放过歌 —— 没放过就不断 WiFi 杀 App。 */
     val wifiExitArmed: Boolean = false,
+    /**
+     * 用户口径（2026-11-28，#175）**自动记住连过的 WiFi**。
+     *
+     * 用户原话：
+     * ```
+     * 「刚才连 CarLife 的时候，我去点那个 WiFi 也搜不到，
+     *   你这样，把那个输入和这个自动填这个都加上」
+     * ```
+     *
+     * ## 为什么需要它
+     *
+     * Android 10+ 把 `getConfiguredNetworks()` 收紧成「只返回自己创建的」，
+     * App 拿不到系统保存的全部 WiFi（adb `cmd wifi list-networks` 能看到 CarLife，
+     * 但 App 里读不到）。所以列表天然不全，用户没得选。
+     *
+     * ## 思路：不靠读列表，靠「连上时自己记」
+     *
+     * 只要 App 在运行期间检测到连上某个 WiFi，就把它记进这个列表。
+     * 用户下次要用 CarLife 时，它已经在候选里了，直接点选。
+     *
+     * 存最近 [MAX_RECENT_WIFI] 个，新的在前，去重。
+     */
+    val recentWifis: List<String> = emptyList(),
     /** 播放结束后自动清空该集磁盘缓存。 */
     val cacheClearOnFinish: Boolean = false,
     val heroMode: HeroMode = HeroMode.Auto,
@@ -291,6 +314,7 @@ class AppSettings(private val context: Context) {
         val wifiExitEnabled = booleanPreferencesKey("wifi_exit_enabled")
         val wifiExitSsid = stringPreferencesKey("wifi_exit_ssid")
         val wifiExitArmed = booleanPreferencesKey("wifi_exit_armed")
+        val recentWifis = stringSetPreferencesKey("recent_wifis")
         val cacheClearOnFinish = booleanPreferencesKey("cache_clear_on_finish")
         val tabs = stringSetPreferencesKey("nav_tabs")
         val navPosition = stringPreferencesKey("nav_position")
@@ -334,6 +358,11 @@ class AppSettings(private val context: Context) {
         wifiExitEnabled = this[Keys.wifiExitEnabled] ?: false,
         wifiExitSsid = this[Keys.wifiExitSsid] ?: "",
         wifiExitArmed = this[Keys.wifiExitArmed] ?: false,
+        /**
+         * 用 `stringSetPreferencesKey` 存，读出来转 List 时**保持插入顺序做不到**
+         * （Set 无序），所以这里按字母排 —— 数量少，顺序不影响使用。
+         */
+        recentWifis = (this[Keys.recentWifis] ?: emptySet()).sorted(),
         cacheClearOnFinish = this[Keys.cacheClearOnFinish] ?: false,
         tabs = this[Keys.tabs],
         navPosition = enumOr(this[Keys.navPosition], NavPosition.Side),
@@ -374,6 +403,29 @@ class AppSettings(private val context: Context) {
 
     suspend fun setWifiExitArmed(value: Boolean) =
         context.settingsDataStore.edit { it[Keys.wifiExitArmed] = value }
+
+    /**
+     * 用户口径（#175）**记下刚连上的 WiFi**，供设置页一键选用。
+     *
+     * 上限 [MAX_RECENT_WIFI] 个：这类名字本身不多，留太多反而难找。
+     */
+    suspend fun rememberWifi(ssid: String) {
+        val name = ssid.trim()
+        if (name.isEmpty()) return
+        context.settingsDataStore.edit { prefs ->
+            val old = prefs[Keys.recentWifis] ?: emptySet()
+            if (name in old) return@edit
+            val next = (old + name).toList()
+            /** 超出上限就丢掉最早进去的（按集合无序，取差集近似「最早」）。 */
+            val trimmed = if (next.size > RECENT_WIFI_LIMIT) {
+                (old + name).takeLast(RECENT_WIFI_LIMIT).toSet()
+            } else {
+                (old + name)
+            }
+            prefs[Keys.recentWifis] = trimmed
+        }
+    }
+
     suspend fun setCacheClearOnFinish(value: Boolean) = context.settingsDataStore.edit { it[Keys.cacheClearOnFinish] = value }
 
     suspend fun setAutoUpdate(value: Boolean) = context.settingsDataStore.edit { it[Keys.autoUpdate] = value }
@@ -401,3 +453,11 @@ class AppSettings(private val context: Context) {
     private inline fun <reified T : Enum<T>> enumOr(value: String?, fallback: T): T =
         value?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: fallback
 }
+
+/**
+ * 用户口径（#175）**最近连过的 WiFi 候选上限**。
+ *
+ * 这类名字本身不多（家里/公司/车机几个），留太多反而在弹窗里难找。
+ * 超出上限时新的一定保留，旧的自然被挤掉。
+ */
+private const val RECENT_WIFI_LIMIT = 8

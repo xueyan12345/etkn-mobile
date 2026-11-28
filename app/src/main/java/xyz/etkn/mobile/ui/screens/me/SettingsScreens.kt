@@ -728,6 +728,48 @@ private fun WifiExitSettings(settings: Settings) {
                                 },
                             ) { Text("确定") }
                         }
+                        /**
+                         * 用户口径（#175）**最近连过的 WiFi 单独列一块**。
+                         *
+                         * 这一块是「一定选得到」的：只要 App 连过这个 WiFi 一次，
+                         * 名字就存在本地，不依赖系统列表（那个在 Android 10+
+                         * 拿不到全部，正是用户「搜也搜不着」的原因）。
+                         *
+                         * 排在手动输入框下面、系统列表上面 —— 因为这是最可靠的来源。
+                         */
+                        if (settings.recentWifis.isNotEmpty()) {
+                            Text(
+                                "最近连过的（推荐，一定能选到）",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+                            )
+                            settings.recentWifis.forEach { ssid ->
+                                Row(
+                                    Modifier.fillMaxWidth().clickable {
+                                        scope.launch { graph.settings.setWifiExitSsid(ssid) }
+                                        pickerOpen = false
+                                    }.padding(vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(
+                                        selected = ssid == settings.wifiExitSsid,
+                                        onClick = {
+                                            scope.launch { graph.settings.setWifiExitSsid(ssid) }
+                                            pickerOpen = false
+                                        },
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(ssid, style = MaterialTheme.typography.bodyLarge)
+                                }
+                            }
+                            Text(
+                                "其他已保存的",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                            )
+                        }
                         ssids.forEach { ssid ->
                             Row(
                                 Modifier.fillMaxWidth().clickable {
