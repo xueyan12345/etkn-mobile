@@ -219,7 +219,25 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
     }
 
     fun load() {
-        if (_state.value !is Load.Ready) _state.value = Load.Loading
+        /**
+         * 用户口径（2026-11-28，#155）**有种子就别进 Loading**。
+         *
+         * 用户原话：
+         * ```
+         * 「进详情页还是没有人家 HILS 快、丝滑，人家那个好像有提前占位似的……
+         *   人家那个不用转圈，也不用闪一下白屏」
+         * ```
+         *
+         * `AppNav` 导航前已经把列表里那份 Item 塞进 `DetailSeed`，
+         * 这里先拿它直接进 `Load.Ready` —— 标题/封面/简介/年份在第一帧就在，
+         * 网络请求回来再静默覆盖成完整数据。
+         *
+         * 只有没有种子（深链、搜索直达、切集）时才走原来的 Loading。
+         */
+        val seed = DetailSeed.get(id)
+        if (_state.value !is Load.Ready) {
+            _state.value = if (seed != null) Load.Ready(DetailData(item = seed)) else Load.Loading
+        }
         val requested = id
         val loadStart = System.currentTimeMillis()
         viewModelScope.launch {

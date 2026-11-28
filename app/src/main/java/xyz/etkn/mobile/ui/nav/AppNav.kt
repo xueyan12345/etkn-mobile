@@ -9,6 +9,7 @@ import xyz.etkn.mobile.data.model.Item
 import xyz.etkn.mobile.graph
 import xyz.etkn.mobile.player.PlayerLauncher
 import kotlinx.coroutines.launch
+import xyz.etkn.mobile.ui.screens.detail.DetailSeed
 
 /** Thin navigation facade so screens never touch the NavController directly. */
 @Stable
@@ -42,7 +43,10 @@ class AppNav(
     /** The title an item belongs to: an episode opens its series, anything else itself. */
     fun openTitle(item: Item) {
         val series = item.seriesId
-        if (item.isEpisode && series != null) to(DetailRoute(series)) else open(item)
+        if (item.isEpisode && series != null) {
+            DetailSeed.put(item)          // 先存种子，详情页首帧就能画出标题/封面
+            to(DetailRoute(series))
+        } else open(item)
     }
 
     /**
@@ -72,6 +76,20 @@ class AppNav(
         if (!item.isSeries) { open(item); return }
         // 本地找：这部剧是否有正在看的单集
         val watching = resume.firstOrNull { it.seriesId == item.id || it.id == item.id }
+        /**
+         * 用户口径（2026-11-28，#155）**点进去内容立刻在，不要白屏**。
+         *
+         * 用户原话：
+         * ```
+         * 「进详情页还是没有人家 HILS 快、丝滑，人家那个好像有提前占位似的……
+         *   人家那个不用转圈，也不用闪一下白屏」
+         * ```
+         *
+         * 这里拿到的 `watching`（续播单集）或 `item`（剧集）
+         * 本身就带标题/封面/简介/年份 —— 存成种子，
+         * 详情页首帧直接画出来，网络回来再静默补全。
+         */
+        DetailSeed.put(watching ?: item)
         to(DetailRoute(watching?.id ?: item.id))
     }
 
@@ -82,7 +100,10 @@ class AppNav(
             item.type == "Person" -> to(PersonRoute(item.id, item.name))
             item.type == "CollectionFolder" || item.type == "UserView" -> openLibrary(item)
             item.type == "Folder" || item.type == "BoxSet" -> to(LibraryRoute(item.id, item.name, "folder"))
-            else -> to(DetailRoute(item.id))
+            else -> {
+                DetailSeed.put(item)      // 同上：先播种再导航
+                to(DetailRoute(item.id))
+            }
         }
     }
 
