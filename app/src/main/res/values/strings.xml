@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">SenPlayer</string>
+    <string name="app_name">OSM</string>
     <string name="shortcut_search">搜索</string>
     <string name="shortcut_downloads">下载</string>
     <string name="widget_resume">继续观看</string>
