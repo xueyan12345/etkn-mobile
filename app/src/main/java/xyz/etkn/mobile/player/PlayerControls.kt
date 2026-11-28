@@ -170,6 +170,18 @@ internal fun Controls(
     LaunchedEffect(showInfo) { onInfoOpenChange(showInfo) }
     // 用户口径（2026-11-23）：顶部中间显示系统时间 / 网速 / 电量，每秒刷新
     val status = rememberPlayerStatus()
+    /**
+     * 用户实测（#215）**右上角网速一直是 0**。
+     *
+     * 网速不能塞进 `rememberPlayerStatus()` 返回的 state 里 ——
+     * 那个 state 在 `LaunchedEffect(Unit)` 中每秒重建一次，
+     * 而 `LaunchedEffect(Unit)` 的 key 是常量、协程不会因网速变化重启，
+     * 于是它捕获的永远是启动那一刻的值（`"0 B/s"`）。
+     *
+     * 这里在 Composable 作用域直接取，每次重组/每秒刷新都拿最新值，
+     * 与缓冲动画下方的网速共用同一个 `rememberNetSpeed()`。
+     */
+    val netSpeed = rememberNetSpeed()
     Box(Modifier.fillMaxSize()) {
         // 上下渐变，保证文字/按钮在亮画面上也看得清
         Box(Modifier.fillMaxWidth().height(200.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.72f), Color.Transparent))))
@@ -201,7 +213,8 @@ internal fun Controls(
             // 之前是 if (status.speed.isNotEmpty()) 才画 —— 取不到采样就整块消失。
             // 现在固定占位，取不到就显示 0 B/s。
             Text(
-                status.speed.ifEmpty { "0 B/s" },
+                /** 直接在 UI 层取最新值（#215），不再走 state 缓存。 */
+                netSpeed.ifEmpty { "0 B/s" },
                 color = Color.White.copy(alpha = 0.85f),
                 fontSize = 12.sp,
             )
@@ -742,7 +755,35 @@ private fun EpisodeInfoSheet(ui: VideoUi, onDismiss: () -> Unit) {
  * 播放器顶部状态：系统时间 / 实时网速 / 电量。
  * 网速用 TrafficStats 两次采样差分（1 秒间隔），取不到就不显示（不编造 0.0）。
  */
-private data class PlayerStatus(val time: String, val battery: Int, val speed: String)
+/**
+ * 顶部状态栏数据。
+ *
+ * 用户实测（2026-11-28，#215）**缓冲动画下的网速对了，右上角还是 0**。
+ *
+ * ## 根因：Compose 的状态捕获
+ *
+ * 原来把网速塞进这个 data class：
+ * ```kotlin
+ * val netSpeed = rememberNetSpeed()          // 每秒会更新
+ * LaunchedEffect(Unit) {                     // ← 只启动一次
+ *     while (true) {
+ *         state = PlayerStatus(speed = netSpeed)   // ← 捕获的是第一次的值 "0 B/s"
+ *         delay(1_000)
+ *     }
+ * }
+ * ```
+ * `LaunchedEffect(Unit)` 的 key 是常量，协程**不会因为 netSpeed 变化而重启**，
+ * 于是里面读到的永远是启动那一刻捕获的 `"0 B/s"`。
+ * 缓冲动画那边直接把 `rememberNetSpeed()` 用在 UI 里，每次重组取最新值，
+ * 所以它是对的 —— 两个地方表现不一样，就是这个原因。
+ *
+ * ## 现在
+ *
+ * `PlayerStatus` 只留「时间 + 电量」，**网速不进 state**，
+ * 直接在 Composable 里调 `rememberNetSpeed()` 渲染。
+ * 这样和缓冲动画共用同一个数据源、同一条刷新链。
+ */
+private data class PlayerStatus(val time: String, val battery: Int)
 
 @Composable
 private fun rememberPlayerStatus(): PlayerStatus {
@@ -755,8 +796,7 @@ private fun rememberPlayerStatus(): PlayerStatus {
      * 让「加载动画下方的网速」和「右上角网速」用同一份实现，
      * 两个数字永远一致。
      */
-    val netSpeed = rememberNetSpeed()
-    var state by remember { mutableStateOf(PlayerStatus("", 0, "")) }
+    var state by remember { mutableStateOf(PlayerStatus("", 0)) }
     LaunchedEffect(Unit) {
         val fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
         while (true) {
@@ -775,8 +815,6 @@ private fun rememberPlayerStatus(): PlayerStatus {
             state = PlayerStatus(
                 time = fmt.format(java.util.Date()),
                 battery = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 0,
-                /** 网速来自公共 Hook（#197），与加载动画下方显示的是同一个值。 */
-                speed = netSpeed,
             )
             kotlinx.coroutines.delay(1_000)
         }
