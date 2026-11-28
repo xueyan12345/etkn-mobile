@@ -248,12 +248,13 @@ class MusicService : MediaSessionService() {
                      * 不碰 `restoreForResumption()`、不碰蓝牙 Receiver、
                      * 不碰 `saveMemory()` —— 续播红线完好。
                      */
+                    /** `playerCommands` 是 Int（不是 Long），这里必须用 Int 掩码。 */
                     val isSeekNext = playerCommands and
                         (androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT or
-                            androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) != 0L
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) != 0
                     val isSeekPrev = playerCommands and
                         (androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS or
-                            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) != 0L
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) != 0
                     if ((isSeekNext || isSeekPrev) && !graph.music.player.isPlaying) {
                         android.util.Log.i(
                             "ETKN-Music",
