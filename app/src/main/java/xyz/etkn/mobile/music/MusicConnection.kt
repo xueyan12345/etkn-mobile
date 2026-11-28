@@ -869,14 +869,27 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                                     "ETKN-Music",
                                     "唤醒卡片：静音 → 轻播 → 暂停 → 还原（wait=${waited}ms vol=$savedVolume）",
                                 )
+                                val posBefore = p.currentPosition
                                 p.volume = 0f
                                 p.play()
                                 kotlinx.coroutines.delay(120L)
-                                p.pause()
-                                android.util.Log.i(
-                                    "ETKN-Music",
-                                    "唤醒卡片：已暂停 state=${p.playbackState} pos=${p.currentPosition}ms",
-                                )
+                                /**
+                                 * 暂停前三重判断，防「用户点了播放被我们停掉」（#184）。
+                                 * 规则同 `allowWakeAgain()` 里那段，注释见那里。
+                                 */
+                                val advanced = p.currentPosition - posBefore
+                                if (userTouchedPlayback || advanced > 300L) {
+                                    android.util.Log.i(
+                                        "ETKN-Music",
+                                        "唤醒卡片：用户已接管(触及=$userTouchedPlayback 前进=${advanced}ms)，不暂停",
+                                    )
+                                } else {
+                                    p.pause()
+                                    android.util.Log.i(
+                                        "ETKN-Music",
+                                        "唤醒卡片：已暂停 state=${p.playbackState} pos=${p.currentPosition}ms",
+                                    )
+                                }
                             } catch (t: Throwable) {
                                 android.util.Log.w("ETKN-Music", "唤醒卡片失败", t)
                             } finally {
@@ -1076,6 +1089,12 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      *  · 位置用 `memory.positionMs` 续上
      */
     fun resumeRemembered() {
+        /**
+         * 用户主动要求播放 → 标记下来，让「唤醒卡片」那段不要把它暂停掉。
+         * 见 `userTouchedPlayback` 的注释（#184 用户实测「播一下就停」）。
+         */
+        userTouchedPlayback = true
+        wakeForCard = true
         val memory = _remembered.value ?: return
         graph.scope.launch {
             /**
@@ -1432,6 +1451,9 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 但**只补必要的那几首**（当前 + 前后各 2 首），避免 601 首全拉一遍。
      */
     fun play(tracks: List<Item>, index: Int, contextKey: String?) {
+        /** 同上：用户主动点播 → 不许唤醒逻辑打断。 */
+        userTouchedPlayback = true
+        wakeForCard = true
         if (tracks.isEmpty()) return
         tracks.forEach { items[it.id] = it }
         context.startService(Intent(context, MusicService::class.java))
@@ -1554,6 +1576,22 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         p.play()
     }
     fun pause() { _player?.pause() }
+
+    /**
+     * 用户点「播放」时走这里（状态栏 / 播放器按钮）。
+     *
+     * 用户实测（#184）：
+     * ```
+     * 「在状态栏点击播放，它会播放一下，然后就马上暂停，我需要再次点击播放」
+     * ```
+     * 因为唤醒协程的 `delay(120)` 走完会无条件 `pause()`。
+     * 这里置位后，唤醒协程在暂停前会看到并放弃暂停。
+     */
+    fun playOrResume() {
+        userTouchedPlayback = true
+        wakeForCard = true
+        _player?.play()
+    }
     fun next() { _player?.seekToNextMediaItem() }
     /**
      * 用户口径（2026-11-27，#66）**「上一首」就是上一首，不要重播本曲**。
@@ -1655,22 +1693,118 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
     fun allowWakeAgain() {
         wakeForCard = false
         /**
-         * 只有「已经准备好、且有歌」时才主动再唤一次；
-         * 否则等 `restoreForResumption` 自己走完流程再唤醒（那边有完整等待逻辑）。
+         * 每次 App 启动都复位「用户已接管」标记。
+         *
+         * 否则上一轮用户点过播放 → 标记永久 true → 之后每次都跳过唤醒。
+         * 复位后：本次打开是「App 自己起来」的场景，允许唤醒；
+         * 一旦用户真去点了播放，`play()` / `resumeRemembered()` / `playOrResume()`
+         * 会立刻重新置位，保护仍然有效。
+         */
+        userTouchedPlayback = false
+        /**
+         * 用户实测（2026-11-28，#184）**两个新问题**：
+         *
+         * 用户原话：
+         * ```
+         * 「依旧是第一次显示，第二次不显示，第三次显示第4次不显示」
+         * 「状态栏显示的时候，在状态栏点击播放，它会播放一下，然后就马上暂停，
+         *   我需要再次点击播放，它才能正常一直播放」
+         * ```
+         *
+         * ## 问题一：交替显示（改成「每次都等就绪再唤醒」）
+         *
+         * 上一版这里在 `EtknApp.onCreate` 时同步执行：
+         * ```
+         * 打开 App → onCreate 立刻调 → 此时播放器还没 READY → 直接 return
+         *          → 标记虽然清零了，但没真的唤醒
+         *          → 而 restoreForResumption 那条路径此时也已经跑过（不会再来）
+         * → 这一次就没卡片
+         * 下一次打开：如果恰好在 READY 之后调，才唤得上 → 所以是交替的
+         * ```
+         *
+         * 现在**不在 onCreate 时判断就绪**，而是挂一个协程**等它就绪**（最多 8 秒），
+         * 就绪后再唤醒。这样不管音乐模块什么时候准备好，都一定会唤到。
+         *
+         * ## 问题二：点播放后被立刻暂停（关键！）
+         *
+         * 用户点状态栏的播放键 → 音乐开始播
+         * → 而唤醒协程的 `delay(120)` 恰好走完 → `p.pause()` 把用户刚点的播放暂停了
+         * → 看起来就是「播一下就停，得再点一次」。
+         *
+         * 修法：**暂停前先确认「确实是我自己起的播」**：
+         * ```
+         * ① 记录唤醒前的位置 posBefore
+         * ② play() 之后等 120ms
+         * ③ 只有在 p.isPlaying（还在播）**且**用户没插进来时才 pause
+         * ④ 判断「用户插进来」的标志：playbackState 从 PLAYING 变过，
+         *    或者位置明显前进了（用户听了、或者他点了播放）
+         * ```
+         * 更简单可靠的做法：**只在自己 play() 成功后的那个窗口内 pause**，
+         * 并且用 `playerCommandReceived` 标记 —— 用户点播放会走
+         * `MediaSession.Callback.onPlayerCommandRequest`，那里置位。
          */
         val p = _player ?: return
-        if (p.mediaItemCount == 0 || p.playbackState != Player.STATE_READY) return
         graph.scope.launch {
             runCatching {
-                if (wakeForCard) return@launch
+                /** 等就绪（最多 8 秒）—— 不再要求调用瞬间就 READY。 */
+                var waited = 0L
+                while (waited < 8_000L && p.mediaItemCount == 0) {
+                    kotlinx.coroutines.delay(150L)
+                    waited += 150L
+                }
+                if (p.mediaItemCount == 0) {
+                    android.util.Log.i("ETKN-Music", "重新唤醒卡片：等队列超时，跳过")
+                    return@launch
+                }
+                while (waited < 8_000L && p.playbackState != Player.STATE_READY) {
+                    kotlinx.coroutines.delay(150L)
+                    waited += 150L
+                }
+                if (p.playbackState != Player.STATE_READY) {
+                    android.util.Log.i(
+                        "ETKN-Music",
+                        "重新唤醒卡片：等 READY 超时(state=${p.playbackState})，跳过",
+                    )
+                    return@launch
+                }
+                /** 用户已经在听了 → 绝对不要打断。 */
+                if (p.isPlaying) {
+                    android.util.Log.i("ETKN-Music", "重新唤醒卡片：正在播放，跳过")
+                    return@launch
+                }
                 wakeForCard = true
                 val saved = p.volume
+                val posBefore = p.currentPosition
                 try {
                     p.volume = 0f
                     p.play()
                     kotlinx.coroutines.delay(120L)
-                    p.pause()
-                    android.util.Log.i("ETKN-Music", "重新唤醒卡片：已暂停 pos=${p.currentPosition}ms")
+                    /**
+                     * 暂停前做**三重判断**，任何一条成立就不暂停：
+                     *
+                     * ```
+                     * ① userTouchedPlayback —— 用户点了播放/列表/状态栏按钮
+                     * ② 位置比唤醒前前进超过 300ms —— 说明已经播了一会儿
+                     *    （120ms 的唤醒窗口内位置最多前进 ~120ms，
+                     *      超过 300ms 只能是用户点了播放并继续在播）
+                     * ③ 音量已经不是我们设的 0 —— 有别的路径改过播放器状态
+                     * ```
+                     * 三条都不成立才 pause（说明这 120ms 确实是我们的静音轻播）。
+                     */
+                    val advanced = p.currentPosition - posBefore
+                    val someoneElse = userTouchedPlayback || advanced > 300L
+                    if (someoneElse) {
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "重新唤醒卡片：用户已接管(触及=$userTouchedPlayback 前进=${advanced}ms)，不暂停",
+                        )
+                    } else {
+                        p.pause()
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "重新唤醒卡片：已暂停 pos=${p.currentPosition}ms",
+                        )
+                    }
                 } catch (t: Throwable) {
                     android.util.Log.w("ETKN-Music", "重新唤醒卡片失败", t)
                 } finally {
@@ -1679,6 +1813,21 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             }
         }
     }
+
+    /**
+     * 用户是否刚主动操作过播放（点播放键 / 点卡片 / 点列表）。
+     *
+     * 用户实测（#184）：
+     * ```
+     * 「在状态栏点击播放，它会播放一下，然后就马上暂停，我需要再次点击播放」
+     * ```
+     * 根因：唤醒协程的 `delay(120)` 走完时无条件 `pause()`，
+     * 把用户刚点的播放给停了。
+     *
+     * 这个标记在 `publish()` 检测到「从暂停变播放」时置位，
+     * 唤醒协程在暂停前检查它 —— 用户插进来就不暂停。
+     */
+    @Volatile private var userTouchedPlayback = false
 
     private var lyricLines: List<Pair<Long, String>> = emptyList()
     private var lastLyricIndex: Int = -1
