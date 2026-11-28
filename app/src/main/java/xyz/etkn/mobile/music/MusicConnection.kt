@@ -871,6 +871,12 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                                 )
                                 val posBefore = p.currentPosition
                                 p.volume = 0f
+                                /**
+                                 * 打上「唤醒窗口」标记：从这一刻起 200ms 内
+                                 * 只有我们有权 pause。见 `wakeStartedAt` 注释（#186）。
+                                 */
+                                wakeStartedAt = System.currentTimeMillis()
+                                wakePauseCancelled = false
                                 p.play()
                                 kotlinx.coroutines.delay(120L)
                                 /**
@@ -878,16 +884,18 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                                  * 规则同 `allowWakeAgain()` 里那段，注释见那里。
                                  */
                                 val advanced = p.currentPosition - posBefore
-                                if (userTouchedPlayback || advanced > 300L) {
+                                val winAge = System.currentTimeMillis() - wakeStartedAt
+                                val cancelled = wakePauseCancelled || userTouchedPlayback || advanced > 300L
+                                if (cancelled) {
                                     android.util.Log.i(
                                         "ETKN-Music",
-                                        "唤醒卡片：用户已接管(触及=$userTouchedPlayback 前进=${advanced}ms)，不暂停",
+                                        "唤醒卡片：用户已接管(取消=$wakePauseCancelled 触及=$userTouchedPlayback 前进=${advanced}ms 窗龄=${winAge}ms)，不暂停",
                                     )
                                 } else {
                                     p.pause()
                                     android.util.Log.i(
                                         "ETKN-Music",
-                                        "唤醒卡片：已暂停 state=${p.playbackState} pos=${p.currentPosition}ms",
+                                        "唤醒卡片：已暂停 state=${p.playbackState} pos=${p.currentPosition}ms 窗龄=${winAge}ms",
                                     )
                                 }
                             } catch (t: Throwable) {
@@ -1363,6 +1371,30 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                /**
+                 * 用户口径（#186）**识别「用户自己点了播放」，别把它暂停掉**。
+                 *
+                 * 这里能看到所有播放来源（状态栏按钮 / 耳机键 / App 内按钮），
+                 * 因为它监听的是播放器自身的状态变化。
+                 *
+                 * 规则：
+                 * ```
+                 * 变播放 且 距唤醒起点 > 250ms  → 不是我造成的 → wakePauseCancelled = true
+                 * ```
+                 * 我自己 play() 后状态变化在几十毫秒内；
+                 * 超过 250ms 才变播放，只能是用户点了（或蓝牙命令）。
+                 */
+                if (isPlaying && wakeStartedAt > 0L) {
+                    val age = System.currentTimeMillis() - wakeStartedAt
+                    if (age > 250L) {
+                        wakePauseCancelled = true
+                        android.util.Log.i(
+                            "ETKN-Music",
+                            "检测到用户接管播放（窗龄=${age}ms）→ 取消唤醒的暂停",
+                        )
+                    }
+                }
+
                 if (startedId != null) report("Progress", completed = false)
                 /**
                  * 用户口径 #74：维护 WiFi 退出的「上膛」状态。
@@ -1777,6 +1809,8 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                 val posBefore = p.currentPosition
                 try {
                     p.volume = 0f
+                    wakeStartedAt = System.currentTimeMillis()
+                    wakePauseCancelled = false
                     p.play()
                     kotlinx.coroutines.delay(120L)
                     /**
@@ -1792,7 +1826,7 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                      * 三条都不成立才 pause（说明这 120ms 确实是我们的静音轻播）。
                      */
                     val advanced = p.currentPosition - posBefore
-                    val someoneElse = userTouchedPlayback || advanced > 300L
+                    val someoneElse = wakePauseCancelled || userTouchedPlayback || advanced > 300L
                     if (someoneElse) {
                         android.util.Log.i(
                             "ETKN-Music",
@@ -1828,6 +1862,55 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 唤醒协程在暂停前检查它 —— 用户插进来就不暂停。
      */
     @Volatile private var userTouchedPlayback = false
+
+    /**
+     * 用户口径（2026-11-28，#186）**我自己的唤醒窗口时间戳**。
+     *
+     * 用户实测：
+     * ```
+     * 「点播放 → 播放一下子它就暂停，然后必须得再点播放」
+     * ```
+     *
+     * ## 为什么「用户标记」那套没用
+     *
+     * 上一版在 `play()` / `resumeRemembered()` / `playOrResume()` 里置位
+     * `userTouchedPlayback`。但用户点的是**状态栏的播放键** ——
+     * 那条路径是：
+     * ```
+     * 状态栏按钮 → MediaSession → 直接调 ExoPlayer.play()
+     *            → 完全绕过 MusicConnection 的那三个方法
+     * → 标记从未置位 → "三重判断"全部失效 → 照样被 pause()
+     * ```
+     *
+     * ## 现在的做法：只在自己 play() 之后的一个极短窗口内允许 pause
+     *
+     * ```
+     * wakeStartedAt = now          （我调 play() 的瞬间）
+     * ...
+     * 到点后判断：
+     *   now - wakeStartedAt 在 [80, 200]ms  → 这是我的窗口，pause()
+     *   否则                                → 时间已经过去很久，不是我造成的，不 pause
+     * ```
+     * 用户在任何时刻点了播放，只要那一刻**不在**这个 200ms 窗口里，
+     * 我们就不会去暂停它。
+     *
+     * 同时保留 `userTouchedPlayback` 作为补充（它覆盖 App 内的按钮）。
+     */
+    @Volatile private var wakeStartedAt = 0L
+
+    /**
+     * 唤醒窗口内「用户接管了播放」的取消标志。
+     *
+     * 由 `onIsPlayingChanged` 置位 —— 那里能看到**所有**播放来源，
+     * 包括状态栏按钮（走 MediaSession 直通 ExoPlayer，绕过我们的方法）。
+     *
+     * 判断规则（见 `onIsPlayingChanged` 的实现）：
+     * ```
+     * 距 wakeStartedAt 超过 250ms 才变播放 → 不是我造成的 → 置位取消
+     * ```
+     * 因为我自己是「立刻 play()」，如果真的是我，状态变化应该就在几十毫秒内。
+     */
+    @Volatile private var wakePauseCancelled = false
 
     private var lyricLines: List<Pair<Long, String>> = emptyList()
     private var lastLyricIndex: Int = -1
