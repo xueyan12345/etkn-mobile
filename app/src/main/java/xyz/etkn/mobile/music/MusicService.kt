@@ -67,7 +67,7 @@ import xyz.etkn.mobile.R
 class MusicService : MediaSessionService() {
     private var session: MediaSession? = null
 
-    private companion object {
+    companion object {
         /**
          * 服务实例是否存活。
          *
