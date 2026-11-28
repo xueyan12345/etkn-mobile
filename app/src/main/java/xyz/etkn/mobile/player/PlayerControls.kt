@@ -1060,7 +1060,17 @@ private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
                      *
                      * 取 (-6, 6)：2.8dp，贴得最紧又不压住图标笔画。
                      */
-                    .offset(x = (-6).dp, y = 6.dp)
+                    /**
+                     * 用户口径（2026-11-28，#162）**还要再近一点**。
+                     *
+                     * 距图标右上角：
+                     * ```
+                     * (-6,6) → 2.8dp   上一版
+                     * (-7,7) → 1.4dp   现在
+                     * ```
+                     * 再往外调就会压到图标笔画上了，1.4dp 是「贴着但不重叠」的极限。
+                     */
+                    .offset(x = (-7).dp, y = 7.dp)
                     .size(14.dp)
                     .graphicsLayer { this.alpha = alpha }
                     .background(Color.White, CircleShape)

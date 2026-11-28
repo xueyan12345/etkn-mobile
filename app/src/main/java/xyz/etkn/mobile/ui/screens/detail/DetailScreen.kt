@@ -272,7 +272,18 @@ private fun DetailContent(
                 if (item.mediaSources.size > 1) {
                     item(key = "versions") { VersionRow(item.mediaSources, data.selectedSource, vm::selectSource) }
                 }
-                item(key = "info", contentType = "info") { Swap(data) { InfoBlock(it.item, centered) } }
+                item(key = "info", contentType = "info") {
+                    /**
+                     * 用户口径（#166）把「整部剧简介」传给 InfoBlock 做切换。
+                     *
+                     * `data.seriesItem` 是单集页早就拉好的那条「剧集」数据
+                     * （头部大图/艺术字用的同一个对象），它的 `overview` 就是整部剧简介 ——
+                     * **不需要额外请求**。
+                     *
+                     * 电影/Video 的 `seriesItem` 为 null，传 null → 不显示切换标签。
+                     */
+                    Swap(data) { InfoBlock(it.item, centered, it.seriesItem?.overview) }
+                }
                 if (seriesId != null && (item.isSeries || item.isSeason || item.isEpisode)) {
                     item(key = "episodes", contentType = "episodes") {
                         EpisodeShelf(
@@ -709,6 +720,37 @@ private fun DetailHeader(data: DetailData, centered: Boolean, vm: DetailViewMode
                             fontWeight = FontWeight.Bold,
                             fontSize = 26.sp,
                             lineHeight = 32.sp,
+                            /**
+                             * 用户口径（2026-11-28，#165）**白字压在亮海报上看不清**。
+                             *
+                             * 用户原话：
+                             * ```
+                             * 「这个白色的剧名，它是悬浮在底图上方，但是每个剧的地图配色它不一样，
+                             *   有时候吧，他就看不太清，你看看这个能不能给他解决，
+                             *   是用什么办法给他动态变颜色，还是加一个什么字体阴影之类的」
+                             * ```
+                             *
+                             * ## 为什么不用「动态反色」
+                             *
+                             * 剧名位置通常压在人脸/雪地/天空上，**同一行里有亮有暗**，
+                             * 单一颜色必然有一半看不清；而且要对 bitmap 采样，多一次解码开销。
+                             *
+                             * ## 用文字阴影（视觉上等于「给字描了一圈暗边」）
+                             *
+                             * ```
+                             * color = Black     柔和的暗色描边
+                             * blurRadius = 12   足够柔，不会变成生硬的黑框
+                             * offset = (0, 2)   轻微下移，模拟自然投影
+                             * ```
+                             * 亮背景上：字周围立刻压暗，白字清晰
+                             * 暗背景上：阴影融进背景，完全看不出来
+                             * **渐变一点不用改** → 不会把整体画面调暗（这个方向用户之前否过）
+                             */
+                            shadow = androidx.compose.ui.graphics.Shadow(
+                                color = Color.Black.copy(alpha = 0.75f),
+                                offset = androidx.compose.ui.geometry.Offset(0f, 2f),
+                                blurRadius = 12f,
+                            ),
                         ),
                         // 渐变托底是深色，文字固定浅色（不跟主题走，否则浅色主题会出现深字压深底）
                         color = Color.White,
@@ -811,13 +853,39 @@ private fun techSource(data: DetailData): MediaSource? = with(data) {
 @Composable
 private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizontal) {
     /**
-     * 用户口径（2026-11-26）：**渐变托底是深色，文字固定浅色**。
-     * 用主题色（onSurface/onSurfaceVariant）在浅色主题下会是深字压深底，看不见。
+     * 用户口径（2026-11-28，#164）**左栏拆成固定三行，和右栏逐行对齐**。
+     *
+     * 用户原话：
+     * ```
+     * 「下边有一块特别长的空白，这是啥意思啊，如果说下边有的可能有评分啥的，
+     *   给他留的空，但是有的有评分的详情页还是也有一个空啊，虽然没这么大」
+     * ```
+     *
+     * ## 空白从哪来
+     *
+     * 头部是左右两栏的 `Row`：
+     * ```
+     * 左栏 MetaLines      ← 原来把「评分+日期+时长」全塞进同一个 Row（流式，1-2 行）
+     * 右栏 MediaTechRows  ← 固定 3 行：视频 / 音频 / 字幕
+     * ```
+     * 两栏行数不一样，`Row` 用 `Alignment.Bottom` 底部对齐 →
+     * **矮的那一栏上方空出一大块**，就是用户圈的那个位置。
+     *
+     * 上一版把 `Top` 改成 `Bottom` 只是把空白从「下方」挪到「上方」，没根治。
+     *
+     * ## 现在：左栏也按「评分 / 日期+时长 / 类型」固定三行
+     *
+     * 与右栏的「视频 / 音频 / 字幕」一一对应，行数恒等 → 无论对齐方式都不留空。
+     * 某一行没有数据（比如没评分、没类型）就**整行不渲染**，
+     * 此时两栏都少一行，仍然对齐。
+     *
+     * 行高统一用 `labelLarge` 的单行高度，行距 6dp —— 和右栏完全一致。
      */
     val muted = Color.White.copy(alpha = 0.72f)
     val ratings = item.ratings
-    // 用户口径（2026-11-24）：集号行移出头部后，行距 6dp → 8dp 让信息区更饱满
-    Column(horizontalAlignment = align, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+
+    /** 第 1 行：评分（多种评分并排；没有就用 bestRating 兜一层）。 */
+    val ratingLine: @Composable () -> Unit = {
         if (ratings.isNotEmpty()) {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(14.dp, align),
@@ -825,53 +893,58 @@ private fun MetaLines(item: Item, source: MediaSource?, align: Alignment.Horizon
             ) {
                 ratings.forEach { RatingScore(it, textColor = Color.White) }
             }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            formatRating(item.bestRating)?.takeIf { ratings.isEmpty() }?.let {
+        } else {
+            formatRating(item.bestRating)?.let {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Star, null, Modifier.size(16.dp), tint = Etkn.tokens.rating)
-                    Text(it, style = MaterialTheme.typography.labelLarge, color = Color.White, modifier = Modifier.padding(start = 2.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White,
+                        modifier = Modifier.padding(start = 2.dp),
+                    )
                 }
             }
-            /**
-             * 用户口径（2026-11-24）**补「完整上映日期 + 时长」**。
-             *
-             * 数据源（已实测确认）：
-             *  · 日期：media.items.release_date → API 的 PremiereDate
-             *    覆盖：movie 100% / series 93% / episode 32%
-             *  · 时长：version_analysis → RunTimeTicks
-             *    覆盖：全部库都有（含 LTX破解）
-             *
-             * 取不到就不显示，绝不编造、不显示 0。
-             * 有完整日期就显示日期，没有就退回年份。
-             */
-            val dateText = item.premiereDate?.take(10)?.replace("-", "/")
-            if (dateText != null) {
-                Text(dateText, style = MaterialTheme.typography.labelLarge, color = Color.White)
-            } else {
-                item.productionYear?.let { Text(it.toString(), style = MaterialTheme.typography.labelLarge, color = Color.White) }
-            }
-            // 时长：单集显示本集时长，电影显示总时长
-            formatRuntime(item.runtimeMs)?.let {
-                Text(it, style = MaterialTheme.typography.labelLarge, color = muted)
-            }
-            /**
-             * 用户口径（2026-11-26）：分级徽章已挪到剧名那一行（见 DetailHeader），
-             * 这里不再重复渲染。
-             *
-             * 用户口径（2026-11-23）：**「制作中」状态标记删掉**（参考图红圈里要去掉的内容）。
-             * 原来这里是 item.statusLabel?.takeIf { item.isSeries }。
-             */
         }
-        /**
-         * 用户口径（2026-11-23）：**视频技术规格整行删掉**
-         * （参考图红圈里的「4K HEVC 25FPS DD+ 5.1 3.8 GB」）。
-         * 原来这里渲染 techLine(item, source)。
-         * 第二层（单集页）另有右侧技术浮卡，那里保留。
-         */
+    }
+
+    /** 第 2 行：上映日期 + 时长。 */
+    val dateLine: @Composable () -> Unit = {
+        /** 有完整日期用日期，没有退回年份；都取不到就不渲染这一行。 */
+        val dateText = item.premiereDate?.take(10)?.replace("-", "/")
+            ?: item.productionYear?.toString()
+        val runtime = formatRuntime(item.runtimeMs)
+        if (dateText != null || runtime != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (dateText != null) {
+                    Text(dateText, style = MaterialTheme.typography.labelLarge, color = Color.White)
+                }
+                if (runtime != null) {
+                    Text(runtime, style = MaterialTheme.typography.labelLarge, color = muted)
+                }
+            }
+        }
+    }
+
+    /** 第 3 行：类型。 */
+    val genreLine: @Composable () -> Unit = {
         if (item.genres.isNotEmpty()) {
-            Text(item.genres.take(4).joinToString(" · "), style = MaterialTheme.typography.labelLarge, color = muted, maxLines = 1)
+            Text(
+                item.genres.take(4).joinToString(" · "),
+                style = MaterialTheme.typography.labelLarge,
+                color = muted,
+                maxLines = 1,
+            )
         }
+    }
+
+    Column(horizontalAlignment = align, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        ratingLine()
+        dateLine()
+        genreLine()
     }
 }
 
@@ -1579,11 +1652,53 @@ private fun VersionRow(sources: List<MediaSource>, selected: Int, onSelect: (Int
     }
 }
 
-/** Tagline and overview (tap to expand). */
+/**
+ * Tagline and overview (tap to expand).
+ *
+ * 用户口径（2026-11-28，#166）**单集页要有整部剧的简介**。
+ *
+ * 用户原话：
+ * ```
+ * 「咱们不是把剧集的整个剧集简介页删掉了吗，现在留的就是分集的详情页，
+ *   那么有个问题，原来剧集整个的简介里边有一个整个剧集的简介，
+ *   这整个剧集的简介好像没地放了，现在看不到了」
+ * ```
+ *
+ * ## 为什么做成「两个小标签切换」而不是新增一块
+ *
+ * 这个页面已经很满（头图 + 技术行 + 播放 + 集标题 + 简介 + 选集 + 分集 + 章节），
+ * 任何常驻新增都是净增高度。标签切换**零高度成本**，而且位置就在用户读简介的地方。
+ *
+ * ## 数据来源
+ *
+ * 整部剧的简介取自 `seriesOverview` —— 调用方传的是 `data.seriesItem?.overview`，
+ * 也就是详情页早就拉了的那条「剧集」数据（单集页头部大图用的同一个对象）。
+ * **不需要额外请求**。
+ *
+ * ## 什么情况下不显示标签
+ *
+ * 电影/视频没有「整部剧」概念；或者剧集那条没拉到/简介为空 → 不渲染标签，
+ * 行为和现在完全一致。
+ */
 @Composable
-private fun InfoBlock(item: Item, centered: Boolean) {
+private fun InfoBlock(item: Item, centered: Boolean, seriesOverview: String? = null) {
     var expanded by remember { mutableStateOf(false) }
     val align = if (centered) TextAlign.Center else TextAlign.Start
+
+    /**
+     * 是否提供「整部剧」切换。
+     * 只在「这一集自己有简介」且「剧集简介也存在且不同」时才显示，
+     * 否则多一个点了没反应的标签反而添乱。
+     */
+    val showSeriesTab = !seriesOverview.isNullOrBlank() &&
+        item.isEpisode &&
+        seriesOverview.trim() != item.overview?.trim()
+
+    /** 0 = 本集，1 = 整部剧 */
+    var tab by remember(item.id) { mutableStateOf(0) }
+
+    val overview = if (showSeriesTab && tab == 1) seriesOverview else item.overview
+
     Column(
         Modifier.fillMaxWidth().padding(horizontal = Etkn.space.screen).padding(top = 18.dp),
         horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
@@ -1591,7 +1706,33 @@ private fun InfoBlock(item: Item, centered: Boolean) {
         item.taglines.firstOrNull()?.let {
             Text(it, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, textAlign = align, modifier = Modifier.padding(bottom = 6.dp))
         }
-        item.overview?.let { overview ->
+        if (showSeriesTab) {
+            Row(
+                Modifier.padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                listOf("本集", "整部剧").forEachIndexed { i, label ->
+                    val on = tab == i
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                        color = if (on) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        },
+                        modifier = Modifier.clickable {
+                            if (tab != i) {
+                                tab = i
+                                expanded = false   // 换简介时先收起来，避免一行行读长文
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        overview?.let { overview ->
             Text(
                 overview,
                 /**

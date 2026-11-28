@@ -144,21 +144,57 @@ class MusicService : MediaSessionService() {
                     if (MusicSessionHolder.isVideoHolding()) {
                         when (playerCommands) {
                             /**
-                             * 只拦「上一首/下一首」—— 这两条语义无歧义：
-                             * 用户说的是「蓝牙按下一首，音乐在后台偷偷跳歌」，拦掉正好。
+                             * 用户实测反馈（2026-11-28，#163）**第 4 步没拦住**。
                              *
-                             * **不拦 `COMMAND_PLAY_PAUSE`**：Media3 把播放和暂停
-                             * 合并成同一个命令（api.txt 里只有 `COMMAND_PLAY_PAUSE = 1`，
-                             * 没有单独的 COMMAND_PLAY），拦了会把用户想暂停音乐的需求也拦掉，
-                             * 而暂停本身是无害的。播放/暂停的串台问题用下面的
-                             * `playWhenReady = false` 处理（见 `MusicSessionHolder.yieldToVideo`）。
+                             * 用户原话：
+                             * ```
+                             * 「第一个、第二个、第三个都没问题，但是第四个，
+                             *   正在播放视频的时候耳机按暂停，视频暂停了，音乐又播放了」
+                             * ```
+                             *
+                             * ## 为什么上一版拦不住
+                             *
+                             * 上一版只拦了 `SEEK_TO_NEXT/PREVIOUS`，**故意放过
+                             * `COMMAND_PLAY_PAUSE`**，理由是「播放和暂停在 Media3 里合并成
+                             * 一个命令（`COMMAND_PLAY_PAUSE = 1`），拦了会连用户想暂停音乐也拦掉」。
+                             *
+                             * 这个理由在**视频占用期间不成立**：
+                             * ```
+                             * 视频在前台时，用户按播放/暂停想控制的是「视频」，
+                             * 音乐本来就该保持安静 —— 此时拦掉 PLAY_PAUSE 完全正确。
+                             * ```
+                             * 而且 `MusicSessionHolder.yieldToVideo()` 里的
+                             * `playWhenReady = false` 只是一次性设置，
+                             * 蓝牙按下 PLAY 会把它改回 true —— 所以必须在这里硬拦。
+                             *
+                             * ## 现在：视频占用期间，播放/暂停 + 切歌全部拦掉
+                             *
+                             * ```
+                             * COMMAND_PLAY_PAUSE              → 拦  （否则音乐被叫起来）
+                             * COMMAND_SEEK_TO_NEXT/PREVIOUS   → 拦  （否则后台偷偷切歌）
+                             * COMMAND_STOP                    → 放行（停下来无害，也不出声）
+                             * 其余                            → 放行
+                             * ```
+                             *
+                             * ## 为什么不会误伤「暂停音乐」
+                             *
+                             * 这个 if 只在 `videoHolding == true`（视频页面处于前台）时成立。
+                             * 用户离开视频页 → `onDestroy` → `resumeFromVideo()` 立刻清掉标记，
+                             * 音乐这边一切按键行为恢复原样。
+                             *
+                             * ## 蓝牙唤醒红线仍然完好
+                             *
+                             * 拦的是「命令执行」，**会话没有 release、Receiver 没有动**
+                             * （`EtknMediaButtonReceiver` / `onStartCommand` / `systemPlay`
+                             * 一行都没改）。视频退出后蓝牙按键照常到达、照常能唤醒音乐。
                              */
+                            androidx.media3.common.Player.COMMAND_PLAY_PAUSE,
                             androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT,
                             androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
                             androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS,
                             androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
                             -> {
-                                android.util.Log.i("ETKN-Music", "视频占用中 → 拦下音乐切歌 cmd=$playerCommands")
+                                android.util.Log.i("ETKN-Music", "视频占用中 → 拦下音乐命令 cmd=$playerCommands")
                                 return androidx.media3.session.SessionResult.RESULT_ERROR_NOT_SUPPORTED
                             }
                         }

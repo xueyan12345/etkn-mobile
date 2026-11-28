@@ -98,7 +98,20 @@ fun etknTokens(scheme: ColorScheme, dark: Boolean): EtknTokens = EtknTokens(
         0.00f to Color.Transparent,
         0.22f to Color.Black.copy(alpha = 0.28f),
         0.45f to Color.Black.copy(alpha = 0.58f),
-        0.68f to Color.Black.copy(alpha = 0.80f),
+        /**
+         * 用户口径（2026-11-28，#165）**剧名那一档加强** 0.80 → 0.86。
+         *
+         * 剧名落在整块渐变的偏上位置，对应这一档。
+         * 亮海报（雪地/白墙/亮天空）时 0.80 不够，白字压上去对比度偏低。
+         *
+         * 只动这一档：
+         * ```
+         * 0.45 保持 0.58   ← 不动，避免整体发暗（用户否过「太黑」）
+         * 0.68 提到 0.86   ← 剧名所在
+         * 0.85/1.00 不动
+         * ```
+         */
+        0.68f to Color.Black.copy(alpha = 0.86f),
         0.85f to Color.Black.copy(alpha = 0.90f),
         1.00f to Color.Black.copy(alpha = 0.94f),
     ),
