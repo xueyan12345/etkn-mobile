@@ -907,16 +907,45 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
                  * 现在点 16dp（约 1.8 倍），网速 16sp（约 1.3 倍），
                  * 间距同步放大，整体在中心区域更显眼。
                  */
-                xyz.etkn.mobile.ui.components.EtknLoading(
-                    size = 16.dp,
-                    tint = Color.White,
-                )
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    netSpeed,
-                    color = Color.White.copy(alpha = 0.8f),
-                    fontSize = 16.sp,
-                )
+                /**
+                 * 用户口径（#208）**上次太小、这次太大，取中间；并且要正中对齐**。
+                 *
+                 * 用户原话：
+                 * ```
+                 * 「那三个点的动画有点太大了还，太极端了，上次的太小，这次的太大」
+                 * 「它的位置我怎么感觉有点偏左呢？是在正中间吗，如果不是的话移动一下，
+                 *   然后它下边的网速也跟它保持是在一个位置，是在中间」
+                 * ```
+                 *
+                 * ## 尺寸
+                 * ```
+                 * 9dp  → 太小（第一版）
+                 * 16dp → 太大（上一版）
+                 * 12dp → 本次，取中间
+                 * ```
+                 * 网速同步 16sp → 14sp。
+                 *
+                 * ## 为什么看起来偏左
+                 *
+                 * 三点跳动是 `Row` 排三个圆点，最后一点右侧还有 `gap` 的空白，
+                 * 但整行宽度只按「点 + 间距」算 —— 视觉重心比几何中心偏左约半个 gap。
+                 * 这里给整块内容加 `fillMaxWidth()` + 居中对齐，
+                 * 让 Row 和下面的网速文字共用同一个居中轴。
+                 */
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    xyz.etkn.mobile.ui.components.EtknLoading(
+                        size = 12.dp,
+                        tint = Color.White,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text(
+                        netSpeed,
+                        color = Color.White.copy(alpha = 0.8f),
+                        fontSize = 14.sp,
+                    )
+                }
             }
         }
         ui.error?.let { message ->

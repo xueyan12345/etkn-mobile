@@ -528,15 +528,68 @@ class VideoSession(
                                 "codec=$codec，等轨道信息稳定",
                         )
                     } else {
+                        /**
+                         * 用户实测（2026-11-28，#206）**这条规则以前是反的**。
+                         *
+                         * ## 实证
+                         *
+                         * 同一部 MPEG-2 老片（version-312）：
+                         * ```
+                         * 自动选核 → mpv     → mpeg2_mediacodec failed → Could not open codec → 黑屏
+                         * 手动切 Exo         → video decoder ffmpegLavc63.1.101-mpeg2video 5ms → 秒开
+                         * ```
+                         *
+                         * ## 旧规则错在哪
+                         *
+                         * ```kotlin
+                         * !exoCanDecode -> Engine.Mpv    // 「系统没硬解就交给 mpv」
+                         * ```
+                         * 前提是「mpv 能解 Exo 解不了的」，但事实相反：
+                         * ```
+                         * Exo  → 有 NextLib FFmpeg 软解兜底，MPEG-2/VC-1/WMV 全能解（实测 5ms）
+                         * mpv  → 硬解这些老编码会失败，而且失败后不回退软解
+                         * ```
+                         * `canDecode()` 查的只是**系统硬解**，不代表 Exo 解不了。
+                         *
+                         * ## 新规则
+                         *
+                         * ```
+                         * 视频轨道都没有（codec 空）  → mpv   （提取器不认，mpv 的 demuxer 更强）
+                         * 杜比视界 P5                  → Exo   （mpv 偏绿）
+                         * 杜比视界 其他                 → Exo
+                         * HDR10 / HLG                 → mpv   （Exo 走纹理会发暗）
+                         * 其余（含所有老编码）           → Exo   （有 FFmpeg 软解兜底）
+                         * ```
+                         * 注意：**删掉了 `!exoCanDecode -> Mpv` 这条**。
+                         * 系统没硬解不再作为「换 mpv」的理由 —— Exo 自己会退到 FFmpeg 软解。
+                         */
+                        /**
+                         * 用户口径（#211）**这里也走 CodecPolicy 同一张名单**。
+                         *
+                         * 之前这段和 `engineFromServerStreams` 各写一套判断，
+                         * 一旦改一处忘另一处就会来回切内核。现在两处共用 `CodecPolicy.decide()`，
+                         * 保证「起播前预判」和「起播后纠正」结论一致。
+                         *
+                         * 唯一例外：**视频轨道都没有**（提取器完全不认）时仍交给 mpv ——
+                         * 那不是编码问题，是容器/封装问题，mpv 的 demuxer 更强。
+                         */
+                        val policy = CodecPolicy.decide(
+                            codec = codec,
+                            extendedType = if (dv) "DolbyVision" else null,
+                            videoRange = if (hdr) "HDR" else null,
+                            colorTransfer = videoFormat?.colorInfo?.colorTransfer?.let {
+                                when (it) {
+                                    C.COLOR_TRANSFER_ST2084 -> "smpte2084"
+                                    C.COLOR_TRANSFER_HLG -> "arib-std-b67"
+                                    else -> null
+                                }
+                            },
+                        )
                         val want = when {
-                            // ⓪ 视频轨道缺失 / 编码未知 → mpv（Exo 解不了）
+                            // ⓪ 视频轨道缺失 / 编码未知 → mpv（容器的锅，不是编码的锅）
                             !hasVideoTrack || (videoFormat != null && codec.isEmpty()) -> Engine.Mpv
-                            // ⓪' 设备没有这个编码的解码器 → mpv（内置 FFmpeg 能解）
-                            !exoCanDecode -> Engine.Mpv
-                            dv5 -> Engine.Exo          // ① DV profile5 → Exo（mpv 偏色）
-                            hdr -> Engine.Mpv          // ② HDR10/HLG → mpv（Exo 发暗）
-                            dv -> Engine.Exo           // DV 非 profile5 → Exo
-                            else -> Engine.Exo         // ③ SDR → Exo
+                            policy.engine == CodecPolicy.Engine.Mpv -> Engine.Mpv
+                            else -> Engine.Exo
                         }
                         autoPickDone = true
                         android.util.Log.i(
@@ -818,11 +871,82 @@ class VideoSession(
              * 一次到位，不用再切。第一次仍然会切（无法避免），之后都很快。
              */
             PlayerEngine.Auto -> {
+                /**
+                 * 用户口径（2026-11-28，#207）**用服务器给的编码信息在起播前就选对内核**。
+                 *
+                 * ## 现状（低效）
+                 *
+                 * ```
+                 * 起播时拿不到编码 → 默认 Exo → 解析轨道 → 发现该用 mpv → 切 → 再起播
+                 * ```
+                 * 中间白白起了 1~2 秒，用户看到黑屏/转圈。代码注释里也承认了这点。
+                 *
+                 * ## 其实数据早就在手上
+                 *
+                 * 日志：`playback info after 128 ms` + `streams=Video:mpeg2video: Audio:ac3:`
+                 * —— `playbackInfo` 的 `MediaStream` 里已经有
+                 * `codec / videoRange / colorTransfer / extendedVideoType`，
+                 * 只是选内核时没用它。
+                 *
+                 * ## 现在
+                 *
+                 * 优先用**上次记住的**（最准，Player 实测过）；
+                 * 没有记忆就用服务器流信息预判一次，规则和 `onTracksChanged` 里的一致：
+                 * ```
+                 * DV profile5  → Exo
+                 * HDR10 / HLG  → mpv
+                 * 其余          → Exo（老编码靠 Exo 的 FFmpeg 软解）
+                 * ```
+                 * 这样第一次播放也能一次到位，不再「起了再切」。
+                 */
                 val remembered = item?.id?.let { EngineMemory.lookup(context, it) }
-                remembered ?: Engine.Exo
+                remembered
+                    ?: engineFromServerStreams(chosen)
+                    ?: Engine.Exo
             }
         }
     }
+
+    /**
+     * 用**服务器返回的流信息**在起播前预判内核（#207）。
+     *
+     * 数据来源：`playbackInfo` 的 `MediaStream`（`codec / videoRange /
+     * colorTransfer / extendedVideoType`），这些都是 mediainfo 已经算好的，
+     * 不需要起播就能拿到。
+     *
+     * 规则与 `onTracksChanged` 里的一致性（两处必须同源，否则会来回切）：
+     * ```
+     * 杜比视界 profile 5 / 8 / 7  → Exo   （mpv 对 P5 偏绿）
+     * HDR10 / HLG（PQ / arib-std-b67）→ mpv（Exo 走纹理会发暗）
+     * 其余（含 mpeg2/wmv/vc1/rv40）→ Exo  （Exo 的 NextLib FFmpeg 能软解）
+     * ```
+     * 返回 null 表示「信息不足，别猜」—— 交给上层默认值。
+     */
+    private fun engineFromServerStreams(chosen: MediaSource): Engine? {
+        val video = chosen.streams.firstOrNull { it.type.equals("Video", true) } ?: return null
+        /**
+         * 用户口径（#211）**统一走 CodecPolicy 名单**，不再各处各写一套 if。
+         *
+         * 名单在 `player/CodecPolicy.kt`，含 40+ 种编码（库里实有 15 种 + 预留），
+         * 每条都标了数据来源。这里只负责把服务器字段喂进去。
+         */
+        val choice = CodecPolicy.decide(
+            codec = video.codec,
+            extendedType = video.extendedVideoType,
+            videoRange = video.videoRange,
+            colorTransfer = video.colorTransfer,
+        )
+        android.util.Log.i(
+            TAG,
+            "服务器预判 → ${choice.engine}（${choice.reason} codec=${video.codec} " +
+                "dv=${video.extendedVideoType} range=${video.videoRange}）",
+        )
+        return when (choice.engine) {
+            CodecPolicy.Engine.Exo -> Engine.Exo
+            CodecPolicy.Engine.Mpv -> Engine.Mpv
+        }
+    }
+
 
     /** Swaps cores only when the wanted one differs; an mpv that cannot start falls back to ExoPlayer. */
     /**

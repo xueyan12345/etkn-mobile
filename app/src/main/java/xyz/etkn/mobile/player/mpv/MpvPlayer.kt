@@ -176,7 +176,46 @@ class MpvPlayer(
             DecoderPreference.Hardware -> "mediacodec,mediacodec-copy"
             DecoderPreference.Software -> "no"
         })
-        set("hwdec-codecs", "h264,hevc,mpeg2video,vc1,vp8,vp9,av1")
+        /**
+         * 用户实测（2026-11-28，#206）**mpv 播 MPEG-2 黑屏，根因就在这里**。
+         *
+         * ## 日志铁证
+         *
+         * ```
+         * 20:15:10.766  自动选核 → mpv（codec=mpeg2video）
+         * 20:15:10.767  mpv: mpeg2_mediacodec: MediaCodec 0x0 failed to start
+         * 20:15:10.767  mpv: [vd:error] Could not open codec.
+         * ```
+         * 同一部片手动切 Exo 后：
+         * ```
+         * 20:15:13.412  ETKN-Player: video decoder ffmpegLavc63.1.101-mpeg2video 5ms  ← 秒开
+         * ```
+         *
+         * ## 根因：我们违反了 mpv 的官方默认白名单
+         *
+         * mpv 源码 `video/decode/vd_lavc.c` 的默认值：
+         * ```
+         * hwdec-codecs = "h264,vc1,hevc,vp8,vp9,av1,prores,prores_raw,ffv1,dpx,apv"
+         * ```
+         * **`mpeg2video` 不在里面** —— mpv 官方有意不给它开硬解，
+         * 因为很多 Android 设备的 mediacodec 对 MPEG-2 只报「支持」但实际初始化失败。
+         *
+         * 我们之前写成：
+         * ```kotlin
+         * set("hwdec-codecs", "h264,hevc,mpeg2video,vc1,vp8,vp9,av1")
+         * ```
+         * 把 `mpeg2video` 塞进白名单 → mpv 去试探硬解 →
+         * `MediaCodec failed to start` → `Could not open codec` → **黑屏**。
+         *
+         * ## 现在：恢复成官方默认白名单
+         *
+         * 只保留官方认可会走硬解的编码，MPEG-2 / WMV / RealVideo 这类
+         * 一律走 mpv 自己的 FFmpeg 软解（mpv 内置完整 FFmpeg，都能解）。
+         *
+         * 注意 `no` 也在 `hwdec` 的回落链里（Auto 模式最后一位），
+         * 白名单没命中时 mpv 直接软解，不会再去试硬解。
+         */
+        set("hwdec-codecs", HW_DECODE_CODECS)
         /**
          * 用户口径（2026-11-27）**4K 硬解时不要在解码器里再排一队帧**。
          *
@@ -696,6 +735,14 @@ class MpvPlayer(
     private fun seconds(ms: Long) = String.format(Locale.ROOT, "%.3f", ms / 1000.0)
 
     companion object {
+        /**
+         * mpv 官方默认硬解白名单（`video/decode/vd_lavc.c` 的 defaults）。
+         *
+         * 刻意**不含** mpeg2video / wmv / vc1 / rv40：
+         * 这些编码在 Android 的 mediacodec 上经常「声称支持但初始化失败」，
+         * 塞进白名单会让 mpv 黑屏（#206 实测）。
+         */
+        private const val HW_DECODE_CODECS = "h264,hevc,vp8,vp9,av1,prores,ffv1"
         private const val TAG = "ETKN-Mpv"
 
         /** Main thread only. */

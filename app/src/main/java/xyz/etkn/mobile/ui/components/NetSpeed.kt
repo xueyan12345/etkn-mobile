@@ -42,10 +42,37 @@ fun rememberNetSpeed(): String {
     LaunchedEffect(Unit) {
         var lastRx = 0L
         while (true) {
+            /**
+             * 用户实测（2026-11-28，#209）**右上角网速一直是 0，以前好用**。
+             *
+             * ## 根因
+             *
+             * 原来用 `getUidRxBytes(自己uid)`：这个 API 统计的是
+             * 「本进程 UID 收发的字节」，在某些 ROM / 内核上会返回
+             * `UNSUPPORTED`，或因为统计口径变化长期不动 → 恒 0。
+             *
+             * ## 现在三级兜底
+             *
+             * ```
+             * ① getUidRxBytes(自己uid)   —— 精确到本 App（首选）
+             * ② getTotalRxBytes()        —— 全机接收量（次选，能反映"在下载"）
+             * ③ 都不可用 → 保持上次值，不显示 0 抖动
+             * ```
+             * 虽然 ② 会混入其他应用的流量，但至少**不会一直是 0**，
+             * 而且播放时本 App 的流量占绝对多数，能反映真实下载速度。
+             */
             val uid = android.os.Process.myUid()
-            val uiBytes = android.net.TrafficStats.getUidRxBytes(uid)
-            val rx =
-                if (uiBytes == android.net.TrafficStats.UNSUPPORTED.toLong()) 0L else uiBytes
+            val uidBytes = android.net.TrafficStats.getUidRxBytes(uid)
+            val totalBytes = android.net.TrafficStats.getTotalRxBytes()
+            val rx = when {
+                uidBytes > 0L -> uidBytes
+                totalBytes > 0L -> totalBytes
+                else -> lastRx   // 都拿不到就沿用上次，避免刷成 0
+            }
+            android.util.Log.d(
+                "ETKN-Net",
+                "uid=$uidBytes total=$totalBytes used=$rx",
+            )
             speed = when {
                 lastRx <= 0L || rx <= lastRx -> "0 B/s"
                 else -> {

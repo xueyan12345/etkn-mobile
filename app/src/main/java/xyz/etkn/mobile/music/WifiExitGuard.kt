@@ -65,6 +65,9 @@ object WifiExitGuard {
     /** 反注册回调要用它（单例不能长期持有 Activity）。 */
     @Volatile private var appContext: Context? = null
 
+    /** WifiManager 的 SUPPLICANT 状态广播接收器（#210）。 */
+    private var supplicantReceiver: android.content.BroadcastReceiver? = null
+
     /** 防重入：清理跑到一半又收到 onLost 时不要重复执行。 */
     @Volatile private var exiting = false
 
@@ -81,6 +84,24 @@ object WifiExitGuard {
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onLost(network: Network) {
                 scope.launch { handleLost(context.applicationContext) }
+            }
+
+            /** 请求的网络彻底不可用（例如 WiFi 关闭）—— 兜底再判一次。 */
+            override fun onUnavailable() {
+                scope.launch { handleLost(context.applicationContext) }
+            }
+
+            /**
+             * 从 WiFi 切到移动数据时，部分 ROM 只发这个回调、不发 onLost。
+             * 这里检查「当前是否还有 WiFi 连接」，没有就走退出判定。
+             */
+            override fun onCapabilitiesChanged(
+                network: Network,
+                caps: NetworkCapabilities,
+            ) {
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    scope.launch { handleLost(context.applicationContext) }
+                }
             }
 
             /**
@@ -119,10 +140,61 @@ object WifiExitGuard {
                 }
             }
         }
+        /**
+         * 用户实测（2026-11-28，#210）**「离开 WiFi 那个功能好像不好使」**。
+         *
+         * ## 只靠 ConnectivityManager 的漏洞
+         *
+         * 原来只注册了 `registerNetworkCallback(TRANSPORT_WIFI, cb)`，
+         * 它有两个盲区：
+         * ```
+         * ① WiFi 慢慢变弱断开、但系统还有残留网络对象时，onLost 可能延迟很久才来
+         * ② 从 WiFi 切到移动数据时，某些 ROM 只发 onCapabilitiesChanged，
+         *    不发 onLost（我们没监听前者）
+         * ```
+         * 结果就是：**车开走了、WiFi 早断了，App 还在放歌**。
+         *
+         * ## 现在补两条独立信号源
+         *
+         * ```
+         * ① ConnectivityManager 的 onLost（保留）
+         * ② WifiManager 的 SUPPLICANT_STATE_CHANGED_ACTION 广播
+         *    —— 系统级的「WiFi 关联状态变化」，断开时一定发，最可靠
+         * ③ NetworkCallback 的 onUnavailable（连不上的兜底）
+         * ```
+         * 任何一条判定「已离开目标 WiFi 且已上膛」就执行退出，
+         * `exiting` 标记保证不会重复清理。
+         */
         callback = cb
         runCatching { cm.registerNetworkCallback(request, cb) }
             .onSuccess { android.util.Log.i("ETKN-WifiExit", "✅ WiFi 回调已注册") }
             .onFailure { android.util.Log.w("ETKN-WifiExit", "!! 注册 WiFi 回调失败", it) }
+        /**
+         * ③ WifiManager 广播：`SUPPLICANT_STATE_CHANGED_ACTION`。
+         *
+         * 这是「WiFi 关联状态」的系统级广播，断开/掉线时一定触发，
+         * 比 NetworkCallback 更及时，也不受「网络对象残留」影响。
+         */
+        runCatching {
+            val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val filter = android.content.IntentFilter(WifiManager.SUPPLICANT_STATE_CHANGED_ACTION)
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: Context?, intent: android.content.Intent?) {
+                    val error = intent?.getIntExtra(
+                        WifiManager.EXTRA_SUPPLICANT_ERROR, -1,
+                    ) ?: -1
+                    android.util.Log.i(
+                        "ETKN-WifiExit",
+                        "SUPPLICANT 状态变化 error=$error → 判定是否已离开",
+                    )
+                    scope.launch { handleLost(context.applicationContext) }
+                }
+            }
+            context.applicationContext.registerReceiver(receiver, filter)
+            supplicantReceiver = receiver
+            android.util.Log.i("ETKN-WifiExit", "✅ WifiManager 广播已注册")
+        }.onFailure { android.util.Log.w("ETKN-WifiExit", "注册 WifiManager 广播失败", it) }
+
         scope.launch { syncArmed(context.applicationContext) }
     }
 
@@ -136,6 +208,10 @@ object WifiExitGuard {
             }
         }
         callback = null
+        supplicantReceiver?.let { r ->
+            runCatching { ctx?.unregisterReceiver(r) }
+        }
+        supplicantReceiver = null
         job = null
     }
 
