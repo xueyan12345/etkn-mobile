@@ -529,8 +529,38 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                  */
                 val jumpTo = if (data.item.isSeries && !jumpOnce && data.target != null) data.target else null
                 if (jumpTo != null && jumpTo.id != data.item.id) {
+                    /**
+                     * 用户口径（2026-11-28，#159）**不要先闪一帧「整个剧的简介」**。
+                     *
+                     * 用户原话：
+                     * ```
+                     * 「我点开剧集弹出来的详情页，首先看到的貌似是之前咱们删掉的那个界面呢，
+                     *   我首先看到的是整个剧的简介，然后才跳到集」
+                     * ```
+                     *
+                     * ## 根因
+                     *
+                     * 原来这里第一行是 `Load.Ready(data)` —— **先把剧集页推上屏**，
+                     * 下一行 `show(jumpTo.id)` 才跳单集。那一帧就露给用户了：
+                     * 标题是剧名、简介是整部剧的、封面是剧集图，全都不对。
+                     *
+                     * 而且不止这一处：入口路由本来就是剧集 id
+                     * （`openTitle(单集)`、`openSmart(剧集)` 都 `to(DetailRoute(series))`），
+                     * 种子和 `readCachedPage` 取的也是剧集数据 → 进来第一眼必然是剧集页。
+                     *
+                     * ## 现在
+                     *
+                     * **不推剧集页**，直接进单集那一帧。
+                     * 顶着用的是 `jumpTo` 自己 —— 它是 `PlaybackTarget` 返回的真实单集条目，
+                     * 自带 Name/Overview/ImageTags/UserData/IndexNumber，
+                     * 够画出标题+简介+集图+进度；缺的 MediaSources 由新页面的 `load()` 补。
+                     *
+                     * 同时 `DetailSeed.put(jumpTo)`，让紧接着的 `show()` 也能秒渲染，
+                     * 不会「跳过去又白一下」。
+                     */
                     jumpOnce = true
-                    Load.Ready(data)
+                    DetailSeed.put(jumpTo)
+                    _state.value = Load.Ready(data.copy(item = jumpTo))
                     show(jumpTo.id)
                     return@launch
                 }

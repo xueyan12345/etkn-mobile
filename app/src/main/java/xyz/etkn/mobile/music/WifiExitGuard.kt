@@ -421,11 +421,51 @@ object MusicSessionHolder {
         if (videoHolding) return
         videoHolding = true
         runCatching {
-            val p = session?.player
-            if (p != null && p.isPlaying) {
-                p.pause()
-                android.util.Log.i("ETKN-Music", "视频开始 → 音乐已暂停，让出媒体键")
-            }
+            val p = session?.player ?: return
+            /**
+             * 用户口径（2026-11-28，#161）**视频在前台时，音乐不能响应蓝牙按键**。
+             *
+             * 用户原话：
+             * ```
+             * 「用蓝牙耳机暂停播放音乐，转去播放视频，蓝牙耳机操作下一首还是好使，
+             *   只不过音乐不播放，单纯的跳下一首」
+             * 「我在耳机上触发播放暂停，视频能暂停，但是视频暂停的同时，
+             *   又触发了音乐的播放」
+             * ```
+             *
+             * ## 之前为什么没生效
+             *
+             * 老写法：
+             * ```kotlin
+             * if (p != null && p.isPlaying) { p.pause() }   // ← 只在「正在播」时动手
+             * ```
+             * 两个问题：
+             * ```
+             * ① 用户场景是「音乐已经暂停了再去播视频」→ isPlaying=false → 整块跳过，什么都没做
+             * ② 就算 pause 了，「暂停」也不等于「交出按键」——
+             *    会话还在，蓝牙按播放照样把它叫起来
+             * ```
+             *
+             * ## 现在
+             *
+             * ```
+             * playWhenReady = false    ← 关键：收到 play 命令也不会自动开始出声
+             * p.pause()                ← 如果真在播，停下来
+             * ```
+             *
+             * `playWhenReady` 是 Exo 的「意图」标志。蓝牙的 PLAY 命令会把它设成 true，
+             * 但视频页面此时是**可见的前台 Activity**（官方优先级①），
+             * 按键先到视频那边；音乐这边靠 `onPlayerCommandRequest` 拦掉切歌、
+             * 靠这里的 pause 保持安静。
+             *
+             * **无论当时是否在播放都要执行** —— 这才是「先暂停音乐、再播视频」场景的修复。
+             */
+            if (p.isPlaying) p.pause()
+            p.playWhenReady = false
+            android.util.Log.i(
+                "ETKN-Music",
+                "视频进入前台 → 音乐交出媒体键（wasPlaying=${p.isPlaying}, playWhenReady=false）",
+            )
         }.onFailure { android.util.Log.w("ETKN-Music", "让出媒体键失败", it) }
     }
 
@@ -435,6 +475,9 @@ object MusicSessionHolder {
         videoHolding = false
         android.util.Log.i("ETKN-Music", "视频结束 → 媒体键归还音乐")
     }
+
+    /** 视频是否正占用媒体键（`MusicService` 的 `onPlayerCommandRequest` 用它判断）。 */
+    fun isVideoHolding(): Boolean = videoHolding
 
     fun release() {
         runCatching { session?.release() }

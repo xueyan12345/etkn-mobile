@@ -81,9 +81,96 @@ class MusicService : MediaSessionService() {
             .setBitmapLoader(bitmaps)
             .setCallback(object : MediaSession.Callback {
                 /**
+                 * 用户口径（2026-11-28，#161）**播视频时把音乐从蓝牙按键上摘下来**。
+                 *
+                 * 用户原话：
+                 * ```
+                 * 「用蓝牙耳机播放或者连蓝牙设备播放音乐的时候，如果我暂停播放音乐，
+                 *   转去播放视频，那么这个蓝牙耳机操作下一首还是好使，只不过音乐不播放，
+                 *   单纯的跳下一首，这个在系统的状态栏上那个播放小窗能看到。
+                 *   然后我在耳机上触发播放暂停，视频能暂停，
+                 *   但是视频暂停的同时，又触发了音乐的播放，因为之前音乐是暂停的。
+                 *   所以我想播放视频的时候，是不是应该把音乐那边断掉跟蓝牙的操作，
+                 *   然后视频播放退出后，恢复蓝牙设备对音乐的操控」
+                 * 「你改的是不是还是要注意别把我那个耳机唤醒音乐播放操作干没了，
+                 *   还有要注意，别把那个车机 CarLife 上面的歌词啥的干没了」
+                 * ```
+                 *
+                 * ## 根因（官方文档 + 本仓库代码）
+                 *
+                 * Android 媒体键的派发优先级（developer.android.com/media/legacy/media-buttons）：
+                 * ```
+                 * ① App 的 UI Activity 可见      → 按键给前台 Activity
+                 * ② UI 隐藏、session active      → 按键给 session
+                 * ③ UI 隐藏、session inactive    → 用来重启 session
+                 * ```
+                 * 视频播放页是**可见的 Activity**，按键本来就该归它。
+                 * 但音乐的 `MediaSession` 也同时挂着 —— 同一次 `KEYCODE_MEDIA_PLAY`
+                 * 被两边都吃到，视频暂停/播放的同时音乐跟着动。
+                 *
+                 * 之前 `MusicSessionHolder.yieldToVideo()` 只做了 `player.pause()`，
+                 * **暂停 ≠ 交出按键**：会话还在，蓝牙按「播放」照样能把音乐叫起来。
+                 * 而且它只在「音乐正在播」时才 pause，用户这种「先暂停音乐再播视频」的情形
+                 * 压根没进 if 分支，等于什么都没做。
+                 *
+                 * ## 改法：在命令执行前拦截（不 release、不动蓝牙唤醒链）
+                 *
+                 * `onPlayerCommandRequest` 是 Media3 在**执行命令之前**问一句的地方，
+                 * 返回 `RESULT_ERROR_NOT_SUPPORTED` 就表示「这条命令我不处理」。
+                 *
+                 * ```
+                 * videoHolding == true 时：
+                 *   PLAY_PAUSE / PLAY  → 拦掉   （否则音乐被蓝牙唤醒复活）
+                 *   NEXT / PREVIOUS    → 拦掉   （否则音乐在后台偷偷切歌）
+                 *   PAUSE / STOP       → 放行   （音乐已经暂停了，放行无害）
+                 * videoHolding == false → 一律放行（完全保持原来的蓝牙唤醒行为）
+                 * ```
+                 *
+                 * ## 三条红线都没碰
+                 *
+                 * ```
+                 * ✗ 不 release 会话       → 蓝牙唤醒链路完好（松开后按键照常到达）
+                 * ✗ 不动 Receiver/按键分流 → EtknMediaButtonReceiver、MusicService 按键处理原样
+                 * ✗ 不动音频栈/歌词        → CarLife 车机的歌词照旧（它走音频会话元数据，不走这条）
+                 * ```
+                 * 只在「视频页面处于前台」这个窗口内临时返回 not supported，
+                 * 视频退出（`onDestroy` → `resumeFromVideo()`）立刻恢复正常。
+                 */
+                override fun onPlayerCommandRequest(
+                    mediaSession: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    @androidx.media3.common.Player.Command playerCommands: Int,
+                ): Int {
+                    if (MusicSessionHolder.isVideoHolding()) {
+                        when (playerCommands) {
+                            /**
+                             * 只拦「上一首/下一首」—— 这两条语义无歧义：
+                             * 用户说的是「蓝牙按下一首，音乐在后台偷偷跳歌」，拦掉正好。
+                             *
+                             * **不拦 `COMMAND_PLAY_PAUSE`**：Media3 把播放和暂停
+                             * 合并成同一个命令（api.txt 里只有 `COMMAND_PLAY_PAUSE = 1`，
+                             * 没有单独的 COMMAND_PLAY），拦了会把用户想暂停音乐的需求也拦掉，
+                             * 而暂停本身是无害的。播放/暂停的串台问题用下面的
+                             * `playWhenReady = false` 处理（见 `MusicSessionHolder.yieldToVideo`）。
+                             */
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT,
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS,
+                            androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                            -> {
+                                android.util.Log.i("ETKN-Music", "视频占用中 → 拦下音乐切歌 cmd=$playerCommands")
+                                return androidx.media3.session.SessionResult.RESULT_ERROR_NOT_SUPPORTED
+                            }
+                        }
+                    }
+                    return super.onPlayerCommandRequest(mediaSession, controller, playerCommands)
+                }
+
+                /**
                  * 只实现 `onPlaybackResumption`：系统主动问「要播哪首」时给答案。
-                 * **不实现 `onPlayerCommandRequest`** —— 上一首/下一首/播放暂停
-                 * 全部交给 MediaSession 默认逻辑，避免与 Receiver 那条路重复执行。
+                 * 上一首/下一首/播放暂停在 `videoHolding == false` 时
+                 * 全部交给 MediaSession 默认逻辑（原行为不变），
+                 * 避免与 Receiver 那条路重复执行。
                  */
                 override fun onPlaybackResumption(
                     mediaSession: MediaSession,
