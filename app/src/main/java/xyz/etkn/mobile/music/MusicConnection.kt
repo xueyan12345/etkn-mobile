@@ -758,6 +758,87 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                             "ETKN-Music",
                             "restore: 守护结束 位置=${p.currentPosition}ms 补了${fixes}次",
                         )
+                        /**
+                         * 用户口径（2026-11-28，#177）**打开 App 就要在控制中心看到当前这首歌**。
+                         *
+                         * 用户原话：
+                         * ```
+                         * 「现在的问题是只有必须播放音乐的时候，它那个状态栏才显示音乐」
+                         * 「如果要不播放音乐的时候，它就不显示」
+                         * ```
+                         *
+                         * ## 为什么「只 prepare 不播放」不够
+                         *
+                         * ColorOS 的媒体栏**只渲染「正在播放」的会话**：
+                         * ```
+                         * state=PLAYING → 显示歌名/封面/控件
+                         * state=PAUSED  → 不显示（哪怕 metadata 完整、会话在栈里、通知也发了）
+                         * ```
+                         * 这是系统判断，不是我们的代码问题 —— 实测：
+                         * `dumpsys media_session` 里 metadata/queue/active 全都齐全，
+                         * 但控制中心就是空着。
+                         *
+                         * ## 做法：轻播一下就停
+                         *
+                         * ```
+                         * play() → 等 300ms（够系统把状态抬到 PLAYING 并渲染卡片）
+                         *        → 立刻 pause()
+                         * ```
+                         * 效果：
+                         * ```
+                         * ① 控制中心出现这首歌（系统认为「播放过」）
+                         * ② 暂停后卡片**保留**（ColorOS 会保留最近播放的会话）
+                         * ③ 用户基本听不到声音 —— 300ms 且音量还没起来
+                         * ④ 之后用户按播放/耳机键，正常从头继续
+                         * ```
+                         *
+                         * ## 三条红线都避开
+                         *
+                         * ```
+                         * ✗ 不碰 restoreForResumption 的 seek 逻辑（只在其后加一步）
+                         * ✗ 不碰 saveMemory / stop()
+                         * ✗ 不碰 MediaButton 链路
+                         * ```
+                         *
+                         * 用 `wakeForCard` 做一次性标记，避免同一次启动反复触发。
+                         */
+                        if (!wakeForCard) {
+                            wakeForCard = true
+                            runCatching {
+                                /**
+                                 * 先等播放器进 READY —— 否则 `play()` 只会让状态停在
+                                 * BUFFERING，系统看不到 PLAYING，卡片依旧不出现。
+                                 *
+                                 * 最多等 6 秒（本地缓存命中时通常 <300ms），
+                                 * 超时就放弃这一轮，不影响用户手动播放。
+                                 */
+                                var waited = 0L
+                                while (waited < 6_000L &&
+                                    p.playbackState != Player.STATE_READY
+                                ) {
+                                    kotlinx.coroutines.delay(100L)
+                                    waited += 100L
+                                }
+                                if (p.playbackState != Player.STATE_READY) {
+                                    android.util.Log.w(
+                                        "ETKN-Music",
+                                        "唤醒卡片：等 READY 超时（state=${p.playbackState}），跳过",
+                                    )
+                                    return@runCatching
+                                }
+                                android.util.Log.i(
+                                    "ETKN-Music",
+                                    "唤醒卡片：READY（等了 ${waited}ms），轻播 300ms 后暂停",
+                                )
+                                p.play()
+                                kotlinx.coroutines.delay(300L)
+                                p.pause()
+                                android.util.Log.i(
+                                    "ETKN-Music",
+                                    "唤醒卡片：已暂停，位置=${p.currentPosition}ms",
+                                )
+                            }.onFailure { android.util.Log.w("ETKN-Music", "唤醒卡片失败", it) }
+                        }
                     }
                 }.onFailure {
                     android.util.Log.w("ETKN-Music", "restore 解析直链失败", it)
@@ -1503,6 +1584,14 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 限流：只在「换歌」或「换行」时才 `replaceMediaItem`，
      * 不然每秒都改一次 metadata 会把 Session 刷爆。
      */
+    /**
+     * 用户口径（#177）**启动时轻播一次以点亮控制中心卡片**，只做一次。
+     *
+     * 不做的话，ColorOS 会认为「没播过」→ 媒体栏空白
+     * （实测：metadata/queue/active 都齐全也没用，系统只渲染 PLAYING 状态）。
+     */
+    private var wakeForCard = false
+
     private var lyricLines: List<Pair<Long, String>> = emptyList()
     private var lastLyricIndex: Int = -1
     private var lyricForItemId: String? = null
