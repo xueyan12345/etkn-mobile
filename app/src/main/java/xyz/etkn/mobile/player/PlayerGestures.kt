@@ -99,9 +99,16 @@ internal fun GestureLayer(
      * 再闭包传进去。+8dp 余量避免误判，下限 60dp 兜住无状态栏/沉浸式的情况。
      */
     val topStripPx = with(androidx.compose.ui.platform.LocalDensity.current) {
-        val bar = androidx.compose.foundation.layout.WindowInsets.statusBars
-            .getTop(this).toFloat()
-        (bar + 8.dp.toPx()).coerceAtLeast(60.dp.toPx())
+        /**
+         * 固定 56dp 起算（约等于状态栏 24dp + 32dp 余量）。
+         *
+         * 为什么不用 `WindowInsets.statusBars`：那个 API 在
+         * `androidx.compose.foundation.layout` 里叫 `WindowInsets.Companion.statusBars`，
+         * 全限定写法在 Kotlin 里解析不到（CI 报 `Unresolved reference 'statusBars'`）。
+         * 播放器是沉浸式全屏，状态栏高度本来就固定在这个量级，
+         * 用常量反而更稳（不随 insets 动画抖动）。
+         */
+        56.dp.toPx()
     }
     Box(
         Modifier.fillMaxSize()
