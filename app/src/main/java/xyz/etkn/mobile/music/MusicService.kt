@@ -330,7 +330,7 @@ class MusicService : MediaSessionService() {
         val artist = (meta.artist ?: meta.subtitle)?.toString().orEmpty()
         runCatching {
             val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-            /** Android 8+ 必须走渠道；低版本忽略。 */
+            /** Android 8+ 必须走渠道。 */
             if (android.os.Build.VERSION.SDK_INT >= 26) {
                 val ch = android.app.NotificationChannel(
                     CARD_CHANNEL,
@@ -349,50 +349,53 @@ class MusicService : MediaSessionService() {
                 this, 0, intent,
                 android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val b = if (android.os.Build.VERSION.SDK_INT >= 26) {
-                android.app.Notification.Builder(this, CARD_CHANNEL)
-            } else {
-                @Suppress("DEPRECATION")
-                android.app.Notification.Builder(this)
-            }
-            b.setSmallIcon(R.drawable.ic_notification)
-            b.setContentTitle(title)
-            b.setContentText(artist)
-            b.setContentIntent(content)
-            b.setOngoing(true)
-            b.setShowWhen(false)
-            b.setVisibility(android.app.Notification.VISIBILITY_PUBLIC)
             /**
-             * **这里故意不设 MediaStyle。**
+             * 用户口径（2026-11-28，#176）**必须绑 MediaSession token，系统才认媒体控件**。
              *
-             * 实测（v1.19.7）：设了 `MediaStyle()`（即使不绑 token）后，
-             * `startForeground` 返回成功、`startForegroundCount=1`，
-             * 但 `cmd notification list` 里查不到 —— 通知被系统丢掉了。
+             * 官方文档原话（`Notification.MediaStyle` 页面）：
+             * ```
+             * Finally, if you attach a MediaSession.Token using
+             * android.app.Notification.MediaStyle.setMediaSession(MediaSession.Token),
+             * the System UI can identify this as a notification representing
+             * an active media session.
+             * ```
              *
-             * 原因：平台 `MediaStyle.setMediaSession()` 需要一个
-             * `android.media.session.MediaSession.Token`，而 Media3 的
-             * `androidx.media3.session.MediaSession` 没有公开 `getPlatformToken()`
-             * （api.txt 里确认过）。没绑 token 的 MediaStyle 在部分 ROM 上
-             * 会被判定成「不完整的媒体通知」而直接丢弃。
-             *
-             * ## 现在的做法：先发一条普通通知
+             * ## 前面几版为什么失败（都实测过）
              *
              * ```
-             * 目标不是「长成媒体卡片的样子」，
-             * 而是「让系统里存在一条属于本 App 的常驻通知」
+             * ① 平台 MediaStyle() 不绑 token
+             *    → startForeground 成功、通知能显示，但通知被静默丢弃
+             * ② 换成普通通知（不带 MediaStyle）
+             *    → 通知正常显示（1.19.8 实测状态栏有「龙卷风 / G.E.M. 邓紫棋」）
+             *      但 OPPO 的播放控件仍然空白 —— 因为它只认「带 token 的媒体通知」
+             * ③ Media3 的 MediaSession 没有公开 getPlatformToken()
+             *    → 拿不到 android.media.session.MediaSession.Token
              * ```
-             * 有了它：
-             * ```
-             * ① startForeground 成功 → 服务不会因为「没进前台」被杀
-             * ② OPPO 媒体控制器在「有活跃会话 + 有常驻通知」时会接管显示
-             * ③ 就算它不接管，用户状态栏里至少能看到歌名
-             * ```
-             * 先验证这条能不能出现，再决定要不要补 MediaStyle。
+             *
+             * ## 正解：`MediaStyleNotificationHelper.MediaStyle(session)`
+             *
+             * 这是 Media3 官方给的工具（`androidx.media3:media3-ui`，
+             * 本仓库已依赖）。它接收 **Media3 的 session**，
+             * 内部负责把 token 绑到通知上 —— 我们不需要碰平台 token。
+             *
+             * 注意它作用在 `NotificationCompat.Builder` 上（core 库），
+             * 不是平台 `Notification.Builder`，所以整段用 compat 写。
              */
-            startForeground(CARD_ID, b.build())
+            val builder = androidx.core.app.NotificationCompat.Builder(this, CARD_CHANNEL)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title)
+                .setContentText(artist)
+                .setContentIntent(content)
+                .setOngoing(true)
+                .setShowWhen(false)
+                .setVisibility(androidx.core.app.NotificationCompat.VISIBILITY_PUBLIC)
+                .setStyle(
+                    androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(s)
+                )
+            startForeground(CARD_ID, builder.build())
             if (!cardBuilt) {
                 cardBuilt = true
-                android.util.Log.i("ETKN-Music", "媒体卡片已建立：$title / $artist")
+                android.util.Log.i("ETKN-Music", "媒体卡片已建立（带 session token）：$title / $artist")
             }
         }.onFailure { android.util.Log.w("ETKN-Music", "媒体卡片建立失败", it) }
     }
