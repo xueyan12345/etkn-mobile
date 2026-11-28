@@ -18,6 +18,7 @@ import xyz.etkn.mobile.MainActivity
 import xyz.etkn.mobile.graph
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import xyz.etkn.mobile.R
 
 /**
  * 音乐播放服务：托管一个 MediaSession，让播放能在后台继续，
@@ -355,12 +356,12 @@ class MusicService : MediaSessionService() {
                 android.app.Notification.Builder(this)
             }
             b.setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(title)
-                .setContentText(artist)
-                .setContentIntent(content)
-                .setOngoing(true)
-                .setShowWhen(false)
-                .setVisibility(android.app.Notification.VISIBILITY_PUBLIC)
+            b.setContentTitle(title)
+            b.setContentText(artist)
+            b.setContentIntent(content)
+            b.setOngoing(true)
+            b.setShowWhen(false)
+            b.setVisibility(android.app.Notification.VISIBILITY_PUBLIC)
             /**
              * MediaStyle 里**不绑 session token** —— 见下方说明。
              *
