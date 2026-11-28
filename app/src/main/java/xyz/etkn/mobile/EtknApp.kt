@@ -63,6 +63,44 @@ class EtknApp : Application(), SingletonImageLoader.Factory {
             )
         }
         /**
+         * 用户口径（2026-11-28，#180）**首页打开也要点亮控制中心卡片**。
+         *
+         * 用户实测反馈：
+         * ```
+         * 「打开 APP 显示的就是首页啊」→ 控制中心不显示
+         * （用 adb 命令行启动时显示，因为上次停在音乐页）
+         * ```
+         *
+         * ## 根因：`graph.music` 是 `by lazy`，没人访问就不初始化
+         *
+         * ```kotlin
+         * val music by lazy { MusicConnection(app, this) }   // AppGraph.kt
+         * ```
+         * 上面 `startService` 只是把 Service 拉起来，
+         * **`MusicConnection` 这个单例根本还没被创建** ——
+         * 它的 `init` 里才有 `restoreForResumption()`（恢复队列 + 唤醒卡片）。
+         *
+         * 而 `MusicConnection` 只在「用户进音乐页 / 点播放」时才第一次被访问，
+         * 所以：
+         * ```
+         * 用户停在首页 → music 从未创建 → restore 没跑 → 唤醒没跑 → 卡片空白
+         * 命令行启动（上次停在音乐页）→ 音乐页一开始就访问 music → 全都跑了
+         * ```
+         * 两个现象完全对上。
+         *
+         * ## 修法
+         *
+         * 在启动 MusicService 之后主动摸一下 `graph.music`，
+         * 强制它初始化 —— 这样**不管用户停在哪个页面**，
+         * 队列恢复 + 静音轻播都会执行。
+         *
+         * 放在 `runCatching` 里：音乐模块初始化失败也不该让 App 起不来。
+         */
+        runCatching {
+            // 访问一次即可触发 lazy 初始化（其 init 内部会把 restore 挂到协程里）
+            graph.music
+        }.onFailure { android.util.Log.w("ETKN-App", "提前初始化音乐模块失败", it) }
+        /**
          * 用户口径（2026-11-26）**日志默认不记录，由开关控制**。
          *
          * 这里只做「如果上次开着，就继续开着」的恢复；默认值是关。
