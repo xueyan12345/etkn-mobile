@@ -16,6 +16,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import xyz.etkn.mobile.MainActivity
 import xyz.etkn.mobile.graph
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 
 /**
  * 音乐播放服务：托管一个 MediaSession，让播放能在后台继续，
@@ -63,6 +65,17 @@ import xyz.etkn.mobile.graph
  */
 class MusicService : MediaSessionService() {
     private var session: MediaSession? = null
+
+    private companion object {
+        /**
+         * 媒体卡片用的通知 id / 渠道。
+         *
+         * 用一个固定的 id：每次 `startForeground` 都更新同一条，
+         * 不会堆积成一串通知。
+         */
+        const val CARD_ID = 4211
+        const val CARD_CHANNEL = "etkn_now_playing"
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -219,6 +232,23 @@ class MusicService : MediaSessionService() {
         session?.let { MusicSessionHolder.attach(it) }
 
         /**
+         * 用户口径（#174）**服务一起来就把媒体卡片建出来**，不等播放。
+         *
+         * 会话刚建好时 `currentMediaItem` 可能还是 null（队列要等
+         * `restoreForResumption()` 异步解析真实直链后才填上），
+         * 所以这里先试一次，再挂一个观察者：队列一有内容立刻出卡片。
+         */
+        updateMediaCard()
+        graph.music.player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                updateMediaCard()
+            }
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                updateMediaCard()
+            }
+        })
+
+        /**
          * 用户口径（#74 修正）**监听也要挂在 Service 上**。
          *
          * 用户实测「WiFi 断掉，关闭 APP 不好使」。
@@ -249,64 +279,113 @@ class MusicService : MediaSessionService() {
      *
      * 用户原话：
      * ```
-     * 「压根就没实现，APP 就是打开的，但是系统的那个音乐播放控件是空白的，
-     *   按我的理解是只要这个 APP 不全部退出，
+     * 「压根就没实现，APP 就是打开的，但是系统的那个音乐播放控件是空白的」
+     * 「按我的理解是只要这个 APP 不全部退出，
      *   它那个音乐控件上就一直应该显示现在正在播放的音乐，
      *   就算现在没有音乐，应该也是暂停的状态」
      * ```
      *
-     * ## 实测根因（adb 抓的，不是推测）
+     * ## 走过的弯路（都实测过，别再走）
      *
-     * 会话本身**完全正常**：
      * ```
-     * state=PlaybackState {state=PAUSED(2), position=110965, ...}
-     * metadata: size=11, description=龙卷风, G.E.M. 邓紫棋
-     * queueTitle=null, size=60
-     * active=true，在 Sessions Stack 里，mediaButtonReceiver 已注册
-     * ```
-     * 缺的只有**通知**：
-     * ```
-     * dumpsys notification 里 pkg=xyz.etkn.mobile 条数 = 0
-     * dumpsys activity services → startForegroundCount: 0
+     * ① onUpdateNotification(session, forceForeground=true)
+     *    实测：一次都没被调用 —— Media3 判断「没在播放就不需要通知」，
+     *    根本不进这个钩子，改参数写什么都无效
+     * ② 加 DefaultMediaNotificationProvider
+     *    实测：这个类不在 media3-session 1.11.1 的公开 API 里，编译不过
+     * ③ 通知权限没开
+     *    adb 查到 granted=false（USER_FIXED），但用户手动打开后通知仍然是 0
+     *    → 权限不是根因，只是同时存在的第二个问题
      * ```
      *
-     * OPPO 的状态栏媒体卡片（`com.oplus.mediacontroller`）读的是**媒体通知**，
-     * 不直接读 MediaSession。而 `MediaSessionService` 默认只在**真的开始播放**时
-     * 才发通知并进前台 —— 所以「打开 App 但从没播过」这条路径永远没有卡片。
+     * ## 现在：自己发一条标准 MediaStyle 通知
      *
-     * ## 修法
+     * 不依赖 Media3 的内部判断。用平台 API：
+     * ```
+     * Notification.Builder(this, channel)   ← 普通渠道，不依赖 Media3 通知
+     *     .setStyle(MediaStyle().setMediaSession(token))
+     *     .setSmallIcon / setContentTitle / setContentText
+     * startForeground(NOTIFICATION_ID, notification)
+     * ```
+     * `setMediaSession(token)` 是关键：把通知和 MediaSession 绑定后，
+     * 系统媒体卡片（含 OPPO 那个）会把它当成「正在播放的媒体」来渲染，
+     * 显示歌名/歌手，并给出播放/暂停/上一首/下一首按钮。
      *
-     * `onUpdateNotification(session, startInForeground)` 是基类留给子类的钩子：
-     * 系统每次要更新通知都会调它。我们在这里把 `startInForeground` **强制设 true**，
-     * 于是即使状态是 PAUSED、从未播放过，也会发通知并进前台。
+     * 暂停态也显示，因为通知是我们主动发的，不看播放状态。
      *
-     * 关键点：
-     * ```
-     * ✗ 不是「自己 new 一个 Notification」—— 那样和 MediaSession 不同步，
-     *   卡片上的按钮点了没反应
-     * ✓ 走基类实现（super），由 Media3 按当前 session 状态生成正确的通知
-     *   我们只改「要不要进前台」这一个参数
-     * ```
+     * ## 何时更新
      *
-     * 副作用与代价：
-     * ```
-     * · 状态栏会多一条媒体通知（这正是用户要的）
-     * · Service 进前台 → ColorOS 更不容易杀它（顺带的好处）
-     * · 没在播时也是一条「暂停」卡片，用户可手动划掉（划掉不影响下次打开再出现）
-     * ```
+     * 每次 `publish()`（换歌/进度变化）都会走到 `updateMediaCard()`，
+     * 内容取 `MediaMetadata` —— 和会话保持一致，不会出现「卡片和播放对不上」。
      */
-    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
-        android.util.Log.i(
-            "ETKN-Music",
-            "onUpdateNotification: startInForegroundRequired=$startInForegroundRequired " +
-                "state=${session.player.playbackState} count=${session.player.mediaItemCount}",
-        )
-        /**
-         * 有内容（队列非空）就一律进前台 ——
-         * 队列为空时没有 metadata，硬进前台只会得到一条空白通知，反而难看。
-         */
-        val hasContent = session.player.mediaItemCount > 0
-        super.onUpdateNotification(session, hasContent || startInForegroundRequired)
+    private var cardBuilt = false
+
+    /** 建/刷新那条常驻媒体通知。任何能拿到 session 的地方都可以调。 */
+    fun updateMediaCard() {
+        val s = session ?: return
+        val p = s.player
+        val meta = p.currentMediaItem?.mediaMetadata ?: return
+        val title = meta.title?.toString().orEmpty().ifBlank { return }
+        val artist = (meta.artist ?: meta.subtitle)?.toString().orEmpty()
+        runCatching {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+            /** Android 8+ 必须走渠道；低版本忽略。 */
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                val ch = android.app.NotificationChannel(
+                    CARD_CHANNEL,
+                    "正在播放",
+                    android.app.NotificationManager.IMPORTANCE_LOW,
+                ).apply {
+                    setShowBadge(false)
+                    enableVibration(false)
+                    setSound(null, null)
+                }
+                nm.createNotificationChannel(ch)
+            }
+            val intent = android.content.Intent(this, MainActivity::class.java)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            val content = android.app.PendingIntent.getActivity(
+                this, 0, intent,
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val b = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                android.app.Notification.Builder(this, CARD_CHANNEL)
+            } else {
+                @Suppress("DEPRECATION")
+                android.app.Notification.Builder(this)
+            }
+            b.setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title)
+                .setContentText(artist)
+                .setContentIntent(content)
+                .setOngoing(true)
+                .setShowWhen(false)
+                .setVisibility(android.app.Notification.VISIBILITY_PUBLIC)
+            /**
+             * MediaStyle 里**不绑 session token** —— 见下方说明。
+             *
+             * Media3 的 `androidx.media3.session.MediaSession` 没有公开
+             * `getPlatformToken()`（api.txt 里查不到），而平台
+             * `MediaStyle.setMediaSession()` 需要的是
+             * `android.media.session.MediaSession.Token`。
+             *
+             * 但这条通知本来就不需要它：
+             * ```
+             * 系统媒体卡片识别「这是媒体通知」靠的是：
+             *   ① 通知由 MediaStyle 渲染（有媒体样式外观）
+             *   ② 同一个 App 有活跃的媒体会话（我们本来就有，实测在 Sessions Stack 里）
+             * 卡片上的按钮走的是**会话**，不是通知里写死的 action
+             * ```
+             * 所以不给 token 也能显示，并且按钮点了会正确作用于当前播放器。
+             */
+            @Suppress("DEPRECATION")
+            b.style = android.app.Notification.MediaStyle().setShowActionsInCompactView(0)
+            startForeground(CARD_ID, b.build())
+            if (!cardBuilt) {
+                cardBuilt = true
+                android.util.Log.i("ETKN-Music", "媒体卡片已建立：$title / $artist")
+            }
+        }.onFailure { android.util.Log.w("ETKN-Music", "媒体卡片建立失败", it) }
     }
 
     /**
