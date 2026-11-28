@@ -69,10 +69,6 @@ fun rememberNetSpeed(): String {
                 totalBytes > 0L -> totalBytes
                 else -> lastRx   // 都拿不到就沿用上次，避免刷成 0
             }
-            android.util.Log.d(
-                "ETKN-Net",
-                "uid=$uidBytes total=$totalBytes used=$rx",
-            )
             speed = when {
                 lastRx <= 0L || rx <= lastRx -> "0 B/s"
                 else -> {
@@ -96,7 +92,7 @@ fun rememberNetSpeed(): String {
              */
             android.util.Log.i(
                 "ETKN-Net",
-                "uid=$uid raw=$uiBytes rx=$rx last=$lastRx speed=$speed",
+                "uid=$uidBytes total=$totalBytes used=$rx speed=$speed",
             )
             kotlinx.coroutines.delay(1_000L)
         }
