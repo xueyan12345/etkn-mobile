@@ -815,6 +815,35 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                          */
                         if (!wakeForCard) {
                             wakeForCard = true
+                            /**
+                             * 用户口径（2026-11-28，#179）**音量必须还原，不能留下后遗症**。
+                             *
+                             * 用户原话：
+                             * ```
+                             * 「你一定要恢复好那个音量，别到时候播放的时候也没，
+                             *   还有那个视频播放也没有声」
+                             * ```
+                             *
+                             * ## 保护措施（三层）
+                             *
+                             * ```
+                             * ① 进入前先自检：如果发现音量是 0（上一次异常残留），
+                             *    直接纠正成 1f —— 这是「上次事故遗留」的兜底
+                             * ② try/finally：正常路径/异常路径都还原
+                             * ③ 只影响 music player：视频走独立 player，完全不受影响
+                             * ```
+                             *
+                             * `savedVolume` 取的是**播放器自身的音量**（ExoPlayer 内部值），
+                             * 不是系统音量。所以即使真的出问题，最坏也只是「音乐没声音」，
+                             * **系统媒体音量、视频、其他 App 全都不受影响**。
+                             */
+                            if (p.volume <= 0.01f) {
+                                android.util.Log.w(
+                                    "ETKN-Music",
+                                    "唤醒卡片：发现残留静音(vol=${p.volume})，先纠正为 1.0",
+                                )
+                                runCatching { p.volume = 1f }
+                            }
                             val savedVolume = p.volume
                             try {
                                 /**
