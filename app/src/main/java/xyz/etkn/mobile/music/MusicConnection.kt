@@ -758,6 +758,104 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                             "ETKN-Music",
                             "restore: 守护结束 位置=${p.currentPosition}ms 补了${fixes}次",
                         )
+
+                        /**
+                         * 用户口径（2026-11-28，#178）**打开 App 就点亮控制中心卡片**。
+                         *
+                         * 用户原话：
+                         * ```
+                         * 「你设定个规则，每次打开 APP，首先先把 APP 静音掉，
+                         *   然后你那边尝试直接播放音乐，然后像你说的就是很快就把它暂停掉，
+                         *   几十毫秒还是几百毫秒，暂停之后，你马上就把静音那个取消，
+                         *   这样不就相当于手动把它播放了一下吗？这样会不会能显示啊」
+                         * ```
+                         * 思路完全正确，而且比我之前的方案安全 —— 关键是**顺序**：
+                         * ```
+                         * ① 先静音（player.volume = 0f）
+                         * ② 再 play()
+                         * ③ 等一小会
+                         * ④ 立刻 pause()
+                         * ⑤ 恢复音量
+                         * ```
+                         *
+                         * ## 为什么这个顺序不会出声
+                         *
+                         * ExoPlayer 的 `setVolume` 实现（`ExoPlayerImpl.java`）：
+                         * ```java
+                         * this.volume = volume;
+                         * sendVolumeToRenderers();   // ← 立即下发给渲染器，无渐变
+                         * ```
+                         * 也就是说第 ① 步之后，**下一个音频采样就是 0**，
+                         * 不存在「先出声再静音」的窗口。
+                         *
+                         * 之前那版失败的原因不是方案错，是**顺序错**：
+                         * 它是「play 之后才静音」/「音量还原写在 pause 之后没有 try/finally」，
+                         * 导致中途异常时音量永久停在 0（用户报过「手机音量调大了一点声没有」）。
+                         *
+                         * ## 这次怎么避免历史事故
+                         *
+                         * ```
+                         * ① 用 try/finally，音量**无论成功失败都还原**
+                         * ② 用 player.volume（播放器内部），**不碰系统音量** → 不会闪音量条
+                         * ③ 只做一次（wakeForCard 标记）→ 不会反复打断状态机
+                         * ④ 时长压到 120ms：够系统把 PlaybackState 抬到 PLAYING，
+                         *    又短到人耳几乎无法察觉（低于 150ms 的声音通常只被感知为"咔"）
+                         * ```
+                         *
+                         * ## 为什么能点亮 ColorOS 卡片
+                         *
+                         * 实测确认：ColorOS 媒体栏**只渲染 PLAYING 状态的会话**。
+                         * 只要状态真的到过 PLAYING，系统就会记住这个会话并显示出来；
+                         * 暂停后卡片**保留**（这是 ColorOS 的行为）。
+                         *
+                         * ## 红线
+                         *
+                         * 不碰 seek 逻辑、不碰 saveMemory/stop()、不碰 MediaButton 链路。
+                         * 这段加在 seek 守护**之后**，位置已经正确。
+                         */
+                        if (!wakeForCard) {
+                            wakeForCard = true
+                            val savedVolume = p.volume
+                            try {
+                                /**
+                                 * 先等播放器进 READY —— 否则 `play()` 只会停在 BUFFERING，
+                                 * 状态永远到不了 PLAYING，卡片照样不出现。
+                                 *
+                                 * 最多等 5 秒；本地缓存命中通常 <300ms。
+                                 * 超时就跳过（不影响用户手动播放）。
+                                 */
+                                var waited = 0L
+                                while (waited < 5_000L && p.playbackState != Player.STATE_READY) {
+                                    kotlinx.coroutines.delay(100L)
+                                    waited += 100L
+                                }
+                                if (p.playbackState != Player.STATE_READY) {
+                                    android.util.Log.w(
+                                        "ETKN-Music",
+                                        "唤醒卡片：等 READY 超时(state=${p.playbackState})，跳过",
+                                    )
+                                    return@runCatching
+                                }
+                                android.util.Log.i(
+                                    "ETKN-Music",
+                                    "唤醒卡片：静音 → 轻播 → 暂停 → 还原（wait=${waited}ms vol=$savedVolume）",
+                                )
+                                p.volume = 0f
+                                p.play()
+                                kotlinx.coroutines.delay(120L)
+                                p.pause()
+                                android.util.Log.i(
+                                    "ETKN-Music",
+                                    "唤醒卡片：已暂停 state=${p.playbackState} pos=${p.currentPosition}ms",
+                                )
+                            } catch (t: Throwable) {
+                                android.util.Log.w("ETKN-Music", "唤醒卡片失败", t)
+                            } finally {
+                                /** 无论前面发生什么，音量一定还原 —— 这是上次事故的教训。 */
+                                runCatching { p.volume = savedVolume }
+                                android.util.Log.i("ETKN-Music", "唤醒卡片：音量已还原=$savedVolume")
+                            }
+                        }
                     }
                 }.onFailure {
                     android.util.Log.w("ETKN-Music", "restore 解析直链失败", it)
@@ -1503,6 +1601,14 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      * 限流：只在「换歌」或「换行」时才 `replaceMediaItem`，
      * 不然每秒都改一次 metadata 会把 Session 刷爆。
      */
+    /**
+     * 用户口径（#178）**启动时静音轻播一次，点亮控制中心卡片**，只做一次。
+     *
+     * ColorOS 媒体栏只渲染 PLAYING 状态的会话，
+     * 所以必须真的把状态抬到 PLAYING 过 —— 但全程静音，用户听不到。
+     */
+    private var wakeForCard = false
+
     private var lyricLines: List<Pair<Long, String>> = emptyList()
     private var lastLyricIndex: Int = -1
     private var lyricForItemId: String? = null
