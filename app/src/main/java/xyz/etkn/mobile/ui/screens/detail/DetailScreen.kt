@@ -368,7 +368,7 @@ private fun DetailContent(
                     }
                     if (streams.isNotEmpty()) {
                         item(key = "media-info") {
-                            MediaInfoSection(src, streams)
+                            MediaInfoSection(src, streams, item)
                         }
                     }
                 }
@@ -913,7 +913,7 @@ private fun RatingBadge(text: String) {
  * 卡片里的字段**全部来自 API**，取不到的行直接不显示（不写「未知」占位）。
  */
 @Composable
-private fun MediaInfoSection(source: MediaSource, streams: List<MediaStream>) {
+private fun MediaInfoSection(source: MediaSource, streams: List<MediaStream>, item: Item) {
     Column(Modifier.padding(top = Etkn.space.section)) {
         SectionHeader("媒体信息", showChevron = false)
         Column(
@@ -940,6 +940,35 @@ private fun MediaInfoSection(source: MediaSource, streams: List<MediaStream>) {
                     headline,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            /**
+             * 用户口径（2026-11-28，#156）**中间插一行「入库时间」**。
+             *
+             * 用户原话：
+             * ```
+             * 「这个媒体信息现在是两行，在中间插一行当前媒体入库的时间」
+             * ```
+             *
+             * 三行结构变成：
+             * ```
+             * 4K HDR10 HEVC              ← ① 版本规格
+             * 入库 2026/11/04 20:17      ← ② 入库时间（新增）
+             * MKV 29.2 GB 2小时21分       ← ③ 容器/大小/时长
+             * ```
+             *
+             * 时间取服务端 `DateCreated`（实测《捕风追影》= `2026-11-04T12:17:32.590317+00:00`，
+             * UTC，换算北京时间 20:17）。**不用 `DateModified`** ——
+             * 那个是改名/挪目录就会变的，不是真正的入库时间。
+             *
+             * 卡片头部那个调用点还会在下面自己渲染「上映日期」，
+             * 两者不能混：上映日期是 `PremiereDate`（2025-08-16），入库是 `DateCreated`。
+             */
+            addedAtText(item.dateCreated)?.let { text ->
+                Text(
+                    "入库 $text",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             val parts = buildList {
@@ -1979,6 +2008,36 @@ private fun MediaTechRows(
  * 之前代码又拼了一次 → 「国语 DDP stereo (默认) (默认)」。
  * 这里统一走这个函数：已经有「(默认)」就不再补。
  */
+/**
+ * 用户口径（2026-11-28，#156）**「入库时间」格式化**。
+ *
+ * 服务端 `DateCreated` 的原始格式（实测）：
+ * ```
+ * 2026-11-04T12:17:32.590317+00:00      ← UTC，带 6 位小数秒
+ * ```
+ * 目标显示：`2026/11/04 20:17`（北京时间，秒不要）。
+ *
+ * ## 为什么不用 SimpleDateFormat
+ *
+ * 这个串的小数位是 **6 位**（不是毫秒的 3 位），而且时区是 `+00:00` 而不是 `Z`。
+ * `SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")` 遇到 6 位小数会直接抛
+ * `ParseException`，整行就不显示了。
+ * `java.time` 的 `OffsetDateTime.parse` 对这两种写法都能吃
+ * （minSdk=26，`java.time` 原生可用，不需要 desugaring）。
+ *
+ * 解析失败返回 null → 这一行整行不渲染（不写「未知」占位）。
+ */
+internal fun addedAtText(iso: String?): String? {
+    val raw = iso?.takeIf { it.isNotBlank() } ?: return null
+    return runCatching {
+        val utc = java.time.OffsetDateTime.parse(raw)
+        val local = utc.atZoneSameInstant(java.time.ZoneId.systemDefault())
+        "%04d/%02d/%02d %02d:%02d".format(
+            local.year, local.monthValue, local.dayOfMonth, local.hour, local.minute,
+        )
+    }.getOrNull()
+}
+
 internal fun MediaStream.cleanTitle(): String {
     /**
      * 用户口径（2026-11-28，#147/#148/#152）**音频/字幕只留「语言 + 默认」**。
