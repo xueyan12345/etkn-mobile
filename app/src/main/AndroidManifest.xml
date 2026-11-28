@@ -192,21 +192,22 @@
         <service
             android:name=".music.MusicService"
             android:exported="true"
-            android:stopWithTask="false"
+            android:stopWithTask="true"
             android:foregroundServiceType="mediaPlayback">
             <!--
-                用户口径（2026-11-28，#190）`stopWithTask="false"` **必须显式写死**。
+                用户口径（2026-11-28，#221 定稿）**打开 App 卡片出现，关掉 App 卡片消失**。
 
-                adb 实测（两次启动对比）：
-                  第1次 pid=18742  fgState=2 → 0   活了 5.9 秒（用户杀才停）
-                  第2次 pid=19089  fgState=2 → 0   只活 60 毫秒自己停了
-                  随后 addSession(19.670) → removeSession(19.702)，32ms 就销毁，
-                  之后再无 addSession → 控制中心「等多长时间都不显示」。
+                用户原话：
+                  「我想要的只是我打开app音乐卡片加载，我关闭APP，就不要再加载了」
+                  「就这一个逻辑这么费劲吗？」
 
-                根因是 `onTaskRemoved` 里 `if (!playWhenReady) { stopSelf() }` ——
-                打开 App 时音乐是暂停的，一划掉后台服务就自杀。
-                代码已一并修掉，这里再把 manifest 钉死，
-                防止将来有人（包括我）在别处重新引入 task-removed 行为。
+                `stopWithTask="true"` 就是系统给这件事准备的开关：
+                任务被划掉 → 系统正常停止这个服务 → 会话随之销毁 → 卡片消失。
+                因为是「正常停止」，不会触发 START_STICKY 重建，卡片不会自己回来。
+
+                历史教训：之前写成 false + 在 onTaskRemoved 里 stopSelf/release，
+                两条路都试过，结果分别是「被系统重建」和「卡片一次有一次没有」。
+                现在不绕弯子，用系统开关。
             -->
             <!--
                 用户口径（2026-11-27，#60）**回归上游的 MediaSessionService**。
