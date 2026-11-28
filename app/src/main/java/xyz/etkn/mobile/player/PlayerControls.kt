@@ -98,6 +98,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import xyz.etkn.mobile.ui.components.rememberNetSpeed
 
 /**
  * 播放器控制层。
@@ -729,10 +730,18 @@ private data class PlayerStatus(val time: String, val battery: Int, val speed: S
 @Composable
 private fun rememberPlayerStatus(): PlayerStatus {
     val context = LocalContext.current
+    /**
+     * 用户口径（#197）**网速算法统一到一处**。
+     *
+     * 原来这段 `getUidRxBytes` + 差值的逻辑内联在这里，
+     * 现在抽到 `ui/components/NetSpeed.kt` 的 `rememberNetSpeed()`，
+     * 让「加载动画下方的网速」和「右上角网速」用同一份实现，
+     * 两个数字永远一致。
+     */
+    val netSpeed = rememberNetSpeed()
     var state by remember { mutableStateOf(PlayerStatus("", 0, "")) }
     LaunchedEffect(Unit) {
         val fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
-        var lastRx = 0L
         while (true) {
             /**
              * 用户口径（2026-11-27）**网速只算本应用，不混入系统其他流量**。
@@ -745,29 +754,12 @@ private fun rememberPlayerStatus(): PlayerStatus {
              *
              * 前提：应用已经产生过网络流量（播放器必然满足），否则返回 UNSUPPORTED。
              */
-            val uid = android.os.Process.myUid()
-            val uiBytes = android.net.TrafficStats.getUidRxBytes(uid)
-            val rx = if (uiBytes == android.net.TrafficStats.UNSUPPORTED.toLong()) 0L else uiBytes
-            // 用户口径（2026-11-23）：网速恒定有值。
-            // 第一秒（lastRx 还没建立）或这一秒没有流量时返回 0 B/s，而不是空串，
-            // 否则界面上会是「有时显示有时不显示」。
-            val speed = when {
-                lastRx <= 0L || rx <= lastRx -> "0 B/s"
-                else -> {
-                    val bytes = rx - lastRx
-                    when {
-                        bytes >= 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MB/s", bytes / 1048576f)
-                        bytes >= 1024 -> String.format(Locale.ROOT, "%.0f KB/s", bytes / 1024f)
-                        else -> "$bytes B/s"
-                    }
-                }
-            }
-            lastRx = rx
             val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
             state = PlayerStatus(
                 time = fmt.format(java.util.Date()),
                 battery = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 0,
-                speed = speed,
+                /** 网速来自公共 Hook（#197），与加载动画下方显示的是同一个值。 */
+                speed = netSpeed,
             )
             kotlinx.coroutines.delay(1_000)
         }

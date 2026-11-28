@@ -14,10 +14,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Inbox
-import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,7 +44,26 @@ fun LoadingState(modifier: Modifier = Modifier) {
         slow = true
     }
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        AnimatedVisibility(slow, enter = fadeIn(tween(Motion.FADE_IN)), exit = fadeOut()) { LoadingIndicator() }
+        /**
+         * 用户口径（2026-11-28，#183）**全 App 统一用「三点跳动」加载动画**。
+         *
+         * 用户当时的要求：
+         * ```
+         * 「不光播放器，就是所有加载的，它好像都是那个圈圈」
+         * 「用第二个，3个小点那个」
+         * ```
+         *
+         * ## 之前为什么不生效
+         *
+         * `EtknLoading.kt` 里早写好了三点跳动的 `EtknLoading`，
+         * 但全 App 实际用的是 Material3 官方的 `LoadingIndicator()`
+         * （就是「形变方块」那个圆圈），**自研的那个零引用**。
+         * 所以用户看到的始终是圈圈 —— 写了等于没写。
+         *
+         * 现在把入口统一到这里：所有页面都通过 `LoadingState` /
+         * `InlineLoading` 拿加载动画，改这一处就全 App 生效。
+         */
+        AnimatedVisibility(slow, enter = fadeIn(tween(Motion.FADE_IN)), exit = fadeOut()) { EtknLoading() }
     }
 }
 
@@ -55,7 +72,8 @@ private const val SLOW_LOAD_MILLIS = 700L
 @Composable
 fun InlineLoading(modifier: Modifier = Modifier) {
     Box(modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-        ContainedLoadingIndicator()
+        /** 同上：内联加载也用三点跳动（#183）。 */
+        EtknLoading(size = 7.dp)
     }
 }
 

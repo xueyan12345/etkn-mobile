@@ -2062,12 +2062,20 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         graph.scope.launch {
             try {
                 var raw = LyricsCache.read(itemId)
+                android.util.Log.i(
+                    "ETKN-Lyric",
+                    "② 缓存 item=$itemId hit=${!raw.isNullOrBlank()} len=${raw?.length ?: 0}",
+                )
                 if (raw.isNullOrBlank()) {
                     if (sourceId == null) {
                         android.util.Log.i("ETKN-Music", "歌词：$itemId 无 sourceId，跳过回源")
                         return@launch
                     }
                     raw = graph.api.lyrics(itemId, sourceId)
+                    android.util.Log.i(
+                        "ETKN-Lyric",
+                        "③ 回源 item=$itemId sourceId=$sourceId bytes=${raw.length}",
+                    )
                     if (raw.isNotBlank()) LyricsCache.write(itemId, raw)
                 }
                 if (raw.isNullOrBlank()) {
@@ -2083,8 +2091,9 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                     .filter { it.text.isNotBlank() }
                     .map { it.timeMs to it.text }
                 android.util.Log.i(
-                    "ETKN-Music",
-                    "歌词：$itemId 载入 ${lines.size} 行 synced=${parsed.synced}",
+                    "ETKN-Lyric",
+                    "④ 解析 item=$itemId lines=${lines.size} synced=${parsed.synced} " +
+                        "首行=${lines.firstOrNull()?.second?.take(15)}",
                 )
                 publishLyrics(itemId, lines)
             } catch (t: Throwable) {
@@ -2346,6 +2355,21 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
              */
             val sid = _state.value.sourceId ?: _remembered.value?.sourceId
             if (cur.id != lyricForItemId) {
+                /**
+                 * 用户口径（#196）**歌词没显示时，日志要能一眼看出卡在哪一步**。
+                 * 五步链路，每步都留痕：
+                 * ```
+                 * ① 换歌    → 拿到 itemId / sourceId
+                 * ② 读缓存  → 命中还是未命中
+                 * ③ 回源    → 请求成功？多少字节？
+                 * ④ 解析    → 多少行，是否带时间轴
+                 * ⑤ 推送    → 当前行内容 + 会话是否接受了
+                 * ```
+                 */
+                android.util.Log.i(
+                    "ETKN-Lyric",
+                    "① 换歌 item=${cur.id} sourceId=$sid（首次加载歌词）",
+                )
                 loadLyricsFor(cur.id, sid)
             }
         }

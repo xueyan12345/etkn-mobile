@@ -537,11 +537,48 @@ private fun CastSheet(item: Item, menu: ItemMenu) {
         devices = runCatching { graph.cast.discover() }.getOrDefault(emptyList())
     }
 
-    Text("投屏", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+    /**
+     * 用户口径（2026-11-28，#198）**投屏界面压根没做好**。
+     *
+     * 用户原话：
+     * ```
+     * 「app有投屏功能你知道吗，我点投屏，那个投屏界面压根就没做好像，
+     *   投屏俩字集中在屏幕的左上角，也没有弹窗界面」
+     * ```
+     *
+     * ## 根因
+     *
+     * `CastSheet` 是 `@Composable`，但**没套任何容器**就直接输出内容：
+     * ```kotlin
+     * Text("投屏", ...)          ← 裸 Text
+     * when (devices) { ... }     ← 裸列表
+     * ```
+     * 于是它被当成普通内容画在页面流里 —— 标题贴左上角、没有弹窗底、
+     * 没有遮罩、也没法点击外部关闭。
+     *
+     * 对照同一个 `when (menu.dialog)` 分发的其他几个就明白了：
+     * ```
+     * MetadataSheet → GlassSheet(onDismissRequest = ...) { ... }   ✅
+     * ImageSheet    → GlassSheet(...) { ... }                      ✅
+     * CastSheet     → （什么都没有）                                ❌
+     * ```
+     *
+     * ## 现在
+     *
+     * 照 `MetadataSheet` 的结构补上 `GlassSheet` 容器，标题也移进容器内，
+     * 与「编辑元数据」那张保持一致的内边距和标题样式。
+     */
+    GlassSheet(onDismissRequest = { if (!busy) menu.dialog = null }) {
+      Column(
+        Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+    Text("投屏", style = MaterialTheme.typography.titleLarge)
 
     when (val found = devices) {
         null -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-            androidx.compose.material3.CircularProgressIndicator()
+            /** 全 App 统一用三点跳动加载（#183 用户选的第 2 套）。 */
+            xyz.etkn.mobile.ui.components.LoadingIndicator()
         }
         else -> {
             if (found.isEmpty()) {
@@ -592,5 +629,7 @@ private fun CastSheet(item: Item, menu: ItemMenu) {
             }
             TextButton(onClick = { round++ }, modifier = Modifier.padding(horizontal = 12.dp)) { Text("重新搜索") }
         }
+    }
+      }
     }
 }

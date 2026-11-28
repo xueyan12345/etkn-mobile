@@ -266,6 +266,48 @@ class MusicService : MediaSessionService() {
                      * 不碰 `saveMemory()` —— 续播红线完好。
                      */
                     /**
+                     * 用户口径（2026-11-28，#196）**把收到的命令原样记下来**。
+                     *
+                     * ## 为什么必须记原始值
+                     *
+                     * 上一版我凭「猜」用了位运算：
+                     * ```kotlin
+                     * playerCommands and (COMMAND_SEEK_TO_NEXT or ...) != 0
+                     * ```
+                     * 结果 Media3 的常量是**位掩码**：
+                     * ```
+                     * COMMAND_PLAY_PAUSE   = 1  (0001)
+                     * COMMAND_SEEK_TO_NEXT = 9  (1001) ← 含 bit0
+                     * ```
+                     * `1 and 9 = 1 ≠ 0` → 用户点暂停被当成「下一首」，
+                     * 暂停键直接变成切歌。
+                     *
+                     * 根子是**没查清车机方向盘到底发什么命令**就动手。
+                     *
+                     * ## 现在只记录，不改行为
+                     *
+                     * 把每一次收到的命令、原始值、以及能否解出已知名字都打出来：
+                     * ```
+                     * ETKN-Cmd: raw=9 playing=false -> SEEK_TO_NEXT
+                     * ETKN-Cmd: raw=1 playing=true  -> PLAY_PAUSE
+                     * ```
+                     * 用户上车按几个键，把 App 里导出的日志发来，
+                     * 就能拿到真实映射，再按真实值写规则 —— 不再猜。
+                     *
+                     * 注意：**这里绝对不 return**，继续走 `super` 默认逻辑，
+                     * 保证暂停/播放/切歌行为与线上一致，不受诊断影响。
+                     */
+                    runCatching {
+                        android.util.Log.i(
+                            "ETKN-Cmd",
+                            "raw=${playerCommands} hex=0x${playerCommands.toString(16)} " +
+                                "playing=${graph.music.player.isPlaying} " +
+                                "state=${graph.music.player.playbackState} " +
+                                "name=${commandName(playerCommands)}",
+                        )
+                    }
+
+                    /**
                      * 用户口径（#195）**这里完全回滚到默认行为**。
                      *
                      * ## 事故（我引入的）
@@ -740,6 +782,24 @@ object MediaButtonHint {
  * 照 QQ 音乐的做法（它也是自己的 Receiver + 播放 Service 双注册），
  * 在转发给 Media3 之前先记下 keyCode，解决「冷启动时拿不到按键」的问题。
  */
+/**
+ * 把 Media3 的 `playerCommands` 位掩码翻译成可读名字，只用于日志诊断。
+ *
+ * 之所以要单独写：Media3 的 `COMMAND_*` 是**位掩码不是枚举**，
+ * `COMMAND_SEEK_TO_NEXT(9)` 里本身就含 `COMMAND_PLAY_PAUSE(1)` 那一位，
+ * 直接拿名字对照会看串行。这里按位逐个展开，能看出真实构成。
+ */
+private fun commandName(cmd: Int): String {
+    if (cmd == 0) return "NONE"
+    val parts = ArrayList<String>()
+    if (cmd and androidx.media3.common.Player.COMMAND_PLAY_PAUSE != 0) parts += "PLAY_PAUSE(1)"
+    if (cmd and androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS != 0) parts += "SEEK_TO_PREVIOUS(7)"
+    if (cmd and androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM != 0) parts += "SEEK_TO_NEXT_MEDIA_ITEM(8)"
+    if (cmd and androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT != 0) parts += "SEEK_TO_NEXT(9)"
+    if (parts.isEmpty()) parts += "OTHER($cmd)"
+    return parts.joinToString("+")
+}
+
 class EtknMediaButtonReceiver : android.content.BroadcastReceiver() {
     override fun onReceive(context: android.content.Context, intent: Intent?) {
         if (intent?.action != Intent.ACTION_MEDIA_BUTTON) return

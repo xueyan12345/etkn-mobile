@@ -45,7 +45,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconToggleButton
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderState
@@ -468,7 +467,10 @@ fun NowPlayingScreen() {
                     track.name,
                     placeholder = Icons.Rounded.MusicNote,
                 )
-                if (state.buffering) LoadingIndicator(Modifier.align(Alignment.Center))
+                /** 缓冲指示也用三点跳动（#183 全 App 统一）。 */
+                if (state.buffering) {
+                    xyz.etkn.mobile.ui.components.EtknLoading(Modifier.align(Alignment.Center))
+                }
             }
             Spacer(Modifier.height(18.dp))
             /**
