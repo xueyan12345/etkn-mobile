@@ -20,6 +20,8 @@ import xyz.etkn.mobile.ui.common.userMessage
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
+import xyz.etkn.mobile.data.net.ResponseCache
+import kotlinx.coroutines.withContext
 
 @Immutable
 data class DetailData(
@@ -218,6 +220,73 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
         load()
     }
 
+    /**
+     * 用户口径（2026-11-28，#157）**从本地盘读整页详情**。
+     *
+     * 用户原话：
+     * ```
+     * 「没加载过的，我可以理解他请求服务器，
+     *   但是加载过的应该已经在本地了，马上应该就能出来呀」
+     * ```
+     *
+     * ## 读哪些
+     *
+     * 跟 `load()` 的网络请求一一对应，全部走 `ResponseCache.Mode.Read`
+     * （只读盘，不联网；盘上没有就抛异常，`runCatching` 收成 null）：
+     * ```
+     * item(id)                    标题/简介/演员/集图/进度
+     * item(id, DETAIL_FIELDS)     媒体信息（MediaSources/MediaStreams）
+     * seasons(seriesId)           季列表
+     * item(seriesId)              剧集那条（单集页头图用）
+     * similar(id)                 相似推荐
+     * itemCollections(id)         所属合集
+     * ```
+     *
+     * 每个都独立 `runCatching` —— 缺哪个就少哪块，不会整页失败。
+     * `item` 拿不到（这页从没打开过）直接返回 null，让调用方走原来的纯网络路径。
+     *
+     * ## 为什么不用 DetailSeed 顶替
+     *
+     * 种子来自列表接口，`LIST_FIELDS` 里没有 MediaSources，也没有演职人员、
+     * 相似推荐、季列表 —— 只能画个架子。这里读的是详情页自己的完整响应，
+     * 画出来跟网络返回的一模一样，用户看不出差别。
+     */
+    private suspend fun readCachedPage(requestId: String): DetailData? = runCatching {
+        withContext(graph.cacheUse(ResponseCache.Mode.Read)) {
+            val base = api.item(requestId)
+            val seriesId = when {
+                base.isSeries -> base.id
+                base.isSeason -> base.seriesId
+                base.isEpisode -> base.seriesId
+                else -> null
+            }
+            val full = if (base.isPlayable) {
+                runCatching { api.item(requestId, EtknApi.DETAIL_FIELDS) }.getOrNull()
+            } else null
+            val seasons = seriesId?.let { sid ->
+                runCatching { api.seasons(sid) }.getOrDefault(emptyList())
+            }.orEmpty()
+            val seriesItem = if (base.isEpisode && base.seriesId != null) {
+                runCatching { api.item(base.seriesId) }.getOrNull()
+            } else null
+            val similar = if (base.isMovie || base.isSeries) {
+                runCatching { api.similar(base.id) }.getOrDefault(emptyList())
+            } else emptyList()
+            val collections = if (base.isMovie) {
+                runCatching { api.itemCollections(base.id) }.getOrDefault(emptyList())
+            } else emptyList()
+            DetailData(
+                item = if (full != null) {
+                    base.copy(mediaSources = full.mediaSources, chapters = full.chapters.ifEmpty { base.chapters })
+                } else base,
+                seasons = seasons,
+                seriesItem = seriesItem,
+                similar = similar,
+                collections = collections,
+            )
+        }
+    }.getOrNull()
+
     fun load() {
         /**
          * 用户口径（2026-11-28，#155）**有种子就别进 Loading**。
@@ -242,11 +311,73 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
         val loadStart = System.currentTimeMillis()
         viewModelScope.launch {
             try {
+                /**
+                 * 用户口径（2026-11-28，#157）**进过的详情页第二次要秒开**。
+                 *
+                 * 用户原话：
+                 * ```
+                 * 「没加载过的，我可以理解他请求服务器，
+                 *   但是加载过的应该已经在本地了，马上应该就能出来呀」
+                 * ```
+                 *
+                 * ## 现状
+                 *
+                 * 详情页的每个请求（`item` / `seasons` / `similar` / `seriesItem`…）
+                 * **完全没有缓存**，每次进来都重新走网络。种子只顶了标题/封面那一帧，
+                 * 简介、演职人员、媒体信息、相似推荐全是空白等着网络回来。
+                 *
+                 * ## 修法：用现成的 `ResponseCache`
+                 *
+                 * `ApiClient` 本身支持按「服务器+token+路径」哈希落盘
+                 * （`ResponseCache.Write` 存 / `Read` 只读盘）。
+                 * 首页早就靠它秒开了，详情页一直没接。
+                 *
+                 * 这里开 `Store` —— 请求成功就把响应留在盘上。
+                 * 下一轮会先用盘上那份把整页画出来，再后台刷新。
+                 */
+                /**
+                 * 用户口径（2026-11-28，#157）**先用盘上那份把整页画出来**。
+                 *
+                 * 用户原话：
+                 * ```
+                 * 「加载过的应该已经在本地了，马上应该就能出来呀」
+                 * ```
+                 *
+                 * 这里并发做两件事：
+                 * ```
+                 * ① 读盘：item / seasons / seriesItem / similar / collections 全部走 Read
+                 *        拿到就立刻 Load.Ready 出一整页（含简介/演员/媒体信息/推荐）
+                 * ② 走网：正常请求（Store 模式，成功就落盘）
+                 *        回来后覆盖 ①，用户几乎察觉不到
+                 * ```
+                 *
+                 * ①必须在 ② 之前跑，否则网络快的时候会「先网络后缓存」倒灌。
+                 * 但两者都不 await 彼此 —— 读盘是本地 IO（几毫秒），不占网络时间。
+                 */
+                val cachedData = readCachedPage(requested)
+                if (cachedData != null && _state.value !is Load.Ready) {
+                    _state.value = Load.Ready(cachedData)
+                } else if (cachedData != null) {
+                    /**
+                     * 已经有种子渲染的页面（上一轮 #155）：把缓存那份**完整数据**覆盖上去。
+                     * 种子只有标题/封面，缓存有简介/演员/媒体信息 —— 这一步是「补齐」。
+                     */
+                    val current = (_state.value as? Load.Ready)?.value
+                    if (current == null || current.similar.isEmpty() && current.seriesItem == null) {
+                        _state.value = Load.Ready(cachedData)
+                    }
+                }
                 val data = coroutineScope {
-                    val base = api.item(requested)
+                    val base = withContext(graph.cacheUse(ResponseCache.Mode.Store)) {
+                        api.item(requested)
+                    }
                     // Everything below depends only on the base item, so it all runs at once.
                     val detailed = if (base.isPlayable && base.mediaSources.isEmpty()) {
-                        async { runCatching { api.item(requested, EtknApi.DETAIL_FIELDS) }.getOrNull() }
+                        async {
+                            withContext(graph.cacheUse(ResponseCache.Mode.Store)) {
+                                runCatching { api.item(requested, EtknApi.DETAIL_FIELDS) }.getOrNull()
+                            }
+                        }
                     } else null
                     /**
                      * 用户口径（2026-11-27）**单集页也要拿到 seriesId**。
@@ -302,11 +433,19 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                     val cachedSeasons = cacheSeasons
                     val seriesItem = if (base.isEpisode && base.seriesId != null) {
                         if (sameSeries && cachedSeriesItem != null) null
-                        else async { runCatching { api.item(base.seriesId) }.getOrNull() }
+                        else async {
+                            withContext(graph.cacheUse(ResponseCache.Mode.Store)) {
+                                runCatching { api.item(base.seriesId) }.getOrNull()
+                            }
+                        }
                     } else null
                     val seasons = seriesId?.let { sid ->
                         if (sameSeries && cachedSeasons.isNotEmpty()) null
-                        else async { runCatching { api.seasons(sid) }.getOrDefault(emptyList()) }
+                        else async {
+                            withContext(graph.cacheUse(ResponseCache.Mode.Store)) {
+                                runCatching { api.seasons(sid) }.getOrDefault(emptyList())
+                            }
+                        }
                     }
                     /**
                      * 用户口径（2026-11-27，#21）**单集页不要请求 playbackTarget**。
@@ -335,11 +474,19 @@ class DetailViewModel(private val graph: AppGraph, routeId: String) : ViewModel(
                      */
                     val similar = if (item.isMovie || item.isSeries) {
                         if (sameShow && cacheSimilar.isNotEmpty()) null
-                        else async { runCatching { api.similar(item.id) }.getOrDefault(emptyList()) }
+                        else async {
+                            withContext(graph.cacheUse(ResponseCache.Mode.Store)) {
+                                runCatching { api.similar(item.id) }.getOrDefault(emptyList())
+                            }
+                        }
                     } else null
                     val collections = if (item.isMovie) {
                         if (sameShow && cacheCollections.isNotEmpty()) null
-                        else async { runCatching { api.itemCollections(item.id) }.getOrDefault(emptyList()) }
+                        else async {
+                            withContext(graph.cacheUse(ResponseCache.Mode.Store)) {
+                                runCatching { api.itemCollections(item.id) }.getOrDefault(emptyList())
+                            }
+                        }
                     } else null
                     val full = detailed?.await()
                     DetailData(
