@@ -95,6 +95,20 @@ data class MediaStream(
     val transportStreamId: Int = -1,
     /** Frames per second (RealFrameRate, else AverageFrameRate); 0 when unknown. */
     val frameRate: Float = 0f,
+    /**
+     * 用户口径（2026-11-28，#140）**详情页要列出完整媒体信息**。
+     *
+     * 用户原话：「这些信息在 ETKN 的服务器上都有」「你就完全给它复刻过来就行」
+     *
+     * 下面这几个字段以前没解析，详情页那张"视频"卡要显示
+     * 「原色 / 色彩空间 / 位深度 / 像素格式 / 宽高比」，所以补上。
+     * 全部来自 API 的 MediaStreams，实测 item-23147 都有值。
+     */
+    val colorPrimaries: String = "",
+    val colorSpace: String = "",
+    val bitDepth: Int = 0,
+    val pixelFormat: String = "",
+    val aspectRatio: String = "",
     /** Subtitle calibration shared with Web / TV: key, saved offset, and burned-in (cannot shift). */
     val offsetKey: String = "",
     val offsetMs: Int = 0,
@@ -102,6 +116,58 @@ data class MediaStream(
 ) {
     val label: String get() = displayTitle.ifEmpty { title.ifEmpty { language.ifEmpty { codec.uppercase() } } }
     val previewLabel: String get() = title.ifEmpty { displayTitle.ifEmpty { language.ifEmpty { codec.uppercase() } } }
+
+    /**
+     * 用户口径（2026-11-28，#139）**动态范围标签：HDR10 / DV / HLG**。
+     *
+     * 实测证据（醉梦 S1E2 `item-23147` 的 video stream）：
+     * ```
+     * VideoRange     = "HDR10"     ← 有值
+     * VideoRangeType = 空           ← 原代码只读这个，所以永远不显示
+     * ColorPrimaries = "bt2020"
+     * ColorTransfer  = "smpte2084"  ← PQ = HDR10 特征
+     * BitDepth       = 10
+     * ```
+     *
+     * 三档回退，谁先有值用谁：
+     * ```
+     * ① videoRangeType（最细：DolbyVision / HDR10Plus / HDR10 / HLG）
+     * ② videoRange（HDR10 / HLG / DolbyVision / SDR）
+     * ③ colorTransfer 反推（smpte2084 → HDR10、arib-std-b67 → HLG）
+     * ```
+     *
+     * 显示规则（用户原话「有的还是杜比视界要加 DV」）：
+     * ```
+     * dolbyvision / dovi*   → "DV"
+     * hdr10plus / hdr10+    → "HDR10+"
+     * hdr10 / smpte2084     → "HDR10"
+     * hlg / arib-std-b67    → "HLG"
+     * sdr / 空              → null（不显示）
+     * ```
+     *
+     * 全部小写比较：服务端各版本写法不统一
+     * （`dolbyvision` / `DolbyVision` / `DOVI` 都出现过）。
+     */
+    fun dynamicRangeLabel(): String? {
+        val candidates = listOf(videoRangeType, videoRange, extendedVideoType, extendedVideoSubType)
+            .filter { it.isNotBlank() }
+            .map { it.lowercase() }
+        for (c in candidates) {
+            when {
+                c.contains("dolby") || c.contains("dovi") -> return "DV"
+                c.contains("hdr10+") || c.contains("hdr10plus") -> return "HDR10+"
+                c.contains("hdr10") -> return "HDR10"
+                c.contains("hlg") -> return "HLG"
+                c == "sdr" -> return null
+            }
+        }
+        /** 最后一档：色彩传输特性反推（老数据只有这个）。 */
+        return when (colorTransfer.lowercase()) {
+            "smpte2084", "st2084" -> "HDR10"
+            "arib-std-b67" -> "HLG"
+            else -> null
+        }
+    }
 
     companion object {
         fun from(o: JsonObject) = MediaStream(
@@ -126,6 +192,11 @@ data class MediaStream(
             extendedVideoSubType = o.str("ExtendedVideoSubType"),
             transportStreamId = o.int("TransportStreamId", -1),
             frameRate = (o.double("RealFrameRate") ?: o.double("AverageFrameRate") ?: 0.0).toFloat(),
+            colorPrimaries = o.str("ColorPrimaries"),
+            colorSpace = o.str("ColorSpace"),
+            bitDepth = o.int("BitDepth"),
+            pixelFormat = o.str("PixelFormat"),
+            aspectRatio = o.str("AspectRatio"),
             offsetKey = o.str("SubtitleOffsetKey"),
             offsetMs = o.int("SubtitleOffsetMs"),
             burnedIn = o.bool("IsBurnedIn"),
@@ -175,10 +246,49 @@ data class MediaSource(
     val subtitles: List<MediaStream> get() = streams.filter { it.type == "Subtitle" }
 
     /** Short slot label like the TV version button: "4K HDR" / "1080p". */
+    /**
+     * 用户口径（2026-11-28，#139）**媒体信息要显示完整的动态范围标识**。
+     *
+     * 用户原话：
+     * ```
+     * 「hills 的媒体信息显示他是有 HDR10 的这种信息的」
+     * 「咱们那个没有」
+     * 「不光要加上 HDR10，有的还是杜比视界要加 DV，
+     *   反正就是我的意思你这个显示不全」
+     * ```
+     *
+     * ## 原来的 bug：读错字段
+     *
+     * ```kotlin
+     * v.videoRangeType.takeIf { it.isNotEmpty() && it != "SDR" }
+     * ```
+     * 读的是 `VideoRangeType`。但实测 ETKN 返回的视频流里：
+     * ```
+     * VideoRange     = "HDR10"      ← 有值
+     * VideoRangeType = null/空       ← 读的这个，永远是空
+     * ColorPrimaries = "bt2020"
+     * ColorTransfer  = "smpte2084"   ← PQ，HDR10 特征
+     * BitDepth       = 10
+     * ```
+     * → 拼出来只有 `4K`，HDR 标识永远不出现。
+     *
+     * ## 现在的顺序：三档回退，谁都拿不到才不显示
+     *
+     * ```
+     * ① VideoRangeType   —— 服务端有时会给更细的值（DolbyVision/HDR10Plus…）
+     * ② VideoRange       —— HDR10 / HLG / DolbyVision / SDR
+     * ③ 从 ColorTransfer 反推 —— smpte2084→HDR10、arib-std-b67→HLG
+     *                       （极少数老数据只有色彩字段）
+     * ```
+     * `SDR` 不显示（普通片不该挂标识，只有 HDR/DV 才值得标出来）。
+     *
+     * `ExtendedVideoType` / `ExtendedVideoSubType` 也一起认 ——
+     * 那是 Emby 系服务端标杜比视界（含 profile 8.1 这类细分）的字段。
+     */
     val slotLabel: String
         get() = name.ifEmpty {
             val v = video ?: return container.uppercase()
-            listOfNotNull(resolutionLabel(v.width, v.height), v.videoRangeType.takeIf { it.isNotEmpty() && it != "SDR" })
+            listOfNotNull(resolutionLabel(v.width, v.height), v.dynamicRangeLabel())
                 .joinToString(" ")
         }
 

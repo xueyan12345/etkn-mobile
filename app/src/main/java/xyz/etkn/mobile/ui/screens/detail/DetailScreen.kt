@@ -344,6 +344,33 @@ private fun DetailContent(
                         }
                     }
                 }
+                /**
+                 * 用户口径（2026-11-28，#140）**演职人员下方加「媒体信息」+ 可横滑的视频/音频卡片**。
+                 *
+                 * 用户原话：
+                 * ```
+                 * 「他最下边那个视频和音频的卡片，而是对应这一个视频所有的媒体信息，
+                 *   也就是他可能有多个音轨多个视频啥的，然后它就下边那个卡片可以左右滑动，
+                 *   它要把所有的信息都列出来」
+                 * 「这些信息在 ETK 的服务器上都有」
+                 * 「你就完全给它复刻过来就行，这些都放在演员的下边」
+                 * ```
+                 *
+                 * 位置：演职人员 → **媒体信息** → 所属合集（用户明确「放在演员的下边」）。
+                 *
+                 * 一集可能有多条流（实测 item-23147 有 1 视频 + 3 音频），
+                 * 所以卡片做成横滑，一条流一张卡。
+                 */
+                techSource(data)?.let { src ->
+                    val streams = src.streams.filter {
+                        it.type == "Video" || it.type == "Audio" || it.type == "Subtitle"
+                    }
+                    if (streams.isNotEmpty()) {
+                        item(key = "media-info") {
+                            MediaInfoSection(src, streams)
+                        }
+                    }
+                }
                 shelf("collections", "所属合集", data.collections) { PosterCard(it, onClick = { nav.open(it) }) }
                 shelf("similar", "相似推荐", data.similar) { PosterCard(it, onClick = { nav.open(it) }) }
                 item(key = "bottom") { Spacer(Modifier.height(LocalBottomInset.current + 24.dp)) }
@@ -857,6 +884,207 @@ private fun RatingBadge(text: String) {
         color = color,
         modifier = Modifier.border(1.dp, color.copy(alpha = 0.6f), Corner.small).padding(horizontal = 5.dp, vertical = 1.dp),
     )
+}
+
+/**
+ * 用户口径（2026-11-28，#140）**「媒体信息」区块：三行摘要 + 可横滑的流卡片**。
+ *
+ * 用户原话（对照 hills 截图）：
+ * ```
+ * 「你看人家这个 hills 在详情页下面有这些，想把画红圈的部分都加入咱们的里边」
+ * 「他最下边那个视频和音频的卡片，而是对应这一个视频所有的媒体信息，
+ *   也就是他可能有多个音轨多个视频啥的，然后它就下边那个卡片可以左右滑动」
+ * 「你就完全给它复刻过来就行，这些都放在演员的下边」
+ * ```
+ *
+ * 结构（照抄 hills）：
+ * ```
+ * 媒体信息
+ *   4K HDR10 HEVC              ← 摘要行 1：版本名
+ *   2026/10/16 19:30           ← 摘要行 2：上映/添加日期
+ *   STRM 5.1 GB 47分8秒         ← 摘要行 3：容器 / 文件大小 / 时长
+ *   ┌──────────┐ ┌──────────┐  ← 横滑：一条流一张卡
+ *   │ 视频      │ │ 音频      │
+ *   │ 字段…     │ │ 字段…     │
+ *   └──────────┘ └──────────┘
+ * ```
+ *
+ * 卡片里的字段**全部来自 API**，取不到的行直接不显示（不写「未知」占位）。
+ */
+@Composable
+private fun MediaInfoSection(source: MediaSource, streams: List<MediaStream>) {
+    Column(Modifier.padding(top = Etkn.space.section)) {
+        SectionHeader("媒体信息", showChevron = false)
+        Column(
+            Modifier.padding(horizontal = Etkn.space.screen),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            /**
+             * 摘要三行。第一行优先用服务端拼好的 `slotLabel`（它是 `name`，
+             * 实测就是 `4K HDR10 HEVC`，和 hills 完全一致）。
+             *
+             * 拿不到 name 时才用我们自己的 `resolution + dynamicRange` 拼，
+             * 这就是 #139 修的那个字段读取 bug 的价值。
+             */
+            val headline = source.name.ifBlank {
+                val v = source.video
+                listOfNotNull(
+                    v?.let { resolutionLabel(it.width, it.height) },
+                    v?.dynamicRangeLabel(),
+                    v?.codec?.uppercase()?.takeIf { it.isNotBlank() },
+                ).joinToString(" ")
+            }
+            if (headline.isNotBlank()) {
+                Text(
+                    headline,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            val parts = buildList {
+                if (source.container.isNotBlank()) add(source.container.uppercase())
+                if (source.size > 0) add(formatBytes(source.size))
+                if (source.runTimeTicks > 0) add(formatDuration(source.runTimeTicks / 10_000))
+            }
+            if (parts.isNotEmpty()) {
+                Text(
+                    parts.joinToString("  "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = Etkn.space.screen),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(streams, key = { "${it.type}-${it.index}" }) { st ->
+                MediaStreamCard(st)
+            }
+        }
+    }
+}
+
+/**
+ * 单条流的字段卡（视频 / 音频 / 字幕各一张）。
+ *
+ * 字段来源 = `MediaStream`，表格全部是 API 原值：
+ * ```
+ * 视频：编码器 / 码率 / 动态范围 / 原色 / 色彩空间 / 色彩转换 /
+ *       位深度 / 像素格式 / 宽 / 高 / 宽高比 / 帧率 / Profile / 默认
+ * 音频：编码器 / 码率 / 声道 / Profile / 语言 / 标题 / 默认
+ * 字幕：编码器 / 语言 / 标题 / 默认 / 外部
+ * ```
+ * 值为空、为 0 的行**不渲染**（不显示「未知」）。
+ */
+@Composable
+private fun MediaStreamCard(st: MediaStream) {
+    val label = when (st.type) {
+        "Video" -> "视频"
+        "Audio" -> "音频"
+        "Subtitle" -> "字幕"
+        else -> st.type
+    }
+    Column(
+        Modifier
+            .width(232.dp)
+            .clip(Corner.card)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            if (st.isDefault) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "默认",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (st.displayTitle.isNotBlank()) {
+            Text(
+                st.displayTitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.height(2.dp))
+        streamRows(st).forEach { (k, v) -> TechRow(k, v) }
+    }
+}
+
+/** 一行「键  值」，键固定宽度对齐，值是 API 原值。 */
+@Composable
+private fun TechRow(key: String, value: String) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            key,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(58.dp),
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * 把一条流的字段摊成「键 → 值」列表。
+ *
+ * 明确**跳过空值 / 0 值** —— 用户要的是"复刻 hills"，而 hills 那张卡
+ * 也只有真存在的字段（截图里 `位深度: 0` 那种其实是音频没有该概念，
+ * 我们直接不显示更干净）。
+ */
+private fun streamRows(st: MediaStream): List<Pair<String, String>> {
+    val out = mutableListOf<Pair<String, String>>()
+    fun add(k: String, v: String) { if (v.isNotBlank() && v != "0") out += k to v }
+    fun addBps(k: String, bps: Long) {
+        if (bps > 0) out += k to if (bps >= 1_000_000) "%.1f Mbps".format(bps / 1_000_000.0)
+        else "${bps / 1000} Kbps"
+    }
+    add("编码器", st.codec.uppercase())
+    addBps("码率", st.bitRate)
+    when (st.type) {
+        "Video" -> {
+            add("动态范围", st.dynamicRangeLabel().orEmpty())
+            add("原色", st.colorPrimaries)
+            add("色彩空间", st.colorSpace)
+            add("色彩转换", st.colorTransfer)
+            add("位深度", st.bitDepth.takeIf { it > 0 }?.toString().orEmpty())
+            add("像素格式", st.pixelFormat)
+            add("宽度", st.width.takeIf { it > 0 }?.toString().orEmpty())
+            add("高度", st.height.takeIf { it > 0 }?.toString().orEmpty())
+            add("宽高比", st.aspectRatio)
+            add("帧率", st.frameRate.takeIf { it > 0f }?.let { "%.1f".format(it) }.orEmpty())
+            add("Profile", st.profile)
+        }
+        "Audio" -> {
+            add("声道", st.channels.takeIf { it > 0 }?.let { if (it > 2) "${it - 1}.1" else "立体声" }.orEmpty())
+            add("Profile", st.profile)
+            add("语言", st.language)
+            add("标题", st.title)
+        }
+        "Subtitle" -> {
+            add("语言", st.language)
+            add("标题", st.title)
+            add("外部", if (st.isExternal) "是" else "")
+        }
+    }
+    return out
 }
 
 private fun techLine(item: Item, source: MediaSource?): List<String> {

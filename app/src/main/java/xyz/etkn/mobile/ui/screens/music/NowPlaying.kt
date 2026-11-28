@@ -629,7 +629,7 @@ fun NowPlayingScreen() {
                         )
                     }
                     /**
-                     * 用户口径（2026-11-28，#134/#137）**下一首预加载好后亮个呼吸小气泡**。
+                     * 用户口径（2026-11-28，#134/#137/#138）**下一首预加载好后亮个呼吸小气泡**。
                      *
                      * 用户原话：
                      * ```
@@ -637,28 +637,23 @@ fun NowPlayingScreen() {
                      *   你把预加载下一集的那个小气泡添加到这里边，相当于是一个小提示」
                      * 「小气泡有点离下一首那个按钮太远了并且也不是很清晰」
                      * 「你能不能把这小气泡变成呼吸的样式？」
+                     * 「感觉对于那个下一首按钮来说有点大」
                      * ```
                      *
-                     * ## 三处调整（都是用户点名要的）
+                     * ## 尺寸依据（不要凭感觉改）
                      *
-                     * ```
-                     * ① 位置：往按钮靠。Box 用 TopEnd 时图标会被 IconButton 的
-                     *    48dp 最小触摸区顶到外面去，所以改用负偏移压回按钮圆角内。
-                     * ② 清晰度：12dp 纯白闪电在浅色封面上会糊。
-                     *    加一层深色底圆 + 更实的阴影，保证任何背景上都看得清。
-                     * ③ 呼吸：透明度 + 缩放做正弦呼吸，周期 1.6 秒。
-                     *    compose 的 infiniteRepeatable + Reverse 就是标准做法。
-                     * ```
+                     * 「下一首」图标本身是 30dp，气泡要明显小于它才有"附着"感而不是"并列"感。
+                     * 取 **11dp 直径**（约图标 1/3），闪电 8dp。
                      */
                     Box(contentAlignment = Alignment.TopEnd) {
                         IconButton(onClick = music::next) {
                             Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(30.dp))
                         }
                         if (state.nextReady) {
-                            /** 呼吸：0.55 ↔ 1.0 之间来回，1.6 秒一轮。 */
+                            /** 呼吸：0.5 ↔ 1.0，1.6 秒一轮。 */
                             val breathe = rememberInfiniteTransition(label = "next-ready")
                             val alpha by breathe.animateFloat(
-                                initialValue = 0.55f,
+                                initialValue = 0.5f,
                                 targetValue = 1f,
                                 animationSpec = infiniteRepeatable(
                                     animation = tween(800, easing = LinearEasing),
@@ -670,17 +665,17 @@ fun NowPlayingScreen() {
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier
                                     /** 压回按钮右上角内圈（IconButton 的 48dp 触摸区比图标大）。 */
-                                    .offset(x = (-6).dp, y = 6.dp)
-                                    .size(16.dp)
+                                    .offset(x = (-4).dp, y = 4.dp)
+                                    .size(11.dp)
                                     .graphicsLayer { this.alpha = alpha }
                                     .background(MaterialTheme.colorScheme.primary, CircleShape)
-                                    .shadow(3.dp, CircleShape),
+                                    .shadow(2.dp, CircleShape),
                             ) {
                                 Icon(
                                     Icons.Rounded.Bolt,
                                     contentDescription = "下一首已预加载",
                                     tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(11.dp),
+                                    modifier = Modifier.size(8.dp),
                                 )
                             }
                         }
