@@ -83,6 +83,10 @@ class MusicService : MediaSessionService() {
          * 没起来就重新拉一次。不依赖「谁杀了它」，只看「它现在在不在」。
          */
         @Volatile var alive = false
+
+        /** 自动重建的次数与时间窗，用于限流（#199）。 */
+        @Volatile private var rebuildCount = 0
+        @Volatile private var lastRebuildAt = 0L
         /**
          * 媒体卡片用的通知 id / 渠道。
          *
@@ -366,6 +370,64 @@ class MusicService : MediaSessionService() {
             .build()
         /** 用户口径 #77：交给 WifiExitGuard 在退出前释放，卡片才会立刻消失。 */
         session?.let { MusicSessionHolder.attach(it) }
+
+        /**
+         * 用户口径（2026-11-28，#200）**蓝牙耳机唤醒又坏了，这是回归 bug**。
+         *
+         * 用户原话：
+         * ```
+         * 「蓝牙耳机唤醒是让你给我删了吗」
+         * 「拉起来播放」（App 完全退出后，按耳机键要能拉起并播放）
+         * 「本来就是这样的啊设置好了都，这个功能之前的版本是好使的，
+         *   不知道哪个版本开始就不好使了」
+         * ```
+         *
+         * ## 回归点（git 查到的，不是猜）
+         *
+         * `b1832b3`「refactor: 删代码，不打补丁」（11-27）把
+         * **MusicService.kt 从 853 行砍到 93 行**，同时删掉了这三段：
+         * ```kotlin
+         * // ① session 建好后，同步把 remembered 的 MediaItem 塞进 player
+         * if (mem != null && player.mediaItemCount == 0) {
+         *     player.setMediaItem(resumeMediaItem(mem))
+         * }
+         * // ② 监听 remembered，一拿到也装进 player
+         * // ③ runCatching { player.prepare() } 触发一次 Session 状态同步
+         * ```
+         * 这几段是**专门为「App 不在前台时蓝牙按键能认到」**写的，
+         * 当时代码注释里就记着实机日志：
+         * ```
+         * OplusMediaControlService: D players is empty
+         * ```
+         * 也就是说：player 里没有 MediaItem → ColorOS 判定 players 为空
+         * → 把会话踢出媒体栈 → 蓝牙按键没有接收者 → 按了没反应。
+         *
+         * ## 现在只恢复最小的一块
+         *
+         * 不整段恢复（当时删它是因为「代码套重了」），只补这一步：
+         * ```
+         * Session 建好 → player 是空的但磁盘有记忆 → 同步塞一首进去
+         * ```
+         * 目的只有一个：让 ColorOS 的媒体栈里始终有一个有内容的会话，
+         * 蓝牙按键才找得到落点，才能把 App 拉起来播放。
+         *
+         * 不动 `restoreForResumption()`（真正的续播解析）、
+         * 不动 `MediaLibraryService`、不动 `onPlaybackResumption`。
+         */
+        runCatching {
+            val player = graph.music.player
+            val mem = graph.music.remembered.value
+            if (mem != null && player.mediaItemCount == 0) {
+                val item = graph.music.resumeMediaItem(mem)
+                player.setMediaItem(item)
+                /** 触发一次状态同步，让 Session 立刻把 metadata 推给系统。 */
+                player.prepare()
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "Session 建立后预装 MediaItem（蓝牙唤醒前提）：${mem.name} count=${player.mediaItemCount}",
+                )
+            }
+        }.onFailure { android.util.Log.w("ETKN-Music", "预装 MediaItem 失败", it) }
 
         /**
          * 用户口径（#174）**服务一起来就把媒体卡片建出来**，不等播放。
@@ -740,6 +802,70 @@ class MusicService : MediaSessionService() {
 
     override fun onDestroy() {
         alive = false
+        /**
+         * 用户口径（2026-11-28，#199）**蓝牙耳机唤醒失效**。
+         *
+         * ## 现场数据（adb 实测）
+         *
+         * ```
+         * 进程 29624 在跑
+         * MediaSession = 0 个      ← 蓝牙按键找不到接收者
+         * MusicService = 0         ← 服务不在
+         * 应用待机分桶 = 5 (RESTRICTED，最深一档限制)
+         * ```
+         *
+         * 蓝牙耳机的播放/暂停/切歌按键是发给**当前活动的媒体会话**的。
+         * 服务没了 → 会话没了 → 按键没有任何接收者 → 「打不开、唤醒不了」。
+         *
+         * ## 为什么之前没这个问题
+         *
+         * 上一版 `onTaskRemoved` 会 `stopSelf()`，但那时系统还会保留会话存活一小段；
+         * 我改成「保持存活」之后，服务如果被 ColorOS 从**别的路径**停掉，
+         * 就没人再把它拉起来了 —— 前台巡检只在 Activity 可见时跑。
+         *
+         * ## 现在
+         *
+         * 服务被销毁时，只要**队列里还有歌**，就立刻把自己重新拉起来。
+         * 这是「保持媒体会话一直存在」的最后一道保险，
+         * 也是蓝牙按键能随时唤醒 App 的前提。
+         *
+         * 注意：只在有内容时重建，用户主动清空队列 / 退出登录不会无限重启。
+         */
+        runCatching {
+            /** 用 graph 里的同一个播放器（session 可能已在 super.onDestroy() 释放前仍可读）。 */
+            val stillHasContent =
+                (applicationContext.graph.music.player.mediaItemCount) > 0
+            /**
+             * **必须限流，否则会被系统当成恶意重启**。
+             *
+             * 如果 ColorOS 立刻再杀一次，`onDestroy` 又会重建 ——
+             * 变成「起→杀→起→杀」的死循环，反而会被判成异常应用、
+             * 待机分桶继续往下降（现在是 5 = RESTRICTED，已经是最差一档）。
+             *
+             * 规则：10 分钟内最多重建 3 次，超了就放弃，
+             * 交给用户下次打开 App 时由 `onStart` 的自愈逻辑接管。
+             */
+            val now = System.currentTimeMillis()
+            if (now - lastRebuildAt > 10 * 60_000L) rebuildCount = 0
+            val allow = rebuildCount < 3
+            if (stillHasContent && !allow) {
+                android.util.Log.w(
+                    "ETKN-Music",
+                    "MusicService 重建次数超限($rebuildCount)，放弃自动重建",
+                )
+            }
+            if (stillHasContent && allow) {
+                rebuildCount++
+                lastRebuildAt = now
+                android.util.Log.i("ETKN-Music", "MusicService 被销毁但有内容 → 立即重建")
+                startService(
+                    android.content.Intent(
+                        applicationContext,
+                        MusicService::class.java,
+                    ),
+                )
+            }
+        }.onFailure { android.util.Log.w("ETKN-Music", "重建 MusicService 失败", it) }
         session?.release()
         session = null
         super.onDestroy()
