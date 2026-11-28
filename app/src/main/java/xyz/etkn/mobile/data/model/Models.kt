@@ -351,6 +351,15 @@ data class Item(
     val seriesName: String?,
     val seasonId: String?,
     val seasonName: String?,
+    /**
+     * 用户口径（2026-11-28，#143）**家庭视频条目只有 ParentId**。
+     *
+     * 家庭视频库的条目 `Type=Video`：`SeriesId`/`SeasonId` 都是 null，
+     * 只有 `ParentId` 指向所属文件夹。算「下一集」时必须用它兜底，
+     * 否则 `siblingNext` 永远返回 null → 预加载从不发生、气泡永不亮。
+     * 见 `VideoSession.siblingNext()`。
+     */
+    val parentId: String? = null,
     val parentIndexNumber: Int?,
     val indexNumber: Int?,
     val indexNumberEnd: Int?,
@@ -494,6 +503,7 @@ data class Item(
             seriesId = o.strOrNull("SeriesId"),
             seriesName = o.strOrNull("SeriesName"),
             seasonId = o.strOrNull("SeasonId"),
+            parentId = o.strOrNull("ParentId"),
             seasonName = o.strOrNull("SeasonName"),
             parentIndexNumber = o.intOrNull("ParentIndexNumber"),
             indexNumber = o.intOrNull("IndexNumber"),

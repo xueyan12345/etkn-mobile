@@ -902,11 +902,48 @@ object PlaybackCache {
                     val total = if (target.lengthBytes > 0) target.lengthBytes else probeLength(client, target.url)
                     val durationMs = target.durationMs
                     val bpm = if (durationMs > 0 && total > 0) total.toDouble() / durationMs else 0.0
+                    /**
+                     * 用户口径（2026-11-28，#142）**需要多少字节必须按「这一集多长」封顶**。
+                     *
+                     * 用户反馈：「我播放家庭视频里面的剧集形式的视频，也不会触发下一集」。
+                     *
+                     * adb 抓到的证据：
+                     * ```
+                     * preload next=item-41964 covered=9MB need=179MB ready=false
+                     * calc pos=2s dur=31s total=9MB
+                     * ```
+                     * **这一集只有 31 秒 / 9MB，却被要求下 179MB**。
+                     * 179MB 是这个文件体积的近 20 倍，`covered` 永远够不到 80% 阈值
+                     * → `nextComplete` 恒 false → 气泡永远不亮。
+                     *
+                     * ## 原来的 bug
+                     *
+                     * ```kotlin
+                     * val needMs = when {
+                     *     target.introEndMs > 0 -> target.introEndMs + 60_000L
+                     *     else -> maxWindowMs(settings) / 2      // ← 用户设的缓存时长一半
+                     * }
+                     * if (bpm > 0) (needMs * bpm).toLong() ...
+                     * ```
+                     * `maxWindowMs(settings)` 是设置里那个「最大缓存时长」（可以设到 20 分钟）。
+                     * 对一部 31 秒的短片，用它的一半（10 分钟）去乘码率，
+                     * 算出来的字节数远超文件本身 —— 数学上就不可能达到。
+                     *
+                     * ## 现在
+                     *
+                     * `needBytes` 再套一层 `minOf(total)`：
+                     * ```
+                     * 需要字节 = min(按时间算出来的量, 这个文件的真实大小)
+                     * ```
+                     * 短片就按整部算，长片才按时间窗口算。这样阈值永远可达。
+                     */
                     val needMs = when {
                         target.introEndMs > 0 -> target.introEndMs + 60_000L
                         else -> maxWindowMs(settings) / 2
                     }
-                    if (bpm > 0) (needMs * bpm).toLong() else maxWindowBytes(settings) / 2
+                    val byTime = if (bpm > 0) (needMs * bpm).toLong() else maxWindowBytes(settings) / 2
+                    /** 关键：不能超过文件本身。否则 31 秒的片子被要求下 179MB。 */
+                    if (total > 0) minOf(byTime, total) else byTime
                 }.coerceAtLeast(2L * 1024 * 1024)   // 至少铺 2MB，避免刚够就断
 
                 val ds = dataSourceFactory.createDataSource()

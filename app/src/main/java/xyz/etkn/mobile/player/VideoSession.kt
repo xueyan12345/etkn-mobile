@@ -1385,11 +1385,43 @@ class VideoSession(
             ?: runCatching { api.item(itemId) }.getOrNull()
             ?: return null
         /**
-         * 父容器优先级：season（episode 都挂季下）→ series（老结构）。
-         * 两个都拿不到就没法算兄弟集，直接返回 null（不会误播别的片子）。
+         * 用户口径（2026-11-28，#143）**家庭视频（Type=Video）也要能算「下一集」**。
+         *
+         * 用户反馈：「我播放家庭视频里面的剧集形式的视频，也不会触发下一集」。
+         *
+         * adb 日志：
+         * ```
+         * isNextReady=false currentComplete=true nextComplete=false next=null
+         * ```
+         * `next=null` = 下一集根本没取到。
+         *
+         * ## 原来的 bug
+         *
+         * ```kotlin
+         * val parentId = current.seasonId ?: current.seriesId ?: return null
+         * ```
+         * 只认 `SeasonId` / `SeriesId`。这是**剧集（Episode）**的字段。
+         * 而家庭视频库里的条目是 `Type=Video`：
+         * ```
+         * SeriesId = null
+         * SeasonId = null
+         * ParentId = <所属文件夹>     ← 它只有这个
+         * ```
+         * 于是直接 `return null` → 永远没有下一集 → 预加载从不发生。
+         *
+         * ## 现在：三级回退
+         * ```
+         * ① SeasonId（剧集挂在季下）
+         * ② SeriesId（老结构直接挂剧下）
+         * ③ ParentId（家庭视频/普通文件夹，兄弟条目就是同一父目录下的其它视频）
+         * ```
+         * 用 `ParentId` 时还要过滤掉非视频条目（文件夹、图片），
+         * 否则「下一个」可能是个子目录。
          */
-        val parentId = current.seasonId ?: current.seriesId ?: return null
+        val parentId = current.seasonId ?: current.seriesId ?: current.parentId ?: return null
         val siblings = runCatching { api.children(parentId) }.getOrDefault(emptyList())
+            /** 家庭视频场景：父目录下可能混着文件夹/图片，只留可播放的视频。 */
+            .filter { it.isAudio.not() && (it.type == "Episode" || it.type == "Video" || it.type == "Movie") }
         if (siblings.size < 2) return null
         val idx = siblings.indexOfFirst { it.id == itemId }
         if (idx < 0) return null
