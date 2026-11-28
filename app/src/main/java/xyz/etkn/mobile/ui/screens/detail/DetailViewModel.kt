@@ -44,6 +44,43 @@ data class DetailData(
 )
 
 /**
+ * 用户口径（2026-11-28，#144）**打开详情页不能先闪一下白**。
+ *
+ * 用户原话：
+ * ```
+ * 「就是感觉人家 HILS 那个，打开详情页，人家直接就出来了，咱们这个就是闪一下白」
+ * ```
+ *
+ * ## 实测根因（服务端 nginx access log）
+ *
+ * ```
+ * 09:04:39  Items/item-23477        15388 bytes
+ * 09:04:39  Similar                 48
+ * 09:04:39  Collections             48
+ * 09:04:39  Logo 250KB + Backdrop 557KB + 4 张演员图
+ * ```
+ * 数据本身很快（局域网几十毫秒）。问题在**渲染时序**：
+ * `Load.Loading` 时 `DetailScreen` 画的是 `background(surface)` —— 一整块纯色，
+ * 也就是用户看到的白屏；要等上面这些全部 await 完才切到 `Load.Ready`。
+ *
+ * ## 修法：把列表里已有的那份 Item 当「种子」
+ *
+ * 用户是**从列表点进来的**，那一刻列表里已经有标题/封面/年份/时长/评分。
+ * 用这份数据先画一帧完整的详情页（骨架级别：头图 + 标题 + 简介占位），
+ * 网络回来再静默覆盖 —— 用户看到的就是「点下去内容就在」，而不是白屏。
+ *
+ * 只在「从列表进入」时有种子；深链/搜索直达没有种子，仍走原来的 Loading。
+ */
+object DetailSeed {
+    /** `itemId → 列表里那份 Item`。导航前 `put`，ViewModel 取走后不删（可复用）。 */
+    private val seeds = java.util.concurrent.ConcurrentHashMap<String, Item>()
+
+    fun put(item: Item) { seeds[item.id] = item }
+
+    fun get(id: String): Item? = seeds[id]
+}
+
+/**
  * One detail page. On an episode's page the shelf switches between the series' episodes in place
  * ([show]): the page keeps what it shows until the next episode is loaded instead of opening a
  * new page per episode, so back still leads straight out of the series.

@@ -955,12 +955,25 @@ private fun MediaInfoSection(source: MediaSource, streams: List<MediaStream>) {
             }
         }
         Spacer(Modifier.height(10.dp))
+        /**
+         * 用户口径（#146）**所有卡片同高** —— 高度取「行数最多的那张」。
+         *
+         * 用固定行高估算（这个区块的每行都是 `labelSmall` + 3dp 间距）：
+         * ```
+         * 卡高 = 标题行(24) + 摘要两行(2×18) + 间距 + 行数×(15+3) + 上下内边距(24)
+         * ```
+         * 估算比实际略大 2dp，宁可留一点空隙也不要内容被裁掉。
+         */
+        val maxRows = streams.maxOfOrNull { st ->
+            streamRows(st).size + 1 + if (st.displayTitle.isNotBlank()) 1 else 0
+        } ?: 0
+        val cardHeight = (24 + 24 + maxRows * 18 + 12).dp
         LazyRow(
             contentPadding = PaddingValues(horizontal = Etkn.space.screen),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(streams, key = { "${it.type}-${it.index}" }) { st ->
-                MediaStreamCard(st)
+                MediaStreamCard(st, cardHeight)
             }
         }
     }
@@ -979,7 +992,7 @@ private fun MediaInfoSection(source: MediaSource, streams: List<MediaStream>) {
  * 值为空、为 0 的行**不渲染**（不显示「未知」）。
  */
 @Composable
-private fun MediaStreamCard(st: MediaStream) {
+private fun MediaStreamCard(st: MediaStream, fixedHeight: Dp) {
     val label = when (st.type) {
         "Video" -> "视频"
         "Audio" -> "音频"
@@ -988,7 +1001,26 @@ private fun MediaStreamCard(st: MediaStream) {
     }
     Column(
         Modifier
+            /**
+             * 用户口径（2026-11-28，#146）**两张卡片拉齐：同宽同高**。
+             *
+             * 用户原话：
+             * ```
+             * 「最下边的这个视频和音频信息，这个整体逻辑没啥毛病，
+             *   但是就是这个阴影卡片给他拉齐，音频呢，现在这个比视频的短，
+             *   所有的都按一个长度」
+             * ```
+             *
+             * 原来 `width(232.dp)` 写死、高度 wrapContent：
+             * ```
+             * 视频卡 15 行 → 很高
+             * 音频卡  9 行 → 矮一截，下面留一大片空白
+             * ```
+             * 现在：宽度仍固定（横滑时每张一样宽），
+             * **高度由调用方按「最高那张」统一传入**，所有卡等高。
+             */
             .width(232.dp)
+            .height(fixedHeight)
             .clip(Corner.card)
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(12.dp),
@@ -1092,12 +1124,43 @@ private fun techLine(item: Item, source: MediaSource?): List<String> {
     item.runtimeMs.takeIf { it > 0 && !item.isSeries }?.let { out += formatDuration(it) }
     source ?: return out
     source.video?.let { v ->
+        /**
+         * 用户口径（2026-11-28，#145）**HDR 标识要插在「分辨率」和「编码」中间**。
+         *
+         * 用户原话：
+         * ```
+         * 「比如这个醉梦这集，它是 HDR10，我想把这个 HDR10 加在 4K 和 HEVC 中间，
+         *   别的比如说什么 DV 呀之类的，都给它加在分辨率和这个编码中间」
+         * ```
+         * 目标格式（对照 hills 截图）：
+         * ```
+         * 4K HDR10 HEVC
+         * ```
+         *
+         * ## 原来的 bug：老判断全部失效
+         *
+         * ```kotlin
+         * when {
+         *     v.videoRangeType.contains("DOVI", true) -> out += "杜比视界"
+         *     v.videoRangeType.contains("HDR10Plus", true) -> out += "HDR10+"
+         *     v.videoRange.equals("HDR", true) || v.videoRangeType.contains("HDR", true) -> out += "HDR"
+         * }
+         * ```
+         * 两个字段都靠不住（实测 item-23147）：
+         * ```
+         * videoRangeType = 空            → DOVI/HDR10Plus 两条永远不成立
+         * videoRange     = "HDR10"       → equals("HDR") 是 false，也进不去
+         * ```
+         * 于是这一段整块不执行，用户永远看不到任何动态范围标识。
+         *
+         * ## 现在
+         *
+         * 统一走 `MediaStream.dynamicRangeLabel()`（#139 加的，三级回退：
+         * VideoRangeType → VideoRange → ColorTransfer 反推），
+         * 输出 `HDR10` / `DV` / `HDR10+` / `HLG`，**位置就在分辨率和编码之间**。
+         */
         resolutionLabel(v.width, v.height)?.let(out::add)
-        when {
-            v.videoRangeType.contains("DOVI", true) -> out += "杜比视界"
-            v.videoRangeType.contains("HDR10Plus", true) -> out += "HDR10+"
-            v.videoRange.equals("HDR", true) || v.videoRangeType.contains("HDR", true) -> out += "HDR"
-        }
+        v.dynamicRangeLabel()?.let(out::add)
         if (v.codec.isNotEmpty()) out += v.codec.uppercase()
         if (v.frameRate > 0f) out += "${Math.round(v.frameRate)}FPS"
     }
@@ -1893,8 +1956,84 @@ private fun MediaTechRows(
  * 这里统一走这个函数：已经有「(默认)」就不再补。
  */
 internal fun MediaStream.cleanTitle(): String {
-    val base = displayTitle.ifBlank { codec.uppercase() }.trim()
-    if (base.contains("(默认)") || base.contains("（默认）")) return base
+    /**
+     * 用户口径（2026-11-28，#147/#148）**音频/字幕只留「语言 + 默认」**。
+     *
+     * 用户原话：
+     * ```
+     * 「这个音频和字幕这块，因为它太长了，然后我手机太窄，
+     *   就导致好多信息显示不出来……相当于加一个过滤」
+     * 「比如说音频这个就直接给它显示国语，然后括号默认……
+     *   后边的什么 DDP 啥的不要不行吗」
+     * 「有的括号里边显示的是什么 MOV_TEXT，这个能过滤掉吗，
+     *   我的目的是只想让它显示中文简体，然后括号默认」
+     * ```
+     *
+     * ## 数据库实测（media.version_analysis.mediainfo_json 全量统计）
+     *
+     * 字幕 Title：
+     * ```
+     * 中文简体 2710 / 中文繁体 2068 / 英文 1725 / 西班牙文 1218 …
+     * 空值      817  ← DisplayTitle 只有 "(ASS)" / "(PGSSUB)" / "(SUBRIP)"
+     * ```
+     * 音频 Title：
+     * ```
+     * 无语言   43401  ← 最大头，但这**不是语言**，是服务端的占位词
+     * 英语     10206 / 国语 5964
+     * 空值      4368
+     * 国语（中文） 443 / 国语（台湾普通话）222 / 国语（台配）206 …
+     * AAC         40  ← 这是编码，不是语言
+     * ```
+     *
+     * 所以退化成「title 为空就用 displayTitle 分词」是不够的：
+     * `(ASS)` 切出来是空串、`无语言` 会被原样显示、`AAC` 会被当成语言。
+     *
+     * ## 现在的规则
+     *
+     * ```
+     * ① Title 有值且不是占位词 → 用它，去掉「（…）」这类后缀
+     * ② 否则用 Language 码映射（chi→中文 / eng→英语 / jpn→日语 …）
+     * ③ 再否则看 displayTitle 里有没有语言词
+     * ④ 都没有 → 「未知语言」
+     * ⑤ isDefault 补「 (默认)」
+     * ```
+     */
+    val raw = title.trim()
+
+    /** 服务端的占位词/编码词，都不能当语言显示。 */
+    val placeholder = setOf("无语言", "未知", "unknown", "und", "aac", "ac3", "eac3", "dts", "flac", "mp3", "opus")
+
+    val fromTitle = raw
+        .takeIf { it.isNotBlank() && it.lowercase() !in placeholder }
+        /** 去掉「国语（中文）」这类括号后缀，只留主语言名。 */
+        ?.substringBefore('（')?.substringBefore('(')?.trim()
+        ?.takeIf { it.isNotBlank() }
+
+    val fromLang = when (language.lowercase()) {
+        "chi", "zh", "zho", "cmn" -> "中文"
+        "eng", "en" -> "英语"
+        "jpn", "ja" -> "日语"
+        "kor", "ko" -> "韩语"
+        "yue" -> "粤语"
+        "spa", "es" -> "西班牙语"
+        "fre", "fra", "fr" -> "法语"
+        "ger", "deu", "de" -> "德语"
+        "rus", "ru" -> "俄语"
+        "tha", "th" -> "泰语"
+        "por", "pt" -> "葡萄牙语"
+        "ita", "it" -> "意大利语"
+        else -> null
+    }
+
+    /** displayTitle 里找已知语言词（Title 空、Language 也没有时兜底）。 */
+    val fromDisplay = displayTitle.let { d ->
+        listOf(
+            "中文简体", "中文繁体", "中文", "国语", "粤语", "英语", "日文", "日语",
+            "韩文", "韩语", "西班牙文", "法文", "德文", "俄文", "泰文",
+        ).firstOrNull { d.contains(it) }
+    }
+
+    val base = fromTitle ?: fromLang ?: fromDisplay ?: "未知语言"
     return if (isDefault) "$base (默认)" else base
 }
 
