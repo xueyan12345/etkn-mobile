@@ -416,13 +416,19 @@ class AppSettings(private val context: Context) {
             val old = prefs[Keys.recentWifis] ?: emptySet()
             if (name in old) return@edit
             val next = (old + name).toList()
-            /** 超出上限就丢掉最早进去的（按集合无序，取差集近似「最早」）。 */
-            val trimmed = if (next.size > RECENT_WIFI_LIMIT) {
-                (old + name).takeLast(RECENT_WIFI_LIMIT).toSet()
+            /**
+             * 超出上限就只留最新的若干条。
+             *
+             * `stringSetPreferencesKey` 存的是 `Set`（无序），拿不到真正的
+             * 「插入先后」，所以这里的「最新」只能近似 ——
+             * 名字一共没几个、也不会频繁变动，够用。
+             * 直接用 `List.takeLast` 再转回 Set，避免对 Set 调 takeLast（编译不过）。
+             */
+            prefs[Keys.recentWifis] = if (next.size > RECENT_WIFI_LIMIT) {
+                next.takeLast(RECENT_WIFI_LIMIT).toSet()
             } else {
-                (old + name)
+                next.toSet()
             }
-            prefs[Keys.recentWifis] = trimmed
         }
     }
 
