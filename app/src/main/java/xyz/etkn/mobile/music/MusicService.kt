@@ -919,45 +919,17 @@ class MusicService : MediaSessionService() {
          * 注意：`setStopWithTask` 已在 manifest 设为 false，
          * 所以划掉后台时**服务本来就不该被销毁**，这里更不该自己调 `stopSelf()`。
          */
-        /**
-         * 用户口径（2026-11-28，#216 修正）**我亲手把 App 杀了，卡片就该消失**。
-         *
-         * ## 现场证据
-         *
-         * ```
-         * 21:17:16  MainActivity visible=false      ← 用户杀 App
-         * 21:17:22  notifyTaskRemoved / handleAppDied
-         * 21:17:24  Start proc for MusicService     ← 系统又把服务拉起来
-         * ```
-         * 用户原话：「我都给APP杀了然后他又出来了」「我就彻底杀掉APP了，它又弹出来了」。
-         *
-         * ## 上一版为什么错
-         *
-         * 上一版按「队列里有歌就别自杀」实现（见下方历史说明），
-         * 但只要**队列里还有歌**（打开 App 就会装载上次的歌单），
-         * 这个分支永远走 else → 服务永生 → 系统一直显示播放卡片。
-         * 用户杀掉 App 后卡片仍然在，等于「杀不掉」。
-         *
-         * ## 现在的规则
-         *
-         * ```
-         * 用户主动划掉/杀掉任务 → 一律停服务，卡片消失
-         * 正在播放时切后台（不是划掉）→ onTaskRemoved 不触发，音乐继续
-         * ```
-         *
-         * 也就是说：**划掉 = 用户的明确意图，尊重它**。
-         * 想继续听就别划掉（切后台足够）；划掉了就是要停。
-         */
-        val playing = session?.player?.isPlaying == true
-        android.util.Log.i(
-            "ETKN-Music",
-            "onTaskRemoved: 用户划掉任务，停服务（isPlaying=$playing）",
-        )
-        /** 先在媒体栈里摘掉会话，系统才不会认为「还在播」而把我们拉回来。 */
-        runCatching { session?.release() }
-        session = null
-        applicationContext.graph.music.stop()
-        stopSelf()
+        val player = session?.player
+        val hasContent = player != null && player.mediaItemCount > 0
+        if (!hasContent) {
+            applicationContext.graph.music.stop()
+            stopSelf()
+        } else {
+            android.util.Log.i(
+                "ETKN-Music",
+                "onTaskRemoved: 队列还有${player!!.mediaItemCount}首，保持服务存活（不自杀）",
+            )
+        }
     }
 
     override fun onDestroy() {
