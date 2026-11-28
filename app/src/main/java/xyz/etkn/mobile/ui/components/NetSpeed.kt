@@ -60,6 +60,17 @@ fun rememberNetSpeed(): String {
                 }
             }
             lastRx = rx
+            /**
+             * 用户实测（2026-11-28，#203）**右上角网速不显示**。
+             *
+             * 加日志以便确认：是 `getUidRxBytes` 返回了 UNSUPPORTED
+             * （说明这个 ROM 上该 UID 统计不可用，需要换回 getTotalRxBytes），
+             * 还是这段协程压根没跑起来（Composable 被提前离开重组）。
+             */
+            android.util.Log.i(
+                "ETKN-Net",
+                "uid=$uid raw=$uiBytes rx=$rx last=$lastRx speed=$speed",
+            )
             kotlinx.coroutines.delay(1_000L)
         }
     }

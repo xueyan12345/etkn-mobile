@@ -26,7 +26,6 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -878,8 +877,39 @@ fun PlayerScreen(session: VideoSession, inPip: Boolean, onBack: () -> Unit, onPi
             )
         }
 
+        /**
+         * 用户口径（2026-11-28，#197/#203）**加载动画用三点跳动，下方显示网速**。
+         *
+         * 用户原话：
+         * ```
+         * 「不光播放器，就是所有加载的，它好像都是那个圈圈」
+         * 「用第二个，3个小点那个」
+         * 「网速那个你可以参考，播放界面右上角有一个网速」
+         * 「播放时候加上网速」→「就视频播放页加」
+         * ```
+         *
+         * 原来这里是 Material3 的 `LoadingIndicator`（72dp 的大圈圈），
+         * 现在换成三点跳动 + 下面一行实时网速。
+         *
+         * 网速与右上角用**同一个** `rememberNetSpeed()`，两个数字必然一致。
+         */
         if (ui.loading && ui.error == null) {
-            LoadingIndicator(Modifier.align(Alignment.Center).size(72.dp), color = Color.White)
+            val netSpeed = xyz.etkn.mobile.ui.components.rememberNetSpeed()
+            Column(
+                Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                xyz.etkn.mobile.ui.components.EtknLoading(
+                    size = 9.dp,
+                    tint = Color.White,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    netSpeed,
+                    color = Color.White.copy(alpha = 0.75f),
+                    fontSize = 12.sp,
+                )
+            }
         }
         ui.error?.let { message ->
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
