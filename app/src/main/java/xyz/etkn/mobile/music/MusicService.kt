@@ -245,6 +245,71 @@ class MusicService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     /**
+     * 用户口径（2026-11-28，#174）**不播放也要显示媒体卡片**。
+     *
+     * 用户原话：
+     * ```
+     * 「压根就没实现，APP 就是打开的，但是系统的那个音乐播放控件是空白的，
+     *   按我的理解是只要这个 APP 不全部退出，
+     *   它那个音乐控件上就一直应该显示现在正在播放的音乐，
+     *   就算现在没有音乐，应该也是暂停的状态」
+     * ```
+     *
+     * ## 实测根因（adb 抓的，不是推测）
+     *
+     * 会话本身**完全正常**：
+     * ```
+     * state=PlaybackState {state=PAUSED(2), position=110965, ...}
+     * metadata: size=11, description=龙卷风, G.E.M. 邓紫棋
+     * queueTitle=null, size=60
+     * active=true，在 Sessions Stack 里，mediaButtonReceiver 已注册
+     * ```
+     * 缺的只有**通知**：
+     * ```
+     * dumpsys notification 里 pkg=xyz.etkn.mobile 条数 = 0
+     * dumpsys activity services → startForegroundCount: 0
+     * ```
+     *
+     * OPPO 的状态栏媒体卡片（`com.oplus.mediacontroller`）读的是**媒体通知**，
+     * 不直接读 MediaSession。而 `MediaSessionService` 默认只在**真的开始播放**时
+     * 才发通知并进前台 —— 所以「打开 App 但从没播过」这条路径永远没有卡片。
+     *
+     * ## 修法
+     *
+     * `onUpdateNotification(session, startInForeground)` 是基类留给子类的钩子：
+     * 系统每次要更新通知都会调它。我们在这里把 `startInForeground` **强制设 true**，
+     * 于是即使状态是 PAUSED、从未播放过，也会发通知并进前台。
+     *
+     * 关键点：
+     * ```
+     * ✗ 不是「自己 new 一个 Notification」—— 那样和 MediaSession 不同步，
+     *   卡片上的按钮点了没反应
+     * ✓ 走基类实现（super），由 Media3 按当前 session 状态生成正确的通知
+     *   我们只改「要不要进前台」这一个参数
+     * ```
+     *
+     * 副作用与代价：
+     * ```
+     * · 状态栏会多一条媒体通知（这正是用户要的）
+     * · Service 进前台 → ColorOS 更不容易杀它（顺带的好处）
+     * · 没在播时也是一条「暂停」卡片，用户可手动划掉（划掉不影响下次打开再出现）
+     * ```
+     */
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        android.util.Log.i(
+            "ETKN-Music",
+            "onUpdateNotification: startInForegroundRequired=$startInForegroundRequired " +
+                "state=${session.player.playbackState} count=${session.player.mediaItemCount}",
+        )
+        /**
+         * 有内容（队列非空）就一律进前台 ——
+         * 队列为空时没有 metadata，硬进前台只会得到一条空白通知，反而难看。
+         */
+        val hasContent = session.player.mediaItemCount > 0
+        super.onUpdateNotification(session, hasContent || startInForegroundRequired)
+    }
+
+    /**
      * 用户口径（#69）**系统问「要播哪首」时给答案**。
      *
      * 有记忆 → 返回那一首 + 起播位置，并异步真正开始播。
