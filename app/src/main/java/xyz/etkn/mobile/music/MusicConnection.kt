@@ -1343,6 +1343,14 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
                  * SharedPreferences.apply() 是异步落盘，不阻塞播放。
                  */
                 delay(1_000L)
+                /**
+                 * 用户口径（#193）**每秒按播放进度切一句歌词推到会话**。
+                 *
+                 * 放在这个已有的每秒循环里，不额外起协程。
+                 * `refreshLyricMetadata()` 内部有「行号没变就 return」的判断，
+                 * 所以每秒调用不会产生多余的 metadata 更新（不会刷爆系统）。
+                 */
+                runCatching { refreshLyricMetadata() }
                 if (player.isPlaying) {
                     runCatching { saveMemory() }
                     /**
@@ -2018,11 +2026,64 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      */
     @Volatile private var wakePauseCancelled = false
 
+    /** 正在加载歌词的 itemId，防止同一个 id 重复发请求。 */
+    private var lyricLoadingFor: String? = null
+
     private var lyricLines: List<Pair<Long, String>> = emptyList()
     private var lastLyricIndex: Int = -1
     private var lyricForItemId: String? = null
 
     /** 歌词加载后调它（UI 侧取到歌词时喂进来）。 */
+    /**
+     * 为指定歌曲加载歌词并挂上「按进度切行」。
+     *
+     * 数据来源优先级：
+     * ```
+     * ① LyricsCache 磁盘缓存（已下载过的，零网络）
+     * ② graph.api.lyrics(itemId, sourceId) 回源
+     * ```
+     * 用户要求过「字幕/歌词这类附属数据，有缓存就别重复请求」，
+     * 缓存命中率高，正常播放不会产生额外流量。
+     */
+    private fun loadLyricsFor(itemId: String, sourceId: String?) {
+        if (lyricLoadingFor == itemId) return
+        lyricLoadingFor = itemId
+        graph.scope.launch {
+            runCatching {
+                var raw = LyricsCache.read(itemId)
+                if (raw.isNullOrBlank()) {
+                    if (sourceId == null) {
+                        android.util.Log.i("ETKN-Music", "歌词：$itemId 无 sourceId，跳过回源")
+                        return@launch
+                    }
+                    raw = graph.api.lyrics(itemId, sourceId)
+                    if (raw.isNotBlank()) LyricsCache.write(itemId, raw)
+                }
+                if (raw.isNullOrBlank()) {
+                    android.util.Log.i("ETKN-Music", "歌词：$itemId 空，跳过")
+                    return@launch
+                }
+                val parsed = Lyrics.parse(raw)
+                /**
+                 * 用户口径：**歌词不过滤**，只丢空行。
+                 * （「不用删，空的就不显示就行」）
+                 */
+                val lines = parsed.lines
+                    .filter { it.text.isNotBlank() }
+                    .map { it.timeMs to it.text }
+                android.util.Log.i(
+                    "ETKN-Music",
+                    "歌词：$itemId 载入 ${lines.size} 行 synced=${parsed.synced}",
+                )
+                publishLyrics(itemId, lines)
+            }.onFailure {
+                android.util.Log.w("ETKN-Music", "歌词加载失败 $itemId", it)
+            } finally {
+                lyricLoadingFor = null
+            }
+        }
+    }
+
     fun publishLyrics(itemId: String, lines: List<Pair<Long, String>>) {
         if (lyricForItemId == itemId && lyricLines == lines) return
         lyricForItemId = itemId
@@ -2045,10 +2106,53 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         val text = lyricLines.getOrNull(lineIdx)?.second.orEmpty()
         runCatching {
             val old = p.getMediaItemAt(idx)
-            val newMeta = old.mediaMetadata.buildUpon()
+            val base = old.mediaMetadata
+            /**
+             * 用户口径（2026-11-28，#193）**车机看不到歌词**，要求对照箭头音乐的做法。
+             *
+             * ## 查到的官方硬性要求（决定性）
+             *
+             * Android 媒体会话的规范是：
+             * ```
+             * displayTitle 必须和 subtitle 一起设置，
+             * 否则 Android 在构造 MediaSession description 时会
+             * **整个忽略 subtitle 字段**。
+             * ```
+             * 原文（Bitmovin MediaSession 集成文档 / Android Media3 文档）：
+             * ```
+             * Important: displayTitle must be set alongside subtitle,
+             * otherwise Android will ignore the subtitle field entirely
+             * when constructing the MediaSession description.
+             * ```
+             *
+             * ## 我们之前错在哪
+             *
+             * 全仓库 grep `setDisplayTitle` = **0 次**，只有这一处
+             * `setSubtitle(text)` —— 也就是说歌词写进去了，但因为没有
+             * displayTitle，系统**一次都没往外传过**。
+             * 这正是「车机卡片没有歌词」的直接原因。
+             *
+             * ## 现在的写法
+             *
+             * ```
+             * displayTitle = 歌名（原来 title 的值，不能丢）
+             * subtitle     = 当前那句歌词
+             * title        = 保持歌名（通知栏用）
+             * ```
+             * 三处都给，无论车机/CarLife 读哪个字段都能拿到。
+             *
+             * 参考：箭头音乐也是「某次更新后突然能显示歌词」，
+             * 属于同一类字段没对齐的问题，不是玄学。
+             */
+            val songTitle = base.title?.toString().orEmpty().ifBlank { "未知歌曲" }
+            val newMeta = base.buildUpon()
+                /** 这句是让 subtitle 生效的前提，缺了系统直接丢弃歌词。 */
+                .setDisplayTitle(songTitle)
+                .setTitle(songTitle)
                 .setSubtitle(text.ifEmpty { null })
                 .build()
             p.replaceMediaItem(idx, old.buildUpon().setMediaMetadata(newMeta).build())
+            android.util.Log.i("ETKN-Music", "歌词行已推送：${text.take(20)}")
         }
     }
 
@@ -2209,6 +2313,32 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
         }
         val index = p.currentMediaItemIndex
         val current = p.currentMediaItem?.mediaId?.let(items::get)
+        /**
+         * 用户口径（2026-11-28，#193）**车机卡片要显示歌词**。
+         *
+         * `publishLyrics()` / `refreshLyricMetadata()` 早就写好了，
+         * 但 grep 整个仓库**没有任何调用点** —— 机制存在、从未接线，
+         * 所以车机卡片永远只有歌名，没有歌词。
+         *
+         * 这里在每次 `publish()`（换歌/状态变化都会走）时：
+         * ```
+         * ① 当前歌变了 → 异步取歌词（先读磁盘缓存，没有才请求服务器）
+         * ② 解析成 (时间, 歌词行) → publishLyrics()
+         * ③ 起一个每秒刷新的协程，按播放位置切换当前行
+         * ```
+         * 歌词只是附加信息，任何一步失败都不影响播放。
+         */
+        current?.let { cur ->
+            /**
+             * `sourceId` 挂在 `MusicState` 上（不是 Item 上）——
+             * 见 `MusicState.sourceId` 与 `NowPlaying.kt:335` 的取法。
+             */
+            val sid = _state.value.sourceId ?: _remembered.value?.sourceId
+            if (cur.id != lyricForItemId) {
+                loadLyricsFor(cur.id, sid)
+            }
+        }
+        runCatching { refreshLyricMetadata() }
         _state.value = _state.value.copy(
             current = current,
             queue = queue,
