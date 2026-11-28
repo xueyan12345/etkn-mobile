@@ -47,6 +47,23 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        /**
+         * 用户口径（2026-11-28，#220）**这里标记「用户是主动打开 App 的」**。
+         *
+         * 配套 `MusicService.onCreate` 里那段「被系统重建就停掉」的逻辑：
+         * ```
+         * onTaskRemoved（用户划掉）→ taskKilled = true
+         * MusicService.onCreate 看到 taskKilled && !appForeground → 停掉自己
+         * MainActivity.onCreate（用户真的打开 App）→ 清掉标记
+         * ```
+         * 如果不清，下次用户正常打开 App 时服务可能被误拦一次。
+         * 清标记是纯记录操作，对 UI / 播放 / 会话零影响。
+         */
+        getSharedPreferences("etkn_task", MODE_PRIVATE)
+            .edit()
+            .putBoolean("taskKilled", false)
+            .putBoolean("appForeground", true)
+            .apply()
         preferFastestRefreshRate()
         openFrom(intent)
         setContent { EtknRoot(graph) }

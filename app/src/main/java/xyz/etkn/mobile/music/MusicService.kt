@@ -104,6 +104,47 @@ class MusicService : MediaSessionService() {
         /** 标记实例存活 —— 用于诊断「服务是否真的起来了」。 */
         alive = true
         super.onCreate()
+
+        /**
+         * 用户口径（2026-11-28，#220）**杀掉 App 后卡片不该再自己冒出来**。
+         *
+         * ## 现场证据（dumpsys activity services）
+         *
+         * ```
+         * stopIfKilled=false          ← START_STICKY：服务被杀，系统会重建
+         * startRequested=true         ← 启动请求一直挂着
+         * restartTime=-1m13s          ← 确实发生过自动重启
+         * ```
+         *
+         * ## 为什么之前的改法会翻车（务必别重犯）
+         *
+         * 上一版在 `onTaskRemoved` 里 `MusicSessionHolder.release()` 释放会话，
+         * 结果卡片变成「打开一次有、打开一次没有」——
+         * **服务还活着、会话却被释放了**，下次打开 App 时没有会话可用。
+         *
+         * ## 这次只拦「被系统重建」这一次，别的一概不碰
+         *
+         * ```
+         * 用户划掉任务 → 记一个标记 taskKilled = true（只写标记，不碰会话/播放）
+         * 系统重建服务 → onCreate 看到标记
+         *              → 说明「不是用户主动打开 App」，直接把服务停掉，不再建会话
+         * 用户重新打开 App → 标记被清 → 正常流程，一切照旧
+         * ```
+         *
+         * 关键：**只写一个布尔标记**，不释放会话、不清队列、不动续播记忆。
+         * 所以即使在「不该拦」的情况下误拦了，代价也只是这一次服务没起来，
+         * 用户下次打开 App 立刻恢复 —— 不会像上次那样把会话搞坏。
+         */
+        val killedPrefs = getSharedPreferences("etkn_task", MODE_PRIVATE)
+        if (killedPrefs.getBoolean("taskKilled", false) &&
+            !killedPrefs.getBoolean("appForeground", false)
+        ) {
+            android.util.Log.i("ETKN-Music", "onCreate: 用户已划掉任务 → 不再重建服务")
+            killedPrefs.edit().putBoolean("taskKilled", false).apply()
+            stopSelf()
+            return
+        }
+
         val graph = applicationContext.graph
         val open = PendingIntent.getActivity(
             this, 0,
@@ -921,14 +962,31 @@ class MusicService : MediaSessionService() {
          */
         val player = session?.player
         val hasContent = player != null && player.mediaItemCount > 0
+
+        /**
+         * 用户口径（#220）**划掉任务 = 明确的关闭意图**。
+         *
+         * 这里只做一件事：写个标记告诉自己「用户已经划掉了」。
+         * 真正的处理在 `onCreate` —— 系统若因此重建服务，那边看到标记就直接停，
+         * 不再建会话、不再出卡片。
+         *
+         * 刻意**不在这里** stopSelf / release 会话 / 清队列：
+         * 上一版就是在这一步动手，把「一次有一次没有」的毛病带回来了。
+         * 写标记是纯记录，对当前正在跑的实例零影响。
+         */
+        getSharedPreferences("etkn_task", MODE_PRIVATE)
+            .edit()
+            .putBoolean("taskKilled", true)
+            .putBoolean("appForeground", false)
+            .apply()
+        android.util.Log.i(
+            "ETKN-Music",
+            "onTaskRemoved: 已记录「用户划掉」（队列=${player?.mediaItemCount ?: 0}首），" +
+                "不再主动停服务以免破坏会话",
+        )
         if (!hasContent) {
             applicationContext.graph.music.stop()
             stopSelf()
-        } else {
-            android.util.Log.i(
-                "ETKN-Music",
-                "onTaskRemoved: 队列还有${player!!.mediaItemCount}首，保持服务存活（不自杀）",
-            )
         }
     }
 
