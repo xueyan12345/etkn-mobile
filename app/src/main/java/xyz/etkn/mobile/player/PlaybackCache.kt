@@ -918,10 +918,59 @@ object PlaybackCache {
                         .build()
                     ds.open(spec)
                     val buf = ByteArray(256 * 1024)
+                    /**
+                     * 用户口径（2026-11-28，#141）**`read()==0` 不能当结束**。
+                     *
+                     * 用户反馈：「我的蜡笔小新好像不触发下一集预加载」。
+                     *
+                     * adb 抓到的证据（`ETKN-Cache`，连续 15 秒一模一样）：
+                     * ```
+                     * preload next=item-18425 covered=45MB need=72MB ready=false
+                     * preload next=item-18425 covered=45MB need=72MB ready=false
+                     * …
+                     * isNextReady=false currentComplete=true nextComplete=false next=null
+                     * ```
+                     * `covered` 卡在 45MB 完全不动（需要 72MB，阈值 57.6MB）。
+                     *
+                     * ## 原来的 bug
+                     *
+                     * ```kotlin
+                     * while (covered < needBytes) {
+                     *     val read = ds.read(buf, 0, buf.size)
+                     *     if (read <= 0) break        // ← 元凶
+                     *     covered += read
+                     * }
+                     * ```
+                     * `DataSource.read()` 的契约：
+                     * ```
+                     *  > 0  本次读到这么多字节
+                     *  = 0  此刻暂时没有更多数据（**还没到结尾**）
+                     *  = -1 读取位置已到结尾
+                     * ```
+                     * 网络抖动、115 CDN 分片边界、播放器同一时刻也在读上游，
+                     * 都会让 `read()` 短暂返回 0。原代码把它当结束直接 break，
+                     * 于是每轮只下到 45MB 就"完成"，`covered` 永远够不到 80% 阈值，
+                     * `nextComplete` 永远是 false → **气泡永远不亮**。
+                     *
+                     * ## 现在
+                     *
+                     * · `-1` 才 break（真的到结尾）
+                     * · `0` 就短暂让出线程再重试，最多连续 40 次（约 4 秒）
+                     * · 外层还有总时长上限，绝不会死循环
+                     */
+                    var zeroReads = 0
                     while (covered < needBytes) {
                         val read = ds.read(buf, 0, buf.size)
-                        if (read <= 0) break
-                        covered += read
+                        when {
+                            read > 0 -> { covered += read; zeroReads = 0 }
+                            read == -1 -> break
+                            else -> {
+                                /** read == 0：暂时没数据，等一会儿再读。 */
+                                zeroReads++
+                                if (zeroReads > 40) break
+                                Thread.sleep(100)
+                            }
+                        }
                     }
                 }
                 runCatching { ds.close() }
