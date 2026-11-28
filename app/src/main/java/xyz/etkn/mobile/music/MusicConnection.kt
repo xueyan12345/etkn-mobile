@@ -1638,6 +1638,48 @@ class MusicConnection(private val context: Context, private val graph: AppGraph)
      */
     private var wakeForCard = false
 
+    /**
+     * 用户口径（2026-11-28，#182）**每次打开 App 都重新允许唤醒卡片**。
+     *
+     * 用户实测：
+     * ```
+     * 「我打开了两次，第一次播放空间是显示的，第二次没显示」
+     * ```
+     *
+     * 根因：`wakeForCard` 在实例内只翻一次。
+     * 第二次打开时进程还在、实例没销毁 → 标记仍是 true → 跳过唤醒。
+     *
+     * 现在由 `EtknApp.onCreate` 每次调用它清零，
+     * 如果播放器已经 READY（队列早恢复了），就立刻再唤醒一次。
+     */
+    fun allowWakeAgain() {
+        wakeForCard = false
+        /**
+         * 只有「已经准备好、且有歌」时才主动再唤一次；
+         * 否则等 `restoreForResumption` 自己走完流程再唤醒（那边有完整等待逻辑）。
+         */
+        val p = _player ?: return
+        if (p.mediaItemCount == 0 || p.playbackState != Player.STATE_READY) return
+        graph.scope.launch {
+            runCatching {
+                if (wakeForCard) return@launch
+                wakeForCard = true
+                val saved = p.volume
+                try {
+                    p.volume = 0f
+                    p.play()
+                    kotlinx.coroutines.delay(120L)
+                    p.pause()
+                    android.util.Log.i("ETKN-Music", "重新唤醒卡片：已暂停 pos=${p.currentPosition}ms")
+                } catch (t: Throwable) {
+                    android.util.Log.w("ETKN-Music", "重新唤醒卡片失败", t)
+                } finally {
+                    runCatching { p.volume = saved }
+                }
+            }
+        }
+    }
+
     private var lyricLines: List<Pair<Long, String>> = emptyList()
     private var lastLyricIndex: Int = -1
     private var lyricForItemId: String? = null

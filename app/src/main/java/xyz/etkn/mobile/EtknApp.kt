@@ -58,9 +58,24 @@ class EtknApp : Application(), SingletonImageLoader.Factory {
          * 用 runCatching 包住：任何异常都不该让 App 起不来。
          */
         runCatching {
-            startService(
+            val r = startService(
                 android.content.Intent(this, xyz.etkn.mobile.music.MusicService::class.java),
             )
+            /**
+             * 用户口径（2026-11-28，#181）**这里必须留日志**。
+             *
+             * 之前的 `runCatching { startService(...) }` 把异常全吞了：
+             * adb 实测 `dumpsys activity services xyz.etkn.mobile` 里
+             * MusicService 计数 = 0（根本没起来），但日志一条都没有，
+             * 排查时完全看不出是「没调用」还是「调了但失败」。
+             *
+             * Android 8+ 的坑：后台启动服务会抛
+             * `IllegalStateException: Not allowed to start service Intent`，
+             * 这里打印出来就能立刻确认。
+             */
+            android.util.Log.i("ETKN-App", "MusicService startService 返回：$r")
+        }.onFailure {
+            android.util.Log.w("ETKN-App", "MusicService 启动失败", it)
         }
         /**
          * 用户口径（2026-11-28，#180）**首页打开也要点亮控制中心卡片**。
@@ -97,8 +112,28 @@ class EtknApp : Application(), SingletonImageLoader.Factory {
          * 放在 `runCatching` 里：音乐模块初始化失败也不该让 App 起不来。
          */
         runCatching {
-            // 访问一次即可触发 lazy 初始化（其 init 内部会把 restore 挂到协程里）
-            graph.music
+            /**
+             * 访问一次触发 lazy 初始化。
+             *
+             * 用户实测（2026-11-28，#182）：
+             * ```
+             * 「我打开了两次，第一次播放空间是显示的，第二次没显示」
+             * ```
+             *
+             * 原因：`wakeForCard` 是 MusicConnection 实例内的标记，
+             * 只保证「这个实例只唤醒一次」。但用户第二次打开时
+             * App 进程可能还在（只是 Activity 重建），实例没销毁 →
+             * 标记还是 true → 跳过唤醒 → 卡片不亮。
+             *
+             * 所以这里**每次 App.onCreate 都重置一次**：
+             * 进程新起来 → 实例本来也是新的，重置无副作用；
+             * Activity 重建但进程还在 → 重置后能重新唤醒。
+             *
+             * 代价：多一次 120ms 的静音轻播，用户听不到。
+             */
+            val m = graph.music
+            m.allowWakeAgain()
+            android.util.Log.i("ETKN-App", "音乐模块已就绪，已允许重新唤醒卡片")
         }.onFailure { android.util.Log.w("ETKN-App", "提前初始化音乐模块失败", it) }
         /**
          * 用户口径（2026-11-26）**日志默认不记录，由开关控制**。
