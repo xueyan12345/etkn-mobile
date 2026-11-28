@@ -998,11 +998,37 @@ private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
                 ),
                 label = "next-ep-ready-alpha",
             )
+            /**
+             * 位置与比例**照抄音乐页的下一首气泡**（用户口径 #153）。
+             *
+             * 用户原话：
+             * ```
+             * 「播放器的下一集预加载的小气泡，你参考一下现在音频的那个播放小气泡。
+             *   位置和整体的比例，你给我改一改，那个有点不对劲」
+             * ```
+             *
+             * 音乐页（`NowPlaying.kt`）的参数：
+             * ```
+             * IconButton 48dp / 图标 30dp / 气泡 11dp / 闪电 8dp / offset(-4, 4)
+             * ```
+             * 视频页的 `PlayerAction` 是 **60dp 按钮 / 30dp 图标**
+             * （用户 11-23 要求播放界面整体放大 1.5 倍）。
+             *
+             * 按钮大 1.25 倍（60÷48），所以气泡和偏移也乘 1.25，
+             * 这样相对位置才和音乐页一致 —— 之前用固定 13dp/-4dp 是「按绝对像素抄」，
+             * 放在 60dp 按钮上气泡离图标角远了、显得小，就是用户说的「有点不对劲」：
+             * ```
+             * 气泡  11 × 1.25 = 14dp
+             * 闪电   8 × 1.25 = 10dp
+             * 偏移  (-4, 4) × 1.25 = (-5, 5)
+             * 阴影 2dp（不动，视觉厚度不该放大）
+             * ```
+             */
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .offset(x = (-4).dp, y = 4.dp)
-                    .size(13.dp)
+                    .offset(x = (-5).dp, y = 5.dp)
+                    .size(14.dp)
                     .graphicsLayer { this.alpha = alpha }
                     .background(Color.White, CircleShape)
                     .shadow(2.dp, CircleShape),
@@ -1011,7 +1037,7 @@ private fun NextEpisodeAction(onClick: () -> Unit, warmed: Boolean) {
                     Icons.Rounded.Bolt,
                     contentDescription = "下一集已预加载",
                     tint = Color.Black,
-                    modifier = Modifier.size(9.dp),
+                    modifier = Modifier.size(10.dp),
                 )
             }
         }
